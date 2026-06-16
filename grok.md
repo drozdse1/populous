@@ -234,6 +234,27 @@ Each run should show different `[QUICKTEST]` / `[INIT]` output and a different-l
 
 ### Next Priorities (still focused on testability)
 - Expand the demo level table or wire a real small `level.dat` slice.
+- (Autonomous) More of the _animate callees made visible (_move_mana now drives a mana bar; map state migrated into A4 map_who etc. for fidelity).
+
+## Autonomous Agent Work (ongoing, no user input between updates)
+Per user request to continue in agent mode:
+- Periodically make incremental improvements focused on quick visual/CLI feedback for "level laden, init game status, ground/bild shim, animation heartbeat".
+- After batches of changes: update this grok.md, sync trees, commit + push to the fork (https://github.com/drozdse1/populous).
+- Current autonomous phase (post tetracorp analysis): fidelity improvements (A4 globals for map data) + more loop coverage (visible mana from _move_mana) + polish.
+
+Recent autonomous additions (this cycle):
+- Added A4_DISP defines for the core map structures (_map_who at +0x1f88, _map_blk etc.) using exact offsets from the asm LEA instructions and binary labels.
+- Migrated the demo height storage behind the A4 map_who area (demo_height_at macro + accessors). Generation, drawing, placement, movement, sculpt, powers, and held-mouse edits now all operate on (or mirror to) the emulated globals. This is a big step toward the real game data layout so translated _make_map etc. will see consistent state.
+- Implemented visible _move_mana (called every frame in the _animate loop): it computes a target from current pop + peeps and smoothly updates demo_mana.
+- Added a mana bar (distinct color) drawn in _draw_it near the pop status bars. This makes the core transcribed heartbeat "feel alive" and shows resource state changing with init pop and simulation.
+- Minor robustness (DEMO_MAP_* constants) and continued use of the POWER_* / TERRAIN_* defines from the previous analysis pass.
+- All changes keep full backward compatibility for `./populous_init_port N` testing and interactive keys (p/q/v/r/mouse).
+
+Builds and smokes cleanly for multiple N. The window now shows evolving status (mana bar reacts to pop) on top of the A4-backed map.
+
+Next autonomous steps will target more _animate callees (_clr_wsc, _show_the_shield with visible effect), simple population growth simulation so bars change over time without user input, and possibly basic icon or shield drawing shims.
+
+(Updates to repo/grok.md/push happen automatically at milestones.)
 - Start using more real A4 map storage (map_who, map_alt, map_blk areas) instead of the isolated demo array.
 - Basic population / "town" init from the starting pop bytes.
 - First real ground tile / image loading shim (beyond just palette) so terrains look structurally different.

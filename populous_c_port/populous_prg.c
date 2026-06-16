@@ -129,6 +129,20 @@ static void ensure_prg_screen(void);
 #define sprite           (A4_DISP(0x9a22))          /* sprite list base */
 #define peeps            (A4_DISP(0x9c26))          /* peeps array base */
 #define no_peeps         (*(int16_t *)A4_DISP(0xae5e))
+
+/* Map data structures (from asm LEA (_map_xxx,A4) and absolute labels in the binary).
+ * These are the core world state (height/terrain/owner/alt etc.).
+ * Offsets are relative to A4 (0x593EE). We now store our demo height map here
+ * for higher fidelity to the real init/game data layout (see tetracorp level-format analysis).
+ * map_who at +0x1f88 is heavily used for "who" / terrain decisions in _make_map, sculpt, peeps, etc.
+ */
+#define map_who          (A4_DISP(0x1f88))
+#define map_blk          (A4_DISP(0xcf88))
+#define map_alt          (A4_DISP(0xdf88))
+#define map_bk2          (A4_DISP(0xef88))
+#define map_steps        (A4_DISP(0xff88))
+/* map_colour at 0x8370 relative (used for palette/ground in some paths) */
+#define map_colour       (A4_DISP(0x8370))
 #define view_timer       (*(int16_t *)A4_DISP(0xae60))
 #define left_button      (*(int16_t *)A4_DISP(0xae62))
 #define right_button     (*(int16_t *)A4_DISP(0xae64))
@@ -223,16 +237,28 @@ static void  ___CloseLibrary(void *base) { printf("[PRG] CloseLibrary\n"); }
    A4-relative + absolute data space for this prg. */
 
 /* === Demo data for fast visual testing ===
- * These are used by the current motivation-mode implementations of
- * _make_map, _place_first_people, _draw_it and _move_peeps.
- * They let you immediately see the effect of different level seeds / conquest params.
+ * State is now stored in the emulated A4 globals (map_who etc.) for higher fidelity
+ * to the real game (see tetracorp analysis and asm LEA for _map_who at +0x1f88 etc.).
+ * demo_height is now an accessor macro into the A4 map storage.
+ * This prepares the demo for when real _make_map/_draw_map bodies are translated.
  */
-static int8_t  demo_height[64][64];
+#define DEMO_MAP_W 64
+#define DEMO_MAP_H 64
+/* Accessor: our generated heights live in the real map_who area of A4 globals */
+#define demo_height_at(my, mx)  ( ((int8_t*)map_who)[ ((my)&(DEMO_MAP_H-1))*DEMO_MAP_W + ((mx)&(DEMO_MAP_W-1)) ] )
+
+/* Legacy name for minimal diff in existing code; expands to the A4-backed accessor */
+#define demo_height(y,x) demo_height_at((y),(x))
+
 static int     demo_peep_x[32];
 static int     demo_peep_y[32];
 static int     num_demo_peeps = 0;
+static int     demo_mana = 50;   /* updated by _move_mana in the _animate heartbeat; visible in draw */
 
 #define MAX_DEMO_PEEPS 32
+
+/* Note: we still use separate demo_peeps[] struct for the big visible blobs and
+ * the A4 peeps area (0x9c26) for the population dot view (paint_map path). */
 
 /* Real peep struct modeled after the assembly (_peeps at A4 + 0x9c26, 0x16 bytes each).
  * Owner, flags (for view mode drawing), position, etc.
@@ -650,7 +676,7 @@ static void _make_map(void)
     else if (conq_05_terrain == 2) { base_h = 4; var = 24; }  /* snow: higher, more variation */
     else if (conq_05_terrain == 3) { base_h = 0; var = 28; }  /* rocky: very rough */
 
-    for (int y=0; y<64; y++) for (int x=0; x<64; x++) demo_height[y][x] = base_h;
+    for (int y=0; y<DEMO_MAP_H; y++) for (int x=0; x<DEMO_MAP_W; x++) demo_height_at(y, x) = base_h;
 
     for (int pass = 0; pass < 5; pass++) {
         int strength = 6 - (pass / 2);
@@ -669,11 +695,11 @@ static void _make_map(void)
                 for (int dx = -1; dx <= 1; dx++) {
                     int x = cx + dx;
                     int y = cy + dy;
-                    if (x >= 0 && x < 64 && y >= 0 && y < 64) {
-                        int newh = demo_height[y][x] + delta;
+                    if (x >= 0 && x < DEMO_MAP_W && y >= 0 && y < DEMO_MAP_H) {
+                        int newh = demo_height_at(y, x) + delta;
                         if (newh < -24) newh = -24;
                         if (newh > 24)  newh = 24;
-                        demo_height[y][x] = newh;
+                        demo_height_at(y, x) = newh;
                     }
                 }
             }
@@ -690,8 +716,8 @@ static void _make_map(void)
             int cy = (ry % 50) + 7;
             for (int dy=-2; dy<=2; dy++) for (int dx=-2; dx<=2; dx++) {
                 int x = cx+dx, y=cy+dy;
-                if (x>=0&&x<64&&y>=0&&y<64 && (dx*dx+dy*dy)<5) {
-                    demo_height[y][x] = 18 + (___newrand()%6); /* high rocks */
+                if (x>=0&&x<DEMO_MAP_W&&y>=0&&y<DEMO_MAP_H && (dx*dx+dy*dy)<5) {
+                    demo_height_at(y, x) = 18 + (___newrand()%6); /* high rocks */
                 }
             }
         }
@@ -702,17 +728,17 @@ static void _make_map(void)
             uint16_t rx = ___newrand(); uint16_t ry=___newrand();
             int cx=(rx%55)+4, cy=(ry%55)+4;
             for (int dy=-3;dy<=3;dy++)for(int dx=-3;dx<=3;dx++){
-                int x=cx+dx,y=cy+dy; if(x>=0&&x<64&&y>=0&&y<64) demo_height[y][x] = (demo_height[y][x] + 3) / 2;
+                int x=cx+dx,y=cy+dy; if(x>=0&&x<DEMO_MAP_W&&y>=0&&y<DEMO_MAP_H) demo_height_at(y, x) = (demo_height_at(y, x) + 3) / 2;
             }
         }
     }
 
     /* Optional: rough stats so you can see that different CLI numbers really change the map */
     int min_h = 99, max_h = -99;
-    for (int y = 0; y < 64; y++)
-        for (int x = 0; x < 64; x++) {
-            if (demo_height[y][x] < min_h) min_h = demo_height[y][x];
-            if (demo_height[y][x] > max_h) max_h = demo_height[y][x];
+    for (int y = 0; y < DEMO_MAP_H; y++)
+        for (int x = 0; x < DEMO_MAP_W; x++) {
+            if (demo_height_at(y, x) < min_h) min_h = demo_height_at(y, x);
+            if (demo_height_at(y, x) > max_h) max_h = demo_height_at(y, x);
         }
 
     printf("[PRG] _make_map (real _newrand) seed=%d terrain=%d height range %d..%d  peeps=%d\n",
@@ -763,7 +789,7 @@ static void _place_first_people(void)
         int mx = demo_peep_x[i]/4, my = demo_peep_y[i]/4;
         if (mx<0) mx=0; if (mx>63) mx=63;
         if (my<0) my=0; if (my>63) my=63;
-        int h = demo_height[my][mx];
+        int h = demo_height_at(my, mx);
         if (h < -15 || h > 15) {
             /* nudge to better spot */
             demo_peep_x[i] = 40 + (___newrand() % 180);
@@ -1138,9 +1164,9 @@ static void _animate(void)
         if (prg_screen && (left_button || right_button)) {
             int mx = ((mousex + xoff) >> 2) & 63;
             int my = ((mousey + yoff) >> 2) & 63;
-            if (mx >= 0 && mx < 64 && my >= 0 && my < 64) {
-                if (left_button) demo_height[my][mx] = (demo_height[my][mx] < 20) ? demo_height[my][mx] + 1 : 20;
-                if (right_button) demo_height[my][mx] = (demo_height[my][mx] > -20) ? demo_height[my][mx] - 1 : -20;
+            if (mx >= 0 && mx < DEMO_MAP_W && my >= 0 && my < DEMO_MAP_H) {
+                if (left_button) demo_height_at(my, mx) = (demo_height_at(my, mx) < 20) ? demo_height_at(my, mx) + 1 : 20;
+                if (right_button) demo_height_at(my, mx) = (demo_height_at(my, mx) > -20) ? demo_height_at(my, mx) - 1 : -20;
             }
         }
 
@@ -1162,10 +1188,10 @@ static void _clear_map(void)
 {
     ensure_prg_screen();
 
-    /* use shared demo_height (file scope). Zero it the first time we are called. */
+    /* use A4-backed map (map_who). Zero the relevant area the first time. */
     static int cleared = 0;
     if (!cleared) {
-        memset(demo_height, 0, sizeof(demo_height));
+        memset((void*)map_who, 0, DEMO_MAP_W * DEMO_MAP_H);
         cleared = 1;
     }
 
@@ -1195,7 +1221,20 @@ static void _place_first_people(void)
 }
 #endif
 
-static void _move_mana(void) {}
+static void _move_mana(void)
+{
+    /* Simple visible simulation of _move_mana from the _animate loop.
+     * Mana (or "manna" in some docs) is tied to population in Populous.
+     * We update a demo value here so the top bar in _draw_it shows activity
+     * as peeps move and pop changes. This exercises more of the transcribed loop.
+     */
+    /* Rough: base from initial pop + current living peeps, plus small tick */
+    int target = (current_start_pop_you * 3) + (num_demo_peeps / 2) + (toggle ? 5 : 0);
+    if (demo_mana < target) demo_mana++;
+    else if (demo_mana > target) demo_mana--;
+    if (demo_mana < 0) demo_mana = 0;
+    if (demo_mana > 200) demo_mana = 200;
+}
 
 static void _draw_it(int16_t y, int16_t x)
 {
@@ -1217,7 +1256,7 @@ static void _draw_it(int16_t y, int16_t x)
             int mx = ((xx + x) >> 2) & 63;
             int my = ((yy + y) >> 2) & 63;
 
-            int8_t height = demo_height[my][mx];
+            int8_t height = demo_height_at(my, mx);
             int shade = 5 + (height / 2);     /* height shading */
             if (shade < 0) shade = 0;
             if (shade > 15) shade = 15;
@@ -1235,8 +1274,8 @@ static void _draw_it(int16_t y, int16_t x)
             /* cheap but distinctive per-terrain ground texture (loaded "tiles") */
             int tx = (xx >> 1) & 1;
             int ty = (yy >> 1) & 1;
-            int hcur = demo_height[my][mx];
-            int hnext = demo_height[my][(mx+1)&63];
+            int hcur = demo_height_at(my, mx);
+            int hnext = demo_height_at(my, (mx+1)&63);
             if (conq_05_terrain == 0) { /* grass: dither + edges */
                 if (tx ^ ty) col = prg_screen->palette[(shade + 2 + phase) & 15];
                 if (abs(hcur - hnext) > 3) col = prg_screen->palette[(shade + 1) & 15];
@@ -1319,6 +1358,16 @@ static void _draw_it(int16_t y, int16_t x)
         if (bx < 10 + player_bar) prg_screen->chunky_buffer[bar_y * w + bx] = prg_screen->palette[14];
         if (bx < 10 + enemy_bar) prg_screen->chunky_buffer[(bar_y+2) * w + bx] = prg_screen->palette[11];
     }
+
+    /* Mana bar driven by _move_mana (called every frame from the transcribed _animate loop).
+     * Gives visible feedback that the core heartbeat is "running" and population affects resources.
+     */
+    int mana_y = bar_y - 4;
+    int mana_val = demo_mana;
+    int mana_w = (mana_val > 0 ? (mana_val * bar_w) / 120 : 0);
+    for (int bx=10; bx<10+bar_w && bx<w; bx++) {
+        if (bx < 10 + mana_w) prg_screen->chunky_buffer[mana_y * w + bx] = prg_screen->palette[5]; /* distinct color */
+    }
 }
 
 static void _do_quake(void)
@@ -1331,9 +1380,9 @@ static void _do_quake(void)
     int cy = 18 + (___newrand() % 20);
     for (int dy=-2; dy<=2; dy++) for (int dx=-2; dx<=2; dx++) {
         int mx=cx+dx, my=cy+dy;
-        if (mx>=0&&mx<64 && my>=0&&my<64) {
-            demo_height[my][mx] -= (2 + (___newrand()&1));
-            if (demo_height[my][mx] < -24) demo_height[my][mx] = -24;
+        if (mx>=0&&mx<DEMO_MAP_W && my>=0&&my<DEMO_MAP_H) {
+            demo_height_at(my, mx) -= (2 + (___newrand()&1));
+            if (demo_height_at(my, mx) < -24) demo_height_at(my, mx) = -24;
         }
     }
     if (prg_screen) {
@@ -1366,7 +1415,7 @@ static void _move_peeps(void)
             /* Tiny height bias: sample current and nudge (visual terrain interaction) */
             int mx = demo_peep_x[i] / 4, my = demo_peep_y[i] / 4;
             if (mx<0) mx=0; if (mx>63) mx=63; if (my<0) my=0; if (my>63) my=63;
-            int h = demo_height[my][mx];
+            int h = demo_height_at(my, mx);
             if (h > 8) { dx = (dx > 0 ? -1 : dx); dy = (dy > 0 ? -1 : dy); } /* avoid steep */
             else if (h < -6) { dx = (dx < 0 ? 1 : dx); dy = (dy < 0 ? 1 : dy); } /* slide downhill-ish */
 
@@ -1493,8 +1542,8 @@ static void ___keyboard(void)
                             int mx = cx + dx, my = cy + dy;
                             if (mx >= 0 && mx < 64 && my >= 0 && my < 64) {
                                 int delta = 3 + (___newrand() & 3);
-                                demo_height[my][mx] -= delta;
-                                if (demo_height[my][mx] < -24) demo_height[my][mx] = -24;
+                                demo_height_at(my, mx) -= delta;
+                                if (demo_height_at(my, mx) < -24) demo_height_at(my, mx) = -24;
                             }
                         }
                     }
@@ -1535,8 +1584,8 @@ static void ___keyboard(void)
                             int mx = cx + dx, my = cy + dy;
                             if (mx >= 0 && mx < 64 && my >= 0 && my < 64) {
                                 int delta = 3 + (___newrand() & 3);
-                                demo_height[my][mx] += delta;
-                                if (demo_height[my][mx] > 24) demo_height[my][mx] = 24;
+                                demo_height_at(my, mx) += delta;
+                                if (demo_height_at(my, mx) > 24) demo_height_at(my, mx) = 24;
                             }
                         }
                     }
@@ -1568,9 +1617,9 @@ static void ___keyboard(void)
                 int my = ((ev.button.y / 2) + yoff) >> 2;
                 if (mx >= 0 && mx < 64 && my >= 0 && my < 64) {
                     if (ev.button.button == SDL_BUTTON_LEFT) {
-                        demo_height[my][mx] = (demo_height[my][mx] < 20) ? demo_height[my][mx] + 4 : 20;
+                        demo_height_at(my, mx) = (demo_height_at(my, mx) < 20) ? demo_height_at(my, mx) + 4 : 20;
                     } else if (ev.button.button == SDL_BUTTON_RIGHT) {
-                        demo_height[my][mx] = (demo_height[my][mx] > -20) ? demo_height[my][mx] - 4 : -20;
+                        demo_height_at(my, mx) = (demo_height_at(my, mx) > -20) ? demo_height_at(my, mx) - 4 : -20;
                     }
                     _draw_it(yoff, xoff);
                     amiga_present(prg_screen);
