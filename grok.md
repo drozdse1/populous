@@ -28,6 +28,7 @@ The goal of this fork is to maintain the original disassembly while adding a mod
 **Main game module** (`populous_prg.c`):
 - `_main` (real entry point of populous.prg)
 - `_rs`, `_closeall`
+- Enhanced quick-test demo (CLI N levels still primary): richer "bild/ground" loading shim with distinct per-terrain palettes, improved textured renderer (seed phase + height-edge detail), live 'p' toggle for paint_map / population-dot view (exercises transcribed BTST overlay), 'v' volcano raise + existing 'q' quake + mouse sculpt, _move_peeps now level-speed + height-biased for terrain differentiation. All still fully buildable + visible in SDL without further asm.
 - Mouse / interrupt setup (`_create_mouse`, `_setup_interrupt`, "petersint" VBI server)
 - Serial interrupt setup
 - Library open/close

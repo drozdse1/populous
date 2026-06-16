@@ -43,6 +43,28 @@ Our port goals remain:
 
 The current code follows the exact flow from the chunk you pasted. When you run with choice==1 it will now execute the real `_main` → allocs → screen/sprite init → `_animate` loop (with the numpad scrolls, debug keys, conquest path if start_of_game triggers it, etc.), all driven from the A4 emulation area.
 
+## Current quick-test demo (no more asm paste needed yet)
+For fast iteration on "level laden + init game status" without pasting more chunks:
+- `./populous_init_port N` where N=0..7 loads a different row from the internal demo_levels table (different terrain, start pop_you / pop_enemy, power bitfields, speed, seed offset).
+  - You immediately see different base colors + texture patterns, different # of moving peeps, different bottom status bars (player yellow vs enemy), and height range / features (rocks on rocky, flatter dunes on desert).
+- In the running window:
+  - Arrow keys or numpad 1-9: scroll the view (xoff/yoff) — the map + peeps + overlays scroll.
+  - Mouse move: updates the emulated mousex / big_mousex / mousey (A4 state used by transcribed _animate logic for interogate/sculpt/zoom).
+  - Left-click: raises terrain at the clicked map cell (visible immediately).
+  - Right-click: lowers terrain (sculpt test).
+  - `q`: area "quake" centered near current view (mutates demo_height using real ___newrand + redraw).
+  - `v`: symmetric "volcano" raise cluster (positive power test on any loaded level).
+  - `p`: toggle paint_map (population view) — hides big owner-peeps, emphasizes the dot overlay from the _animate BTST/a_putpixel logic. Excellent for inspecting init pop per level.
+  - `r`: re-runs _make_map + _place_first_people + redraw for the current loaded level params (live reset without restarting the exe).
+  - ___load_ground / bild shim now loads visibly distinct palettes + the _draw_it texture was upgraded with start_seed phase + height-delta "tile edges" so different N feel like different ground data loaded.
+  - `a`: crude "win" wipe (from the debug key in chunk).
+  - `F9`: debug stub print.
+  - ESC: quit the loop cleanly.
+- All the visible rendering (_draw_it) + peeps (DemoPeep struct + owner/flags from _animate BTST logic) + bars + terrain features + real 15-bit newrand LCG + height validation on place are live and react to the CLI level data + your mouse/keys.
+- This directly addresses the priority "priotiisere bereiche die wir schnell testen koennen (level laden, init game status, loade bild shimr was auch immer)" — you get instant visual + printf feedback on different conquest setups.
+
+Next real progress happens when you paste the body of a specific routine (e.g. full _move_peeps, _draw_map tiles, a _do_ power, ground tile load, or more _animate callees). The current demo keeps you motivated and the structure (A4, shims, SDL bitplane-ish present, symbols) ready.
+
 ## Legal note
 This is a reverse-engineered study/port of a 1989/1993 commercial game, based on the tetracorp disassembly (fair use for analysis and commentary). Only use it for personal education, preservation, or with legally obtained copies of the original. Do not distribute commercial assets or the original data.
 
