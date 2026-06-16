@@ -1,0 +1,14 @@
+# Build artifacts
+*.o
+*.tmp
+populous_init_port
+c_sdl_port/populous_init_port
+c_sdl_port/*.o
+c_sdl_port/*.tmp
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
