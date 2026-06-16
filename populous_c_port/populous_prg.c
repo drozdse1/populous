@@ -254,6 +254,8 @@ static int     demo_peep_x[32];
 static int     demo_peep_y[32];
 static int     num_demo_peeps = 0;
 static int     demo_mana = 50;   /* updated by _move_mana in the _animate heartbeat; visible in draw */
+static int     demo_shield_timer = 0;  /* for visible _show_the_shield effect from _animate */
+static int     growth_tick = 0;        /* for autonomous pop growth simulation */
 
 #define MAX_DEMO_PEEPS 32
 
@@ -1114,6 +1116,43 @@ static void _animate(void)
             _move_peeps();
         }
 
+        /* Autonomous population growth simulation (quick test for evolving "init game status").
+         * Slowly increases living peeps toward the level's starting pop cap (from demo_levels).
+         * This makes the pop bars and mana bar change over time without user input,
+         * exercising place_first_people logic + bars in a living demo.
+         * Growth rate biased by level speed and current pop (more room = faster "births").
+         */
+        growth_tick++;
+        if ((growth_tick % 19) == 0) {
+            int max_pop = current_start_pop_you + 4;  /* slight headroom */
+            if (g_argc > 1) {
+                int idx = atoi(g_argv[1]) % 8;
+                max_pop = demo_levels[idx][6] + 4;
+            }
+            if (num_demo_peeps < max_pop && num_demo_peeps < MAX_DEMO_PEEPS) {
+                /* "birth" a new peep at a reasonable spot */
+                int i = num_demo_peeps;
+                uint16_t r1 = ___newrand();
+                uint16_t r2 = ___newrand();
+                demo_peep_x[i] = 40 + (r1 % 200);
+                demo_peep_y[i] = 40 + (r2 % 140);
+                /* validate height like in place_first */
+                int mx = demo_peep_x[i]/4, my = demo_peep_y[i]/4;
+                if (mx<0) mx=0; if (mx>63) mx=63; if (my<0) my=0; if (my>63) my=63;
+                if (demo_height_at(my, mx) >= -15 && demo_height_at(my, mx) <= 15) {
+                    demo_peeps[i].owner  = (i & 1);
+                    demo_peeps[i].flags  = 0x03;
+                    demo_peeps[i].x      = demo_peep_x[i] / 4;
+                    demo_peeps[i].y      = demo_peep_y[i] / 4;
+                    demo_peeps[i].frame  = 0;
+                    demo_peeps[i].health = 70 + (___newrand() % 30);
+                    num_demo_peeps++;
+                    /* feed mana a bit on growth */
+                    demo_mana = (demo_mana + 8) > 180 ? 180 : demo_mana + 8;
+                }
+            }
+        }
+
         if (view_timer) {
             view_timer--;
             if (!(left_button && right_button)) view_who = old_view_who;
@@ -1347,8 +1386,39 @@ static void _draw_it(int16_t y, int16_t x)
     /* Simple visible game init status bar at bottom (for quick testing different level inits) */
     /* Shows relative player vs enemy pop from the loaded level data */
     int bar_y = h - 8;
+
+    /* Visible _show_the_shield effect (called from _animate every frame).
+     * Short bright flash/overlay to show the "god protection" / heartbeat effect.
+     * Makes conquest init runs more lively; auto-triggers via growth_tick.
+     */
+    if (demo_shield_timer > 0) {
+        uint32_t shield_col = prg_screen->palette[15];  /* bright white-ish */
+        int strength = demo_shield_timer;
+        for (int yy = 0; yy < h; yy += 3) {
+            for (int xx = 0; xx < w; xx += 3) {
+                if (((xx + yy) & 7) == 0) {
+                    int idx = yy * w + xx;
+                    /* simple brightening overlay */
+                    prg_screen->chunky_buffer[idx] = shield_col;
+                }
+            }
+        }
+        /* edge "shield" ring */
+        for (int i=0; i<strength*2; i++) {
+            int x1 = 5 + i; int y1 = 5 + i;
+            int x2 = w-6 - i; int y2 = h-6 - i;
+            if (x1 < w && y1 < h) prg_screen->chunky_buffer[y1*w + x1] = shield_col;
+            if (x2 >=0 && y1 < h) prg_screen->chunky_buffer[y1*w + x2] = shield_col;
+            if (x1 < w && y2 >=0) prg_screen->chunky_buffer[y2*w + x1] = shield_col;
+            if (x2 >=0 && y2 >=0) prg_screen->chunky_buffer[y2*w + x2] = shield_col;
+        }
+    }
     int bar_w = w - 20;
-    int player_bar = (current_start_pop_you * bar_w) / 25; /* scale */
+    /* Live evolving player pop from autonomous growth (num_demo_peeps grows toward level target).
+     * Makes status bars change over time after loading a level — direct test of init + sim.
+     */
+    int live_player = (num_demo_peeps > 0 ? num_demo_peeps : current_start_pop_you);
+    int player_bar = (live_player * bar_w) / 25; /* scale */
     int enemy_bar = 0;
     if (g_argc > 1) {
         int idx = atoi(g_argv[1]) % 8;
@@ -1434,7 +1504,19 @@ static void _move_peeps(void)
         }
     }
 }
-static void _show_the_shield(void) {}
+static void _show_the_shield(void)
+{
+    /* Visible stub for the call in _animate (every frame in the transcribed loop).
+     * In real game this draws the "god shield" / protection effect.
+     * For demo motivation we trigger a short flash/overlay when called (or on demand).
+     * Can be triggered more visibly via growth or debug key later.
+     */
+    if (demo_shield_timer > 0) demo_shield_timer--;
+    /* Occasionally auto-trigger a short shield for visible "game running" effect in conquest init tests */
+    if ((growth_tick % 47) == 0 && demo_shield_timer == 0) {
+        demo_shield_timer = 8;  /* frames of effect */
+    }
+}
 static void _sculpt(void) {}
 static void _interogate(void) {}
 static void _zoom_map(int16_t d) {}
@@ -1494,7 +1576,17 @@ static void ___toggle_icon(int16_t i,int16_t a,int16_t b,void *scr){printf("[SDL
 static void ___draw_it(int16_t y,int16_t x){printf("[SDL] draw_it\n");}
 static void ___draw_s_32(int16_t x,int16_t y,void *scr){printf("[SDL] draw_s_32\n");}
 static void ___draw_sprite(int16_t f,int16_t x,int16_t y,void *scr){printf("[SDL] draw_sprite\n");}
-static void ___clr_wsc(void){printf("[SDL] clr_wsc\n");}
+static void ___clr_wsc(void)
+{
+    /* Called every frame before main draw in the _animate path.
+     * For the demo, we can use it to occasionally "age" or reset minor overlay state
+     * (e.g. help the shield timer or dim a temp effect). Keeps the transcribed loop active.
+     */
+    if (demo_shield_timer > 0 && (growth_tick & 1)) {
+        demo_shield_timer--;  /* gentle decay if not refreshed */
+    }
+    /* printf removed for clean demo runs */
+}
 static void ___swap_screens(void)
 {
     ensure_prg_screen();

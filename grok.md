@@ -234,7 +234,7 @@ Each run should show different `[QUICKTEST]` / `[INIT]` output and a different-l
 
 ### Next Priorities (still focused on testability)
 - Expand the demo level table or wire a real small `level.dat` slice.
-- (Autonomous) More of the _animate callees made visible (_move_mana now drives a mana bar; map state migrated into A4 map_who etc. for fidelity).
+- (Autonomous) More of the _animate callees made visible (_move_mana now drives a mana bar; map state migrated into A4 map_who etc. for fidelity; pop growth + shield flashes added in latest session).
 
 ## Autonomous Agent Work (ongoing, no user input between updates)
 Per user request to continue in agent mode:
