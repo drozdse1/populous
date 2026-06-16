@@ -37,6 +37,93 @@ The goal of this fork is to maintain the original disassembly while adding a mod
 
 Many callees inside animate/setup_display are still stubbed (printf + TODO or simple visible placeholders for motivation).
 
+## Analysis of Game Data Structures (sourced from https://tetracorp.github.io/populous/)
+
+The site https://tetracorp.github.io/populous/ (especially the [Level format](https://tetracorp.github.io/populous/analysis/level-format.html) page, mirrored locally in `docs/_posts/`) provides the definitive reverse-engineered explanation of the conquest/level system. We have used it to validate and document the constants and data flow in our C port.
+
+### Level.dat and Conquest Traits
+- Real data lives in a 990-byte `level.dat` (99 entries × 10 bytes).
+- Each entry controls **five consecutive levels** (traits only change every 5 "battle numbers").
+- Our `demo_levels[8][9]` table in `populous_prg.c` is a hand-picked set of representative entries (one or two per terrain) that exercise all the important variations.
+
+Exact byte mapping (matches our array columns and the A4 globals set in the translated `_setup_display`):
+
+| Byte | Meaning                          | Our variable / demo column      | Notes from analysis |
+|------|----------------------------------|---------------------------------|---------------------|
+| 0    | Enemy rating (1=strongest, 10=weakest) | `conquest` / demo[0]           | Displayed to player as Very Good / Good / Average / Poor / Very Poor |
+| 1    | Enemy reaction speed / aggression | `conq_01_speed` / demo[1]      | 1=Very Fast ... 10=Very Slow |
+| 2    | Powers bitfield (enemy)          | `conq_02_enemypow` / demo[2]   | See bitfield below |
+| 3    | Powers bitfield (you)            | `conq_03_yourpow` / demo[3]    | See bitfield below |
+| 4    | Game mode bitfield               | `conq_04_mode` / `game_mode` / demo[4] | Build rules, swamp, water |
+| 5    | Terrain type                     | `conq_05_terrain` / `ground_in` / demo[5] | 0-3 (see below) |
+| 6    | Your starting population         | demo[6] → `current_start_pop_you` + placed in `_place_first_people` | Max ~30 |
+| 7    | Enemy starting population        | demo[7]                        | Used for enemy pop in our demo |
+| 8-9  | 16-bit seed offset               | `conq_08_seed` (low byte used) / demo[8] | Added to (battle number mod 8) |
+
+In `_setup_display` (directly from the assembly comments + our translation):
+```c
+seed = (in_conquest & 7) + conq_08_seed;
+start_seed = seed;
+ground_in = conq_05_terrain;
+...
+```
+
+### Power Bitfields (bytes 2/3)
+```c
+#define POWER_EARTHQUAKE (1u << 0)
+#define POWER_SWAMP      (1u << 1)
+#define POWER_KNIGHT     (1u << 2)
+#define POWER_VOLCANO    (1u << 3)
+#define POWER_FLOOD      (1u << 4)
+#define POWER_ARMAGEDDON (1u << 5)
+```
+Armageddon is always available in the bitfield even if not shown on the menu due to space. Our demo values (0x07, 0x0f, 0x1f, 0x3f, 0x01, 0x15, 0x2a ...) are realistic subsets of the 25 distinct combinations that appear in real data.
+
+### Game Mode (byte 4) – detailed bits
+```c
+#define GAME_MODE_WATER_FATAL       (1u << 0)  // 0=harmful, 1=fatal
+#define GAME_MODE_SWAMP_BOTTOMLESS  (1u << 1)  // 0=shallow, 1=bottomless
+#define GAME_MODE_NO_BUILD          (1u << 2)
+#define GAME_MODE_BUILD_ONLY_UP     (1u << 3)
+#define GAME_MODE_BUILD_NEAR_TOWNS  (1u << 4)
+```
+In real Conquest data the three build bits are mutually exclusive (only one or none set). Custom mode can combine them freely.
+
+### Terrain Types (byte 5)
+```c
+#define TERRAIN_GRASS   0   // Grass Planes
+#define TERRAIN_DESERT  1
+#define TERRAIN_SNOW    2   // Snow and Ice
+#define TERRAIN_ROCKY   3
+```
+These directly drive `___load_ground`, the base color in `_draw_it`, feature generation in `_make_map` (rocks on rocky, dunes on desert), and texture modulation. Our current visible renderer already produces clearly different looks for each.
+
+### Starting Population & Other
+- Bytes 6/7 are the number of initial "walkers" (peeps).
+- The 16-bit seed offset (bytes 8-9) is the main source of layout variety once combined with the battle number.
+
+### Level Codes & RNG
+The full 32-segment word table (RING/OUT/HILL, VERY/QAZ/TORY, ... SHI/Y/T) lives in the TEXT sections of the binary and is present in our `symbols_prg.h`.
+
+The exact LCG used for everything (including level code hashing and map generation) is implemented verbatim in our `___newrand`:
+```c
+/* MULU #$24a1 ; ADDI.W #$24df ; BCLR #$F */
+```
+This matches the disassembly listing on the tetracorp site exactly (we fixed it after the initial 1103515245 placeholder).
+
+Battle number (`in_conquest`) → level code is `(battle * 5)` fed through the LCG, then split into three 5-bit indices (15 bits total, top bit ignored).
+
+Level 0 has the special code GENESIS (and its calculated alias SHISODING). The game caps at 494 (WEAVUSPERT) for normal conquest.
+
+### How This Helps the Port
+- Our quick-test CLI `N` and the `demo_levels` table now have **accurate documentation** tied to real data.
+- `_setup_display`, `_make_map`, `_place_first_people`, `___load_ground`, and the visible `_draw_it` / bars are all exercising the exact parameters described on the site.
+- Future work (real level.dat loader, proper power availability checks, scoring, conquest progression) can directly use these byte definitions and the LCG.
+
+The local copy of the analysis is in `docs/_posts/2025-06-14-level-format.md` (and the rendered site is in `docs/`).
+
+This analysis was performed on 2026-06-16 at the request of the user to ground the constants in the C code against the best available public reverse-engineering.
+
 ### Visible Demo Mode
 
 The port currently includes "motivation mode" drawing:
@@ -104,7 +191,7 @@ All translations aim to preserve:
 - Always run the C port from the terminal, not by double-clicking.
 - The current visible drawing is intentionally simplified for motivation. Real rendering should follow the translated `_draw_it`, sprite routines, etc. once available.
 - Keep A4 emulation accurate — many bugs in ports like this come from incorrect global layout.
-- The conquest byte handling in `_setup_display` is particularly important and matches the level format analysis from tetracorp.github.io.
+- The conquest byte handling in `_setup_display` is particularly important and now has extensive documentation (including full bitfield and terrain tables) thanks to the https://tetracorp.github.io/populous/ level format analysis.
 
 ---
 
@@ -113,7 +200,7 @@ All translations aim to preserve:
 Prioritized areas that allow fast iteration and visible/terminal feedback without needing the full real map or sprite code yet:
 
 ### Demo Conquest Level Table + Fast "Level Loading"
-- Added a small static table `demo_levels[8][9]` modeled after the real `level.dat` format (enemy rating, speed, power bitfields, game mode, terrain, pop hints, seed offset).
+- Added a small static table `demo_levels[8][9]` modeled after the real `level.dat` format (enemy rating, speed, power bitfields, game mode, terrain, pop hints, seed offset). See the new detailed "Analysis of Game Data Structures" section above (sourced from tetracorp.github.io/populous level-format analysis) for the full byte-by-byte mapping, power bits, game mode rules, terrain types, and LCG.
 - Command-line support: `./populous_init_port N` now loads the N%8 entry and applies the values to the emulated conquest variables (`conquest`, `conq_01_speed`, `conq_02_enemypow`, `conq_03_yourpow`, `game_mode`, `conq_05_terrain`, `conq_08_seed`, `in_conquest`).
 - This directly exercises the translated `_setup_display` conquest path and lets you instantly see different "worlds".
 

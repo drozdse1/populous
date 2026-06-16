@@ -474,8 +474,36 @@ int g_argc = 0;
 char **g_argv = NULL;
 
 /* Minimal sample conquest level table for quick testing of "level loading" and init.
- * Based on the level.dat format from the tetracorp analysis:
- * [enemy_rating, speed, enemy_powers, your_powers, game_mode, terrain, pop_you, pop_enemy, seed_offset]
+ * Based on the exact level.dat format documented at
+ * https://tetracorp.github.io/populous/analysis/level-format.html
+ *
+ * level.dat stores 99 entries of 10 bytes each. Each entry controls traits for
+ * 5 consecutive levels (traits change every 5 numbered levels / "battle numbers").
+ *
+ * Byte layout (our array columns):
+ *  [0] Enemy rating (1=strongest .. 10=weakest; shown as Very Good/Good/Avg/Poor/Very Poor)
+ *  [1] Enemy reaction speed / aggression (1=Very Fast .. 10=Very Slow)
+ *  [2] Powers bitfield for enemy
+ *  [3] Powers bitfield for you (player)
+ *  [4] Game mode bitfield (build rules, swamp depth, water lethality)
+ *  [5] Terrain type
+ *  [6] Your starting population (walkers, max ~30)
+ *  [7] Enemy starting population
+ *  [8] Low byte of 16-bit seed offset (added to (battle_number mod 8))
+ *
+ * Power bitfield (bytes 2/3):
+ *   bit0 Earthquake, bit1 Swamp, bit2 Knight, bit3 Volcano, bit4 Flood, bit5 Armageddon
+ *
+ * Game mode bits (byte 4):
+ *   bit0 Water (0=harmful, 1=fatal)
+ *   bit1 Swamp (0=shallow, 1=bottomless)
+ *   bit2-4 Build rules (mutually exclusive in real data): cannot build / only up / near towns etc.
+ *
+ * Terrain (byte 5):
+ *   0 Grass Planes, 1 Desert, 2 Snow and Ice, 3 Rocky
+ *
+ * Seed logic (in _setup_display): seed = (in_conquest & 7) + conq_08_seed;
+ * The real LCG (___newrand) is the exact one described on the site.
  */
 static const uint8_t demo_levels[8][9] = {
     /* lvl 0 */ { 5, 5, 0x07, 0x07, 0x00, 0, 12, 10, 0x0000 },  /* classic grass */
@@ -488,6 +516,29 @@ static const uint8_t demo_levels[8][9] = {
     /* lvl 35*/ { 5, 6, 0x2a, 0x15, 0x03, 3,  9, 13, 0x2222 },  /* mixed rocky */
 };
 
+/* Constants derived from tetracorp.github.io/populous level format analysis.
+ * These make the demo_levels and conquest handling clearer and match the real game data.
+ */
+#define TERRAIN_GRASS   0
+#define TERRAIN_DESERT  1
+#define TERRAIN_SNOW    2
+#define TERRAIN_ROCKY   3
+
+/* Power bitfield (used in conq_02_enemypow / conq_03_yourpow) */
+#define POWER_EARTHQUAKE (1u << 0)
+#define POWER_SWAMP      (1u << 1)
+#define POWER_KNIGHT     (1u << 2)
+#define POWER_VOLCANO    (1u << 3)
+#define POWER_FLOOD      (1u << 4)
+#define POWER_ARMAGEDDON (1u << 5)
+
+/* Game mode bits (conq_04_mode / game_mode) */
+#define GAME_MODE_WATER_FATAL     (1u << 0)  /* 0 = harmful, 1 = fatal */
+#define GAME_MODE_SWAMP_BOTTOMLESS (1u << 1) /* 0 = shallow, 1 = bottomless */
+#define GAME_MODE_NO_BUILD        (1u << 2)
+#define GAME_MODE_BUILD_ONLY_UP   (1u << 3)
+#define GAME_MODE_BUILD_NEAR_TOWNS (1u << 4)
+
 static int current_start_pop_you = 10;  /* loaded from table for quick init testing */
 
 void prg_main(void)
@@ -499,7 +550,8 @@ void prg_main(void)
      *   ./populous_init_port 5
      *   ./populous_init_port 42
      * This directly influences the conquest variables (in_conquest, seed, terrain, etc.)
-     * so you can rapidly iterate on "level loading" and "init game status" and see
+     * using data modeled on the real level.dat (see tetracorp level-format analysis).
+     * You can rapidly iterate on "level loading" and "init game status" and see
      * different maps + different numbers of peeps immediately in the window.
      */
     if (g_argc > 1) {
