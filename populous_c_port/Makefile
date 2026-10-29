@@ -1,21 +1,93 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c11 -O2 `sdl2-config --cflags`
-LDFLAGS = `sdl2-config --libs`
+SDL_CONFIG ?= sdl2-config
+CPPFLAGS += $(shell $(SDL_CONFIG) --cflags)
+CFLAGS ?= -Wall -Wextra -std=c11 -O2
+LDLIBS += $(shell $(SDL_CONFIG) --libs)
+TEST_TIMEOUT ?= 20s
+SANITIZER_FLAGS = -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 
 TARGET = populous_init_port
-SRCS = populous_init.c populous_prg.c sdl_lowlevel.c
+SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c
 OBJS = $(SRCS:.c=.o)
+HEADERS = $(wildcard *.h)
+RUNTIME_SOURCES = tests/test_runtime.c populous_init.c sdl_lowlevel.c $(HEADERS)
 
+.PHONY: all clean run test-runtime test test-sanitize
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -o $@ $(LDLIBS)
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+%.o: %.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+tests/test_runtime: $(RUNTIME_SOURCES)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< -o $@ $(LDLIBS)
+
+tests/test_runtime_sanitize: $(RUNTIME_SOURCES)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< -o $@ $(LDLIBS)
+
+define runtime_checks
+	SDL_VIDEODRIVER=dummy timeout $(TEST_TIMEOUT) $(1) screen
+	SDL_VIDEODRIVER=dummy timeout $(TEST_TIMEOUT) $(1) failures
+	SDL_VIDEODRIVER=dummy timeout $(TEST_TIMEOUT) $(1) launcher
+	SDL_VIDEODRIVER=populous-invalid-driver timeout $(TEST_TIMEOUT) $(1) invalid-driver
+endef
+
+test-runtime: tests/test_runtime
+	$(call runtime_checks,./tests/test_runtime)
+
+test: test-runtime
+
+test-sanitize: tests/test_runtime_sanitize
+	$(call runtime_checks,./tests/test_runtime_sanitize)
+
+# Only activate game checks once the core step supplies real test sources.
+ifneq ($(wildcard tests/test_game.c),)
+.PHONY: test-game
+tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c -o $@ $(LDLIBS)
+
+tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c -o $@ $(LDLIBS)
+
+test-game: tests/test_game
+	SDL_VIDEODRIVER=dummy timeout $(TEST_TIMEOUT) ./tests/test_game
+
+test: test-game
+
+test-sanitize: test-game-sanitize
+.PHONY: test-game-sanitize
+test-game-sanitize: tests/test_game_sanitize
+	SDL_VIDEODRIVER=dummy timeout $(TEST_TIMEOUT) ./tests/test_game_sanitize
+endif
+
+PYTHON ?= python3
+.PHONY: test-land test-land-sanitize test-land-local
+
+tests/test_land: tests/test_land.c land_data.c land_data.h
+	$(CC) $(CFLAGS) $(LDFLAGS) tests/test_land.c land_data.c -o $@
+
+tests/test_land_sanitize: tests/test_land.c land_data.c land_data.h
+	$(CC) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) tests/test_land.c land_data.c -o $@
+
+test-land: tests/test_land
+	timeout $(TEST_TIMEOUT) ./tests/test_land
+	PYTHONDONTWRITEBYTECODE=1 timeout $(TEST_TIMEOUT) $(PYTHON) tests/test_extract_land.py
+
+test-land-sanitize: tests/test_land_sanitize
+	timeout $(TEST_TIMEOUT) ./tests/test_land_sanitize
+
+# Explicit opt-in; never reads original data during the portable synthetic suite.
+test-land-local: tests/test_land
+	@test -n "$(LAND_DATA_DIR)" || { printf '%s\n' 'Set LAND_DATA_DIR to your external land0..3 directory'; exit 1; }
+	timeout $(TEST_TIMEOUT) ./tests/test_land "$(LAND_DATA_DIR)"
+
+test: test-land
+test-sanitize: test-land-sanitize
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJS) $(TARGET) tests/test_runtime tests/test_runtime_sanitize tests/test_game tests/test_game_sanitize tests/test_land tests/test_land_sanitize
 
 run: $(TARGET)
 	./$(TARGET)

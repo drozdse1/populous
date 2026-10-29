@@ -1,171 +1,243 @@
-# Populous (Amiga 1989/1993) → C + SDL2 Low-Level Port
+# Populous Amiga C/SDL2 port
 
-**This is a study/port companion to the excellent IRA disassembly of the Hit Squad 1993 budget re-release (the "POPULOUS 2.7" version) hosted at:**
+This is an incremental study port of the 1993 Hit Squad release, based on the
+[tetracorp disassembly](https://github.com/tetracorp/populous). It preserves the
+launcher (`populous_init.c`), PRG (`populous_prg.c`), A4-relative state and SDL2
+low-level layer. This is a bounded original-rule intermediate port, not a full
+Amiga conversion. Automated matches reach an outcome; independent X11/WSLg
+checks also verified a visible match through defeat, reset and clean exit using
+agent-driven inputs at human rates. A human tester's winning strategy is not proven.
 
-- GitHub: https://github.com/tetracorp/populous (the .asm + .cnf files for ira/Aira Force)
-- Website + analysis: https://tetracorp.github.io/populous
+## Current state
 
-The disassembly was chosen (as noted in the repo README) because the 1993 Hit Squad budget release "lacks most of the obfuscation present in the original release". It splits into the launcher ("populous") and the main game module ("populous.prg") — exactly the split our port mirrors (populous_init.c + populous_prg.c).
+All eight synthetic scenarios start on explicitly legal flat vertex terrain
+with both populations. `_make_map` now derives original block masks and cell
+altitudes from 65x65 vertex heights. The 22-byte A4 peep records drive movement,
+settlement, eight-tick growth/mana, splitting, ordinary combat and outcomes.
+There is no second population simulator. The SDL top-down drawing is simplified,
+not the original isometric graphics.
 
-Disassembly and analysis are believed to constitute fair use for study, analysis, and commentary. You still need a legally obtained original copy of the game to play it.
+A4 has storage on both sides of its signed 16-bit base. Word/long access uses
+GCC-compatible packed/may-alias accessors, and peep words use `memcpy`; this
+in-memory representation is host-endian, **not** a save-file/disk decoder.
+Allocated graphics buffers remain native host pointers, never truncated into
+32-bit Amiga fields. Reset rebuilds deterministic scenario state; quit releases
+PRG resources and returns through the launcher cleanup without another event
+loop. SDL software rendering is used if accelerated rendering is unavailable.
 
-Our port goals remain:
-- Make the 68000 logic readable in modern C while staying extremely close to the original.
-- Low-level only (SDL2 emulating bitplanes, copper, sprites, custom chips, Exec/ graphics.library calls, A4 BASEREG globals, etc.). No high-level engines.
-- Preserve the launcher/prg split, memory allocation patterns, interrupt/serial/mouse setup, conquest/level code system, 1993 additions (save/load, IFF screenshot tool, debug code, "LANDSCAPE NO", conquest scoring changes), and the exact structure so someone following the tetracorp disassembly can cross-reference.
+The bounded rule translation covers `_valid_move`, `_check_life`, `_set_town`,
+ordinary `_where_do_i_go`/magnet navigation, settlement growth/mana/splitting,
+ordinary `_do_battle`/`_battle_over`, joining, water loss and vertex sculpting.
+Source labels and assembly ranges appear beside each implementation. The
+opponent uses the same settlement/exploration rules, not timer-created units.
+Special powers, knights, multi-party battle joining, original computer
+power/auto-level logic, celebration animations and exact Amiga movement
+interpolation remain unsupported. The eight scenarios are flat synthetic
+starting plots, not original maps. Rule-word overflow is bounded at 32000
+population and mana at -250..1999999 for host safety.
 
-## Credits & Sources
-- All assembly chunks, symbol maps, and comments come from the tetracorp/populous disassembly (1993 Hit Squad version).
-- Higher-level analysis (especially the level format, which directly explains the conq_XX bytes, seed/terrain, power bitfields, and game mode we translated in `_setup_display`) lives at the project site linked above.
-- Ripped graphics and level lists are also available from the site for future asset work.
+The original `_load_ground` reads gameplay tables from `landN` files, including
+`population_add`, `mana_add`, `weapons_add`, `battle_add1` and `battle_add2`
+(`src/populous_prg.asm:16468-16514`). Reset validates the selected file before
+changing A4 and installs its actual values plus original initialized tables.
+Missing/invalid files fail startup: there is no invented-rule fallback.
+Original graphics rendering, audio, campaign, save/load and multiplayer remain absent.
 
-## What was translated (so far)
-- Hardware register equates (`amiga_hardware.h`)
-- A4-relative globals emulation (byte array + displacement macros matching the BASEREG layout at 0x593EE)
-- Launcher (first chunk): SUB_384 / SUB_11A / SUB_16E / SUB_226 / SUB_456 etc. (demo.pic/load.pic loader, mouse regions, big CHIP allocs, "populous.prg" load path)
-- Full "populous.prg" symbol map (ENTRY $0003E1E8, A4 at $000593EE, all CODE/TEXT ranges, 100+ symbols, all str* level code fragments, 1993 BANNER notes)
-- **Major functions from the latest chunk you pasted**:
-  - `_main` (real prg entry: big AllocMem for sprite_data/sprite_data_32/blk_data/back_scr/screen/copper/fb, start_of_game handling, open_screen + read_sprites + sprite_to_amiga + start_game, serial setup, call to `_animate`, closeall)
-  - `_rs`, `_closeall` (full cleanup + INTENA pokes)
-  - Mouse/interrupt: `_create_mouse`, `_setup_interrupt` ("petersint" / Peter Molyneux VBI server), `_set_mouse`, `_free_inter`
-  - Serial: `_setup_serial_interrupt` (two servers for read/write), `_free_serial_interrupt`
-  - Libs: `_openlibrary` (FindTask + priority, graphics.library + intuition.library, pal detect), `_closelibrary`, `_set_pri`, `_debug` (the intentionally empty one present in both versions)
-  - `_setup_display` (the big one with the exact source comments: "seed = level mod 8 + bytes8+9", terrain type, the five conquest control bytes (speed, enemy/your powers as bitfields, game mode), in_conquest vs normal path, load_ground, clear_map, make_alt/make_map/make_woods_rocks, double-buffer Setscreen/copy_screen/draw_map, place_first_people)
-  - `_animate` (the core heartbeat from the chunk: icon bar setup, start_of_game==2 conquest show_world loop, tempo/beat from population, clr_wsc + move_mana + draw_it + sprite layers (draw_s_32 vs normal), peeps overview dots when paused/paint (the BTST logic), do_funny/move_peeps unless paused, view_timer, game_turn==0x1000 funny placement, show_the_shield, swap, full numpad scroll handlers, debug keys (A=instant win by clearing enemy peeps, F9=display_debug (new 1993), *=corner + flag cheat that prints "CHEAT" + mutates stats), sculpt/interogate/zoom/button handling)
-- Supporting shims (___OpenLibrary / CloseLibrary / AllocMem / FreeMem / Setscreen / copy_screen / toggle_icon / draw_sprite / draw_s_32 / a_putpixel / text / keyboard / Add/RemIntServer / etc.) plus the LCG `_newrand` (period 2^15 as documented in the BANNER).
-- Launcher now branches into the real prg `_main` on the "full game" choice.
-- SDL2 low-level layer (AmigaScreen with bitplanes + chunky + present-as-copper/vsync, basic blit/pixel/palette).
+## Local original data (required to play)
 
-(The real sub-bodies for many callees inside `_animate` / `_setup_display` — `_move_peeps`, `_draw_map`, `_move_mana`, the full tile renderer, etc. — are still printf stubs. Paste the next assembly body and we'll fill them the same way.)
+`extract_land.py` uses Python 3's standard library to extract only root `land0`
+through `land3` from an uncompressed 880 KiB DOS0/OFS ADF. It validates directory
+and file/data block checksums, parent/owner, sequence, block table, exact payload
+length, bounds and cycles; it does not scan sectors for apparent filenames.
+It accepts mixed-case original names, emits lowercase fixed names, rejects
+unsafe names, output-directory symlinks and existing destination files. Keep
+its output outside the repository. It does not extract any other assets.
 
-## Building & Running
-(See previous instructions — `make && ./populous_init_port`.)
-
-The current code follows the exact flow from the chunk you pasted. When you run with choice==1 it will now execute the real `_main` → allocs → screen/sprite init → `_animate` loop (with the numpad scrolls, debug keys, conquest path if start_of_game triggers it, etc.), all driven from the A4 emulation area.
-
-## Current quick-test demo (no more asm paste needed yet)
-For fast iteration on "level laden + init game status" without pasting more chunks:
-- `./populous_init_port N` where N=0..7 loads a different row from the internal demo_levels table (different terrain, start pop_you / pop_enemy, power bitfields, speed, seed offset).
-  - You immediately see different base colors + texture patterns, different # of moving peeps, different bottom status bars (player yellow vs enemy), and height range / features (rocks on rocky, flatter dunes on desert).
-- In the running window:
-  - Arrow keys or numpad 1-9: scroll the view (xoff/yoff) — the map + peeps + overlays scroll.
-  - Mouse move: updates the emulated mousex / big_mousex / mousey (A4 state used by transcribed _animate logic for interogate/sculpt/zoom).
-  - Left-click: raises terrain at the clicked map cell (visible immediately).
-  - Right-click: lowers terrain (sculpt test).
-  - `q`: area "quake" centered near current view (mutates demo_height using real ___newrand + redraw).
-  - `v`: symmetric "volcano" raise cluster (positive power test on any loaded level).
-  - `p`: toggle paint_map (population view) — hides big owner-peeps, emphasizes the dot overlay from the _animate BTST/a_putpixel logic. Excellent for inspecting init pop per level.
-  - `r`: re-runs _make_map + _place_first_people + redraw for the current loaded level params (live reset without restarting the exe).
-  - ___load_ground / bild shim now loads visibly distinct palettes + the _draw_it texture was upgraded with start_seed phase + height-delta "tile edges" so different N feel like different ground data loaded.
-  - `a`: crude "win" wipe (from the debug key in chunk).
-  - `F9`: debug stub print.
-  - ESC: quit the loop cleanly.
-- All the visible rendering (_draw_it) + peeps (DemoPeep struct + owner/flags from _animate BTST logic) + bars + terrain features + real 15-bit newrand LCG + height validation on place are live and react to the CLI level data + your mouse/keys.
-- This directly addresses the priority "priotiisere bereiche die wir schnell testen koennen (level laden, init game status, loade bild shimr was auch immer)" — you get instant visual + printf feedback on different conquest setups.
-
-Next real progress happens when you paste the body of a specific routine (e.g. full _move_peeps, _draw_map tiles, a _do_ power, ground tile load, or more _animate callees). The current demo keeps you motivated and the structure (A4, shims, SDL bitplane-ish present, symbols) ready.
-
-## Legal note
-This is a reverse-engineered study/port of a 1989/1993 commercial game, based on the tetracorp disassembly (fair use for analysis and commentary). Only use it for personal education, preservation, or with legally obtained copies of the original. Do not distribute commercial assets or the original data.
-
-Next: Paste the next chunk of `populous_prg.asm` (or tell me a specific routine, e.g. "the body of _move_peeps" or "the peep struct + move logic"), and I'll translate it into the same style, wiring the SDL layer and keeping every comment/note from the disassembly. We can also pull ripped graphics or level format details from the tetracorp site when we're ready for assets or the full conquest system.
-
-## Goals
-- Make the 68000 assembly logic readable in modern C.
-- Stay relatively low-level (no high-level game engines).
-- Use **SDL2** as the low-level graphics abstraction (it maps surprisingly well to Amiga concepts: surfaces = bitplanes, textures = copper output, events ≈ interrupts).
-- Preserve the original structure (memory allocation, "library" opens, A4-style globals, etc.) so someone studying the disassembly can follow along.
-
-## What was translated (so far)
-- Hardware register equates (`amiga_hardware.h`)
-- The big A4-relative globals area (turned into a clean struct)
-- SUB_384 – library opening (graphics + intuition) + first big CHIP allocations
-- SUB_11A – memory clearing + interrupt enabling
-- SUB_16E – the famous loader that references "demo.pic" / "populous.prg" and sets up startup structures
-- SUB_226 – more screen/copper allocations
-- SUB_456 – the interactive loader (load.pic + mouse region selection)
-- SUB_308 / SUB_2E2 / SUB_29E / SUB_2C6 – various small init and cleanup routines
-- SUB_536 + initial data table setup from the big numeric sections
-- Memory allocation stubs (originally Exec AllocMem with MEMF_CHIP)
-- Basic entry point flow (the JMP at SECSTRT_0 and early bootstrap)
-- **Full "populous.prg" symbol map integration** (the real game module):
-  - Complete ENTRY $0003E1E8 / OFFSET / BASEREG A4 / BASEADR $000593EE
-  - All 40+ CODE ranges + 50+ TEXT ranges (non-contiguous because of interspersed strings/tables)
-  - 100+ SYMBOL entries: _main, _animate, _setup_display, _make_map/_draw_map/_mod_map/_zoom_map, all _do_* powers (quake/volcano/swamp/knight/flood/war/funny), peeps AI (_move_peeps + magnet/explorer variants, _where_do_i_go etc.), battles, _place_first_people, UI (_requester, _keyboard, _mouse, icons, text, options), 1993 _save_game/_load_game/_checksum, _write_iff (new tester IFF screenshot tool), _code/_decode (level passwords), sound, serial 2P, _newrand (LCG), low-level gfx (_draw_sprite, _make_copper, _vbi_timer, _Setscreen, sprite conversion etc.), plus all C shims and Amiga Exec/Graphics/DOS thunks.
-  - All the level code word fragments (strRING, strVERY, ... strY) and other TEXT strings (strCHEAT*, strStartGame, strGENESIS*, strGAM*, strLandscapeNo (new in 1993), strLost/Won etc.).
-  - Full BANNER/COMMENT block with exact 1993-vs-1989 diffs (removed copy protection + obfuscation at $4F3C6 area and $4D092 encrypted section, new save/load/IFF/debug/"LANDSCAPE NO", conquest scoring points notes, lines cut, vasm reassemble command, A4 globals location).
-- `populous_prg.c` skeleton: prg_main (the real entry after launcher "load"), A4 emulation area, comprehensive forward decls for the entire map, minimal printf stubs for core loop functions, high-level game flow comments matching the map ( _main → _setup_display/_make_copper/_make_map/_place_first_people → infinite _animate + _keyboard + _mouse loop).
-- Launcher (`populous_init.c`) now branches on the SUB_456 choice: choice==1 calls prg_main() (emulates loading the prg and jumping with A4 set).
-- Makefile now builds + links `populous_prg.c` together with the launcher.
-
-## How the graphics mapping works
-- Original Amiga bitplanes + copper list → `AmigaScreen` with raw bitplane pointers + a chunky 32-bit buffer + SDL_Texture.
-- `amiga_present()` is basically the modern equivalent of waiting for the copper to finish and flipping.
-- Real planar-to-chunky conversion and full copper emulation are still stubs (the original code does a lot of that later).
-
-## Building & Running
-Requires SDL2 development files.
-
-```bash
-cd populous_c_port
-make
-make run
+```sh
+python3 populous_c_port/extract_land.py binaries/populous.adf /tmp/populous-original-data
+make -C populous_c_port test-land-local LAND_DATA_DIR=/tmp/populous-original-data
 ```
 
-Or manually:
-```bash
-gcc -Wall -Wextra -std=c11 -O2 `sdl2-config --cflags` \
-    populous_init.c sdl_lowlevel.c -o populous_init_port `sdl2-config --libs`
-./populous_init_port
+The supplied local `binaries/populous.adf` was checked with all four files.
+Release identity is not inferred from the filename. The owner authorized keeping
+this supplied ADF in a local commit only, not publishing or pushing it. Extracted
+LAND files stay outside the repository; use an unused output directory if the
+example directory already exists.
+`test-land` uses synthetic fixtures only, including malformed OFS chains and
+LAND headers; it is included in `test`. The C parser/loader also runs under
+ASan/UBSan in `test-sanitize`. The explicitly opt-in `test-land-local` checks all
+four external files and fails if missing. Use the toolchain overrides below if
+make/SDL2 are not installed globally.
+
+### Rule interface and source layout
+
+`land_data.h` exposes `LandRules` (host-endian `uint16_t` words and `uint8_t`
+colours), `land_rules_parse(data, size, out, error, error_size)` and
+`land_rules_load(directory, land_index, out, error, error_size)`. Both return 1
+on success, 0 on failure, leave the output unchanged on failure, and optionally
+write a bounded diagnostic. The file loader accepts index 0..3, reads only a
+regular non-symlink `landN`, and never silently substitutes default rules.
+There is no global state, A4 mutation or graphics allocation in the loader.
+PRG `game_reset` installs the successfully decoded words in original A4 slots.
+
+The sequential reads in `src/populous_prg.asm:16483-16529` define this layout:
+
+| File offset | Field | Encoding |
+| --- | --- | --- |
+| 0 | `walk_death` | BE16 |
+| 2 | `population_add` | 11 BE16 |
+| 24 | `mana_add` | 11 BE16 |
+| 46 | `weapons_add` | 11 BE16 |
+| 68 | `battle_add1` | 11 BE16 |
+| 90 | `battle_add2` | 3 BE16 |
+| 96 | `map_colour` | 16 bytes |
+| 112 | `sprite_set` | BE16 |
+| 114 | block graphics | 0x8340 bytes, not decoded here |
+
+Exact total length is 33714 bytes; there is no magic/signature in a LAND header.
+Validation deliberately supports positive signed-word walking loss, nonnegative
+signed-word rule values, palette indices 0..15, and a one-digit sprite set
+(`_read_sprites`, assembly lines 16410-16413). These are supported-domain safety
+checks, not authenticity checks or a claim that all historical variants fit.
+`_load_ground` also duplicates the 16 colours into a 32-byte map and sorts a
+copy of weapons into ascending `weapons_order` (lines 16540-16606); the parser
+performs both setup operations. It does not load sprites, decode graphics or
+claim that the presence of these tables makes the preview playable.
+
+## Build and run
+
+Requires GCC-compatible C11, GNU make, SDL2 development files (`sdl2-config`), and
+`timeout` for the test targets. A display is needed for interactive use.
+
+```sh
+make -C populous_c_port
+POPULOUS_DATA_DIR=/tmp/populous-original-data ./populous_c_port/populous_init_port
+POPULOUS_DATA_DIR=/tmp/populous-original-data ./populous_c_port/populous_init_port 7
+make -C populous_c_port test
+make -C populous_c_port test-sanitize
 ```
 
-## Important clarification (from your question)
-**The launcher chunk + full prg symbol map = the complete program structure.**
+The optional argument is a decimal integer from 0 through `INT_MAX`; selection
+is `N % 8`, so 8 selects slot 0. No argument also selects slot 0. Negative values,
+non-digits, extra arguments and overflow return failure. The eight internal
+rows are synthetic configurations, not loaded original levels. Existing
+effective low-byte seed offsets are preserved explicitly.
 
-What you first pasted was the **early bootstrap / launcher / loader** (the code that displays demo.pic + load.pic, does mouse choice, allocates CHIP, then loads "populous.prg").
+## Controls
 
-The second (much larger) paste you just gave is the **complete IRA symbol map for the real game module "populous.prg"** itself:
+- Cyan is your population; red is the opponent. Hollow squares are settlements,
+  yellow markers are battles. Bottom bars show population share and your mana.
+  The window title reports population, mana, tool, pause and outcome.
+- Left/right mouse: raise/lower the selected vertex. Neighbouring vertices follow
+  the original maximum slope of one, height 0..8. Cost is 10 plus 4 per changed
+  vertex; the original admission threshold is 10, so a large operation can leave
+  negative mana. NO_BUILD, up-only and near-town restrictions are enforced.
+- `1`: settle/explore (default); `2`: join friendly walkers; `3`: seek nearby foes.
+- `0`: gather walkers at the initial magnet (32,32). After a leader reaches it,
+  `m` selects magnet placement; left-click moves the target for 200 mana. `m`
+  again returns to terrain. Settlements release walkers when over capacity.
+- Arrows/numpad: scroll. `p`: dot overview. Space: pause. `r`: reset. Escape/window
+  close: quit. Pause and outcome stop rules, not event handling or drawing.
 
-- Entry at $0003E1E8, A4 base register at $000593EE (globals for map/peeps/mana/UI/power state all accessed via A4 offsets in the original).
-- Every function, every string (including the giant level-code word list used by the conquest password system), every data table, all the 1993 additions (save/load, the IFF screenshot writer `_write_iff` which is a dead tester tool, the new debug code, "LANDSCAPE NO" in options, conquest scoring changes, removed copy protection).
-- Non-contiguous CODE + TEXT ranges because strings and tables are mixed in.
-- BANNER notes document exactly what was added/cut vs the 1989 original and give the vasm command to reassemble.
+The opponent independently settles, grows, explores, merges and fights. Flatten
+plots to encourage settlement, wait for population/mana, and lower the four
+corners of hostile plots to deny land. The goal is to remove the opposing living
+population, including settlements. `q`, `v`, `a` and unported special powers are
+inactive. No timer or population target declares a winner.
 
-The repo split (launcher vs prg) mirrors the original binary layout for a reason: small loader that brings in the big game hunk.
+## Verification
 
-In the C port right now:
-- The launcher runs its early SUBs exactly as in the first paste.
-- On the "full game" choice it calls into `prg_main()` (the emulated entry to the prg).
-- `populous_prg.c` has the structural skeleton + A4 emulation + every symbol from your latest map as forward decl + high-level flow comments.
-- The actual bodies are still printf stubs. **Next step is to paste real assembly bodies** (one function or logical group at a time) and we translate them faithfully into C while driving the existing SDL low-level layer (bitplanes, palette, present-as-copper, later sprites/copper lists).
+`test-runtime` checks real SDL software rendering and partial-initialization
+cleanup, injected resource failures, launcher handoff, and invalid video driver
+errors. `test-game` includes the production PRG and launcher code and checks A4
+boundaries/unaligned access, map separation, all eight start populations and
+occupancy, deterministic reset, renderer output, SDL event handling, pause,
+scroll limits, scaled mouse coordinates, inert powers, allocation-failure
+cleanup, repeated Escape/quit, and CLI failure propagation. Both are included
+in `test` and ASan/UBSan `test-sanitize`; each invocation has a 20-second timeout.
 
-Yes — paste the next chunk of actual 68k code (e.g. the body of `_main`, `_animate`, `_draw_map`, `_move_peeps`, any `_do_quake` etc.) whenever you want and say what to focus on. We will keep extending the same tree (`populous_c_port/`) and stay buildable at every step. Graphics assets (tiles, peep sprites, icons, font, sounds) will come from the ADF or can be extracted into arrays once we have the access code.
+`test-game` additionally exercises legal start plots, source-derived capacity,
+loaded increments, render resource invariance, scaled/scrolled sculpt inputs,
+HUD rejection, build restrictions, leader/magnet costs, load failure and matches.
+Regressions cover settlement occupancy recovery during 500 normal ticks, remote
+sculpt preserving navigation history, split-leader transfer for both owners,
+occupied-slot preservation, exact seeded battle casualties/rewards and near-town
+sculpt acceptance/rejection. Isolated rule fixtures set up controlled state;
+the bounded match tests use only reset, normal ticks and legal SDL inputs.
+Normal tests generate synthetic LAND files under a temporary directory and
+remove them. Original-data integration is explicit:
 
-## Next steps (if you want to continue)
-- Paste the **next chunk of actual assembly** (the body of the next SUB_ or range of code you want translated). The symbol map you just gave is now fully integrated (see `symbols.h` and forward declarations).
-- The repo split makes sense: this module is the launcher. If you have the `populous_prg.asm` parts (or the later CODE ranges after the loader), paste those — that's where the real game lives.
-- Good next targets: SUB_714, SUB_17B2 area (the prg load), the main rendering loop, copper usage, or any of the big data sections for graphics/tiles.
-- I'll keep extending the same SDL2 low-level port, adding proper Amiga-style memory, blitting, and display emulation as we go.
+```sh
+POPULOUS_TEST_REAL_DATA=1 POPULOUS_DATA_DIR=/tmp/populous-original-data \
+  SDL_VIDEODRIVER=dummy ./populous_c_port/tests/test_game
+```
 
-The original disassembly this was taken from is the excellent ongoing work at:
-https://github.com/tetracorp/populous
-https://tetracorp.github.io/populous/
+The fixed scenario-0 sequence selects fight tendency, simulates settlement and
+combat, then after tick 6000 sends legal right-clicks to the four corners of
+visible hostile plots every eight ticks. Budget: 12000 ticks, no teleportation
+or population/result edits. With the supplied original grass LAND it reached
+victory at tick 8353 after 288 engagements and 287 settlement formations, with
+111498 friendly population remaining. Normal and ASan/UBSan runs agreed. A
+separate legal self-sculpt sequence verifies defeat and reset/quit. The synthetic
+rule fixture may reach defeat sooner; it is not a balance/authenticity fixture.
+At 20 simulation ticks/sec this represents minutes of gameplay, not a claim
+that a human can execute the automated click rate.
 
-This map + the previous launcher map = the complete code for the 1993 Hit Squad budget release of Populous (launcher + prg). The repo splits them for the same reason the original game did: small bootstrap that loads the main game module + data. Graphics assets (tiles, sprites, sounds) live in the ADF/disk files.
+These automatic checks use SDL's dummy video driver/software renderer and alone
+are not proof of visible playability. The independent X11/WSLg review additionally
+observed terrain edits, pause, growth, combat and a stable DEFEAT (cyan 0, red
+69515), followed by reset and clean Escape/window-close exits. It used real-time
+simulation and agent-driven input at approximately one click per second, with no
+population patches. The three review findings (settlement occupancy, local
+navigation history and split-leader transfer) were repaired and independently
+rechecked. No blocking defects remained within this intermediate scope.
 
-Feel free to paste the next chunk (or multiple files/sections from the repo) whenever you're ready. I'll extend the C port one logical piece at a time while keeping it buildable and using the low-level SDL layer.
+For a human-paced visible check (procedure, not a verified winning strategy):
 
-This C port is meant as a companion for study and experimentation, not a full game reimplementation.
+1. Start scenario 0 without scrolling, press `3`, and wait 30 seconds. Confirm
+   both populations change and hollow settlement squares appear.
+2. Press Space. At the default 640x512 window, vertex (10,10) is near pixel
+   (82,82). A click while paused must not change terrain. Unpause, left-click
+   once, then right-click once to restore it; allow a second between clicks.
+3. Let the match run for about five minutes. Watch for yellow battle markers;
+   record the population/title rather than assuming an outcome on a timer.
+4. Lower one visible hostile plot at a time: right-click its four vertex corners,
+   roughly eight window pixels apart at default size, at no more than one click
+   per second. Watch mana and the changed terrain. Repeat as needed, letting the
+   simulation run; there is no guaranteed human-paced completion bound yet.
+5. If an outcome appears, verify it remains stable, then press `r` to restore the
+   initial populations. Click the window to focus it and press Escape. Also test
+   closing the window on a fresh launch. Report missing outcomes or quit failures.
 
-Current status after integrating the full prg map you pasted:
-- `symbols_prg.h` now contains the complete map (all ranges, symbols, strings, BANNERS, 1993 notes).
-- `populous_prg.c` + `populous_init.c` + Makefile wired so choice 1 enters the prg (A4 emulation area is allocated, prg_main loop runs the documented high-level flow).
-- Build with `make`; the prg side currently emits lots of "[PRG] ..." printf lines and loops forever (no real graphics takeover yet — we will add shared AmigaScreen + real drawing when bodies are translated).
-- Next: paste assembly for any specific routine and we fill in the logic + SDL calls (planar blits, peep sprites as `insert_sprite`, copper waits as vsync/present, A4-relative map/peep accesses, 1993 save/load paths, level code decode, etc.).
+This acceptance covers the bounded intermediate port, not complete original-rule
+fidelity or a human-tested winning strategy. The simplified graphics, synthetic
+starts and unsupported features listed above remain intentional limitations.
 
-Legal note
-----------
-This is a reverse-engineered study/port of a 1989/1993 commercial game. Only use it for personal education, preservation, or with legally obtained copies of the original. Do not distribute commercial assets.
+The development environment used an unpacked toolchain under
+`/tmp/populous-toolchain` rather than system packages. Its reproducible command
+is (normal SDL installations do not need these overrides):
 
-## Legal note
-This is a reverse-engineered study/port of a 1989 commercial game. Only use it for personal education, preservation, or with legally obtained copies of the original. Do not distribute commercial assets.
+```sh
+LD_LIBRARY_PATH=/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu:/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu/pulseaudio:/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu/sdl2-classic \
+/tmp/populous-toolchain/usr/bin/make -C populous_c_port all test test-sanitize \
+  SDL_CONFIG='/tmp/populous-toolchain/usr/bin/sdl2-config --prefix=/tmp/populous-toolchain/usr' \
+  LDLIBS=/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu/sdl2-classic/libSDL2-2.0.so.0.3200.10 \
+  CFLAGS='-std=c11 -O2 -I/tmp/populous-toolchain/usr/include/x86_64-linux-gnu'
+```
+
+Launch with that unpacked toolchain's runtime libraries:
+
+```sh
+POPULOUS_DATA_DIR=/tmp/populous-original-data \
+LD_LIBRARY_PATH=/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu:/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu/pulseaudio:/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu/sdl2-classic \
+./populous_c_port/populous_init_port
+```
+
+Use the same `LD_LIBRARY_PATH` for the opt-in original-data integration command.
+
+## Legal and credits
+
+Original disassembly and analysis: tetracorp
+(<https://tetracorp.github.io/populous>). This port is for study, preservation
+and reverse-engineering education. Use lawfully obtained original data; do not
+distribute commercial assets or original game files.

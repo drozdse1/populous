@@ -55,7 +55,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
+#include <limits.h>
 
+#include "land_data.h"
 #include "symbols_prg.h"  /* all the _function addresses and data from the map */
 #include "sdl_lowlevel.h" /* our low-level Amiga gfx emulation (bitplanes, sprites, copper/vsync, palette) */
 
@@ -64,12 +67,21 @@
  * (map data, peeps, UI, etc.). We allocate a block and use it as the
  * A4 "register".
  */
-static uint8_t prg_a4_area[256 * 1024];  /* larger for map/peeps/sprites/back buffers + everything */
-#define prg_a4 ((void *)&prg_a4_area[0])
+/* Signed d16 displacements straddle A4, including the 65x65 word vertex map.
+ * GCC packed/may_alias accessors support the original two-byte long alignment
+ * without violating C aliasing. Values are host-endian, not disk images. */
+_Alignas(4) static uint8_t prg_a4_area[65536];
+#define prg_a4 (prg_a4_area + 32768)
+typedef struct __attribute__((packed, may_alias)) { int16_t value; } A4Word;
+typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
+#define A4_WORD(offset) (((A4Word *)A4_DISP(offset))->value)
+#define A4_LONG(offset) (((A4Long *)A4_DISP(offset))->value)
 
 /* Visible demo support for motivation */
 static AmigaScreen *prg_screen = NULL;
-static int prg_quit = 0;   /* set by ESC in keyboard */
+static int prg_quit = 0;
+static int prg_status = EXIT_SUCCESS;
+static void *host_buffers[8];
 
 /* Forward so we can use it in prg_main for the immediate test pattern */
 static void ensure_prg_screen(void);
@@ -82,53 +94,53 @@ static void ensure_prg_screen(void);
 #define A4_DISP(d16)   (prg_a4 + (int16_t)(d16))
 
 /* Common ones from _main + init + _setup_display + _animate in this chunk */
-#define sprite_data      (*(uint32_t *)A4_DISP(0x9868))
-#define sprite_data_32   (*(uint32_t *)A4_DISP(0x986c))
-#define blk_data         (*(uint32_t *)A4_DISP(0x9870))
-#define back_scr         (*(uint32_t *)A4_DISP(0x9874))
-#define screen_pointer   (*(uint32_t *)A4_DISP(0x9878))
-#define copper_list      (*(uint32_t *)A4_DISP(0x9884))
-#define spare_cl         (*(uint32_t *)A4_DISP(0x9890))
-#define fb               (*(uint32_t *)A4_DISP(0x9894))
-#define start_of_game    (*(int16_t *)A4_DISP(0x9898))
-#define sprites_in       (*(int16_t *)A4_DISP(0x989a))
-#define in_conquest      (*(int16_t *)A4_DISP(0x84ba))
-#define conq_08_seed     (*(int16_t *)A4_DISP(0x84c4))
+#define sprite_data host_buffers[0]
+#define sprite_data_32 host_buffers[1]
+#define blk_data host_buffers[2]
+#define back_scr host_buffers[3]
+#define screen_pointer host_buffers[4]
+#define copper_list host_buffers[5]
+#define spare_cl host_buffers[6]
+#define fb host_buffers[7]
+#define start_of_game    A4_WORD(0x9898)
+#define sprites_in       A4_WORD(0x989a)
+#define in_conquest      A4_WORD(0x84ba)
+#define conq_08_seed     A4_WORD(0x84c4)
 #define conq_05_terrain  (*(uint8_t *)A4_DISP(0x84c1))
-#define seed             (*(int16_t *)A4_DISP(0x99e2))
-#define start_seed       (*(int16_t *)A4_DISP(0x99e4))
-#define ground_in        (*(int16_t *)A4_DISP(0x99e6))
+#define seed             A4_WORD(0x99e2)
+#define start_seed       A4_WORD(0x99e4)
+#define ground_in        A4_WORD(0x99e6)
 #define conquest         (*(uint8_t *)A4_DISP(0x84bc))
 #define conq_01_speed    (*(uint8_t *)A4_DISP(0x84bd))
 #define conq_02_enemypow (*(uint8_t *)A4_DISP(0x84be))
 #define conq_03_yourpow  (*(uint8_t *)A4_DISP(0x84bf))
 #define conq_04_mode     (*(uint8_t *)A4_DISP(0x84c0))
-#define game_mode        (*(int16_t *)A4_DISP(0x84b8))
-#define w_screen         (*(uint32_t *)A4_DISP(0x99e8))
-#define d_screen         (*(uint32_t *)A4_DISP(0x99ec))
-#define pal              (*(int16_t *)A4_DISP(0x99e0))
-#define mouse_limit      (*(int16_t *)A4_DISP(0x99a8))
-#define mousex           (*(int16_t *)A4_DISP(0x99aa))
-#define mousey           (*(int16_t *)A4_DISP(0xae6e))  /* from the assembly chunk */
-#define big_mousex       (*(int16_t *)A4_DISP(0x99b0))
-#define big_mousey       (*(int16_t *)A4_DISP(0x99b2))
+#define game_mode        A4_WORD(0x84b8)
+#define w_screen         A4_LONG(0x99e8)
+#define d_screen         A4_LONG(0x99ec)
+#define pal              A4_WORD(0x99e0)
+#define mouse_limit      A4_WORD(0x99a8)
+#define mousex           A4_WORD(0x99aa)
+#define mousey           A4_WORD(0xae6e)  /* from the assembly chunk */
+#define big_mousex       A4_WORD(0x99b0)
+#define big_mousey       A4_WORD(0x99b2)
 #define dint             (A4_DISP(0x984a))          /* interrupt server struct */
-#define xoff             (*(int16_t *)A4_DISP(0x99f0))
-#define yoff             (*(int16_t *)A4_DISP(0x99f2))
-#define player           (*(int16_t *)A4_DISP(0x99f4))
+#define xoff             A4_WORD(0x99f0)
+#define yoff             A4_WORD(0x99f2)
+#define player           A4_WORD(0x99f4)
 #define good_pop         (A4_DISP(0x99fe))          /* array base */
-#define tempo            (*(int16_t *)A4_DISP(0x824e))
-#define tempo_now        (*(int16_t *)A4_DISP(0x9a18))
-#define beat_two         (*(int16_t *)A4_DISP(0x9a16))
-#define toggle           (*(int16_t *)A4_DISP(0x9a1a))
-#define no_sprites       (*(int16_t *)A4_DISP(0x9a1c))
-#define ok_to_build      (*(int16_t *)A4_DISP(0x9a1e))
+#define tempo            A4_WORD(0x824e)
+#define tempo_now        A4_WORD(0x9a18)
+#define beat_two         A4_WORD(0x9a16)
+#define toggle           A4_WORD(0x9a1a)
+#define no_sprites       A4_WORD(0x9a1c)
+#define ok_to_build      A4_WORD(0x9a1e)
 #define sound_effect     (*(uint8_t *)A4_DISP(0x9a20))
-#define mode             (*(int16_t *)A4_DISP(0x8256))
-#define pointer          (*(int16_t *)A4_DISP(0x84b6))
+#define mode             A4_WORD(0x8256)
+#define pointer          A4_WORD(0x84b6)
 #define sprite           (A4_DISP(0x9a22))          /* sprite list base */
 #define peeps            (A4_DISP(0x9c26))          /* peeps array base */
-#define no_peeps         (*(int16_t *)A4_DISP(0xae5e))
+#define no_peeps         A4_WORD(0xae5e)
 
 /* Map data structures (from asm LEA (_map_xxx,A4) and absolute labels in the binary).
  * These are the core world state (height/terrain/owner/alt etc.).
@@ -142,22 +154,22 @@ static void ensure_prg_screen(void);
 #define map_bk2          (A4_DISP(0xef88))
 #define map_steps        (A4_DISP(0xff88))
 /* map_colour at 0x8370 relative (used for palette/ground in some paths) */
-#define map_colour       (A4_DISP(0x8370))
-#define view_timer       (*(int16_t *)A4_DISP(0xae60))
-#define left_button      (*(int16_t *)A4_DISP(0xae62))
-#define right_button     (*(int16_t *)A4_DISP(0xae64))
-#define old_view_who     (*(int16_t *)A4_DISP(0xae66))
-#define view_who         (*(int16_t *)A4_DISP(0xae68))
-#define game_turn        (*(int16_t *)A4_DISP(0xae6a))
-#define pause            (*(int16_t *)A4_DISP(0x9c22))
-#define paint_map        (*(int16_t *)A4_DISP(0x9c24))
-#define serial_off       (*(int16_t *)A4_DISP(0x8254))
-#define not_player       (*(int16_t *)A4_DISP(0x825a))
+#define map_colour_data  (A4_DISP(0x8370))
+#define view_timer       A4_WORD(0xae60)
+#define left_button      A4_WORD(0xae62)
+#define right_button     A4_WORD(0xae64)
+#define old_view_who     A4_WORD(0xae66)
+#define view_who         A4_WORD(0xae68)
+#define game_turn        A4_WORD(0xae6a)
+#define pause            A4_WORD(0x9c22)
+#define paint_map        A4_WORD(0x9c24)
+#define serial_off       A4_WORD(0x8254)
+#define not_player       A4_WORD(0x825a)
 #define stats            (A4_DISP(0x82b6))          /* stats array */
 #define inkey            (*(uint8_t *)A4_DISP(0xae6c))
 #define bitfield_51645   (*(uint8_t *)A4_DISP(0x8257))
-#define GfxBase_prg      (*(uint32_t *)A4_DISP(0x99a4)) /* from _rs etc */
-#define IntuitionBase_prg (*(uint32_t *)A4_DISP(0x99ac))
+#define GfxBase_prg      A4_LONG(0x99a4) /* from _rs etc */
+#define IntuitionBase_prg A4_LONG(0x99ac)
 
 /* Small interrupt data areas used in setup (for server structs) */
 #define LAB_52C40        (*(uint8_t *)A4_DISP(0x9852))
@@ -178,13 +190,13 @@ static void ensure_prg_screen(void);
 #define serial           (A4_DISP(0x989c))          /* serial struct base */
 
 /* Additional from _animate / debug paths */
-#define _my_task         (*(uint32_t *)A4_DISP(0x9860)) /* used in openlibrary */
+#define _my_task         A4_LONG(0x9860) /* used in openlibrary */
 
 /* Conquest / other small vars referenced */
-#define LAB_516DE        (*(int16_t *)A4_DISP(0x82f0))
-#define LAB_516E2        (*(int16_t *)A4_DISP(0x82f4))
-#define LAB_516E0        (*(int16_t *)A4_DISP(0x82f2))
-#define LAB_516B2        (*(int16_t *)A4_DISP(0x82c4))
+#define LAB_516DE        A4_WORD(0x82f0)
+#define LAB_516E2        A4_WORD(0x82f4)
+#define LAB_516E0        A4_WORD(0x82f2)
+#define LAB_516B2        A4_WORD(0x82c4)
 #define LAB_516C4        (A4_DISP(0x82d6))
 #define LAB_516A6        (A4_DISP(0x82b8))
 #define LAB_516A5        (A4_DISP(0x82b7))
@@ -244,41 +256,32 @@ static void  ___CloseLibrary(void *base) { printf("[PRG] CloseLibrary\n"); }
  */
 #define DEMO_MAP_W 64
 #define DEMO_MAP_H 64
-/* Accessor: our generated heights live in the real map_who area of A4 globals */
-#define demo_height_at(my, mx)  ( ((int8_t*)map_who)[ ((my)&(DEMO_MAP_H-1))*DEMO_MAP_W + ((mx)&(DEMO_MAP_W-1)) ] )
+/* Synthetic signed cell heights are separate from map_who occupancy. */
+#define demo_height_at(my, mx)  (((int8_t *)map_alt)[(my)*DEMO_MAP_W + (mx)])
 
 /* Legacy name for minimal diff in existing code; expands to the A4-backed accessor */
 #define demo_height(y,x) demo_height_at((y),(x))
 
-static int     demo_peep_x[32];
-static int     demo_peep_y[32];
-static int     num_demo_peeps = 0;
-static int     demo_mana = 50;   /* updated by _move_mana in the _animate heartbeat; visible in draw */
-static int     demo_shield_timer = 0;  /* for visible _show_the_shield effect from _animate */
-static int     growth_tick = 0;        /* for autonomous pop growth simulation */
-
-#define MAX_DEMO_PEEPS 32
-
-/* Note: we still use separate demo_peeps[] struct for the big visible blobs and
- * the A4 peeps area (0x9c26) for the population dot view (paint_map path). */
-
-/* Real peep struct modeled after the assembly (_peeps at A4 + 0x9c26, 0x16 bytes each).
- * Owner, flags (for view mode drawing), position, etc.
- * This allows testing "init game status" and peeps logic with real(ish) data from level init.
- */
-typedef struct {
-    uint8_t  flags;     /* bit0/1 used for pixel drawing in _animate view mode */
-    uint8_t  owner;     /* 0 = player, 1 = enemy */
-    uint8_t  type;      /* walker type etc. */
-    uint8_t  pad;
-    int16_t  x, y;      /* map coords */
-    int16_t  sx, sy;    /* screen pos */
-    int16_t  frame;
-    int16_t  health;
-    int16_t  pad2[3];
-} DemoPeep;
-
-static DemoPeep demo_peeps[MAX_DEMO_PEEPS];  /* MAX_DEMO_PEEPS = 32 defined above */
+/* Canonical 22-byte records: _place_people, asm 431ca-4329a.
+ * The unresolved fields remain bytes, not a guessed native struct. */
+#define MAX_DEMO_PEEPS 208
+#define num_demo_peeps no_peeps
+static int demo_mana = 50; /* Display placeholder, never earned/spent by demo rules. */
+static int demo_shield_timer;
+static int growth_tick;
+static int16_t peep_word(int index, int offset)
+{
+    int16_t value;
+    memcpy(&value, peeps + index * 22 + offset, sizeof value);
+    return value;
+}
+static void set_peep_word(int index, int offset, int16_t value)
+{
+    memcpy(peeps + index * 22 + offset, &value, sizeof value);
+}
+static int peep_owner(int index) { return peeps[index * 22 + 1]; }
+static int peep_screen_x(int index) { return (peep_word(index, 8) % 64) * 4 + 2; }
+static int peep_screen_y(int index) { return (peep_word(index, 8) / 64) * 4 + 2; }
 
 /* Forward declarations for all the major functions from the map.
  * Complete list taken from the full IRA symbol map (prg entry $3E1E8, A4 at $593EE).
@@ -535,13 +538,13 @@ char **g_argv = NULL;
  */
 static const uint8_t demo_levels[8][9] = {
     /* lvl 0 */ { 5, 5, 0x07, 0x07, 0x00, 0, 12, 10, 0x0000 },  /* classic grass */
-    /* lvl 5 */ { 4, 6, 0x0f, 0x07, 0x01, 1,  8, 14, 0x1234 },  /* desert */
-    /* lvl 10*/ { 3, 7, 0x1f, 0x0f, 0x02, 2, 15,  9, 0xabcd },  /* snow */
-    /* lvl 15*/ { 6, 4, 0x07, 0x1f, 0x04, 3, 10, 12, 0x5678 },  /* rocky, you strong */
-    /* lvl 20*/ { 2, 8, 0x3f, 0x07, 0x08, 0,  6, 18, 0x9abc },  /* hard enemy */
-    /* lvl 25*/ { 7, 3, 0x01, 0x3f, 0x10, 1, 20,  5, 0xdef0 },  /* you very strong */
-    /* lvl 30*/ { 4, 5, 0x15, 0x15, 0x00, 2, 11, 11, 0x1111 },  /* balanced snow */
-    /* lvl 35*/ { 5, 6, 0x2a, 0x15, 0x03, 3,  9, 13, 0x2222 },  /* mixed rocky */
+    /* lvl 5 */ { 4, 6, 0x0f, 0x07, 0x01, 1,  8, 14, 0x34 },  /* desert */
+    /* lvl 10*/ { 3, 7, 0x1f, 0x0f, 0x02, 2, 15,  9, 0xcd },  /* snow */
+    /* lvl 15*/ { 6, 4, 0x07, 0x1f, 0x04, 3, 10, 12, 0x78 },  /* rocky, you strong */
+    /* lvl 20*/ { 2, 8, 0x3f, 0x07, 0x08, 0,  6, 18, 0xbc },  /* hard enemy */
+    /* lvl 25*/ { 7, 3, 0x01, 0x3f, 0x10, 1, 20,  5, 0xf0 },  /* you very strong */
+    /* lvl 30*/ { 4, 5, 0x15, 0x15, 0x00, 2, 11, 11, 0x11 },  /* balanced snow */
+    /* lvl 35*/ { 5, 6, 0x2a, 0x15, 0x03, 3,  9, 13, 0x22 },  /* mixed rocky */
 };
 
 /* Constants derived from tetracorp.github.io/populous level format analysis.
@@ -567,76 +570,44 @@ static const uint8_t demo_levels[8][9] = {
 #define GAME_MODE_BUILD_ONLY_UP   (1u << 3)
 #define GAME_MODE_BUILD_NEAR_TOWNS (1u << 4)
 
-static int current_start_pop_you = 10;  /* loaded from table for quick init testing */
+static int current_start_pop_you = 12;
+static int current_start_pop_enemy = 10;
+static int current_scenario;
+static int game_reset(int scenario);
+static void game_tick(void);
+static void game_render(void);
+static void game_handle_event(const SDL_Event *event);
+
+static int parse_scenario(int argc, char **argv, int *scenario)
+{
+    *scenario = 0;
+    if (argc <= 1) return 1;
+    if (argc != 2 || !argv || !argv[1] || !argv[1][0]) return 0;
+    for (const char *digit = argv[1]; *digit; ++digit)
+        if (*digit < '0' || *digit > '9') return 0;
+    errno = 0;
+    char *end;
+    unsigned long value = strtoul(argv[1], &end, 10);
+    if (errno == ERANGE || *end || value > INT_MAX) return 0;
+    *scenario = (int)(value % 8);
+    return 1;
+}
 
 void prg_main(void)
 {
-    printf("[PRG] prg_main (1993) A4=0x%08X -> real _main from chunk\n",
-           (unsigned)PRG_A4_BASE);
-
-    /* === Fast testing of levels / game init ===
-     *   ./populous_init_port 5
-     *   ./populous_init_port 42
-     * This directly influences the conquest variables (in_conquest, seed, terrain, etc.)
-     * using data modeled on the real level.dat (see tetracorp level-format analysis).
-     * You can rapidly iterate on "level loading" and "init game status" and see
-     * different maps + different numbers of peeps immediately in the window.
-     */
-    if (g_argc > 1) {
-        int idx = atoi(g_argv[1]) % 8;   /* map to our small demo table */
-        const uint8_t *e = demo_levels[idx];
-
-        /* Apply the "level data" like the real game would from level.dat + code decode */
-        conquest        = e[0];
-        conq_01_speed   = e[1];
-        conq_02_enemypow= e[2];
-        conq_03_yourpow = e[3];
-        game_mode       = e[4];
-        conq_05_terrain = e[5];
-        conq_08_seed    = e[8];
-        in_conquest     = (idx * 5) & 0x1ff;   /* simulate battle number */
-        current_start_pop_you = e[6];  /* direct from table column 6 */
-
-        printf("[QUICKTEST] Loaded demo level slot %d (simulating level.dat entry)\n", idx);
-    } else {
-        /* Default */
-        in_conquest = 0;
-        current_start_pop_you = 10;
+    prg_status = EXIT_SUCCESS;
+    prg_quit = 0;
+    if (!parse_scenario(g_argc, g_argv, &current_scenario)) {
+        fprintf(stderr, "Usage: populous_init_port [nonnegative integer <= INT_MAX]\n");
+        prg_status = EXIT_FAILURE;
+        return;
     }
-
-    /* Make sure _place_first_people sees the updated conquest value */
-    /* (it already reads conquest and in_conquest) */
-
-    /* Immediate visible test pattern — create screen inline so we don't hit declaration order issues */
-    if (!prg_screen) {
-        prg_screen = amiga_create_screen(320, 256, 4);
-        if (prg_screen) {
-            for (int i = 0; i < 16; i++) {
-                int v = (i * 17) & 0xFF;
-                amiga_set_color(prg_screen, i, (i << 8) | (i << 4) | i);
-            }
-        }
-    }
-    if (prg_screen) {
-        /* Bright obvious green background */
-        uint32_t green = prg_screen->palette[10];   /* pick a bright color from the palette we just set */
-        for (int i = 0; i < prg_screen->width * prg_screen->height; i++) {
-            prg_screen->chunky_buffer[i] = green;
-        }
-        /* Big obvious white rectangle in the middle so it's impossible to miss */
-        for (int y = 80; y < 160; y++) {
-            for (int x = 40; x < 280; x++) {
-                prg_screen->chunky_buffer[y * prg_screen->width + x] = prg_screen->palette[15];
-            }
-        }
-        amiga_present(prg_screen);
-        printf("[PRG] *** VISIBLE TEST: green screen + white box should be on screen now ***\n");
-        /* Give you time to see the test window before the real game init runs */
-        for (volatile int d=0; d < 200000000; d++) {}   /* crude delay so the window stays visible a moment */
-    }
-
-    _main();   /* the translated body from the assembly you pasted */
+    _main();
 }
+
+/* Retain the launcher's void PRG entry; propagate failure without exiting SDL. */
+int prg_exit_status(void) { return prg_status; }
+
 
 /* --- Minimal stub implementations for the functions called from prg_main
  * and the core loop. These match the symbols in the map exactly.
@@ -655,168 +626,428 @@ static void _make_copper(void)
     printf("[PRG] _make_copper\n");
 }
 
-static void _make_map(void)
+/* _make_map, asm:1420-1539. Cells derive from the separate 65x65 vertices. */
+static int core_vertex(int column, int row)
 {
-    /* Procedural height map using the *real* game RNG (_newrand).
-     * This is much better than the previous generic 32-bit LCG with magic numbers like 1103515245.
-     * The game only has a 15-bit RNG (0..32767), and we now call the correct implementation.
-     *
-     * The seed is already set up by the translated _setup_display code from conquest data.
-     */
-    /* use the shared demo_height declared at file scope */
-
-    /* Make sure the global 'seed' is initialized from start_seed if needed */
-    if (seed == 0) {
-        seed = start_seed;
-    }
-
-    /* Multi-pass "raise/lower" using the authentic ___newrand() */
-    /* Bias base height and variation by terrain for quick visual differentiation when loading different levels */
-    int base_h = 0;
-    int var = 20;
-    if (conq_05_terrain == 1) { base_h = -4; var = 16; }      /* desert: flatter, lower */
-    else if (conq_05_terrain == 2) { base_h = 4; var = 24; }  /* snow: higher, more variation */
-    else if (conq_05_terrain == 3) { base_h = 0; var = 28; }  /* rocky: very rough */
-
-    for (int y=0; y<DEMO_MAP_H; y++) for (int x=0; x<DEMO_MAP_W; x++) demo_height_at(y, x) = base_h;
-
-    for (int pass = 0; pass < 5; pass++) {
-        int strength = 6 - (pass / 2);
-
-        for (int i = 0; i < 180; i++) {
-            uint16_t r1 = ___newrand();
-            uint16_t r2 = ___newrand();
-            uint16_t r3 = ___newrand();
-
-            int cx = (r1 % 58) + 3;
-            int cy = (r2 % 58) + 3;
-
-            int delta = (r3 & 1) ? strength : -strength;
-
-            for (int dy = -1; dy <= 1; dy++) {
-                for (int dx = -1; dx <= 1; dx++) {
-                    int x = cx + dx;
-                    int y = cy + dy;
-                    if (x >= 0 && x < DEMO_MAP_W && y >= 0 && y < DEMO_MAP_H) {
-                        int newh = demo_height_at(y, x) + delta;
-                        if (newh < -24) newh = -24;
-                        if (newh > 24)  newh = 24;
-                        demo_height_at(y, x) = newh;
-                    }
-                }
-            }
+    return A4_WORD(0xae86 + 2 * (row * 65 + column));
+}
+static void core_set_vertex(int column, int row, int height)
+{
+    A4_WORD(0xae86 + 2 * (row * 65 + column)) = height;
+}
+static void core_make_map_region(int left, int top, int right, int bottom)
+{
+    for (int row = top; row <= bottom; ++row) {
+        for (int column = left; column <= right; ++column) {
+            int corners[] = {core_vertex(column,row), core_vertex(column+1,row),
+                             core_vertex(column+1,row+1), core_vertex(column,row+1)};
+            int altitude = (corners[0]+corners[1]+corners[2]+corners[3]) / 4;
+            int block = 0, cell = row * 64 + column;
+            for (int corner = 0; corner < 4; ++corner)
+                if (corners[corner] > altitude) block |= 1 << corner;
+            if (altitude && !block) { --altitude; block = 15; }
+            if (!altitude && block && block != 15) block += 16;
+            map_alt[cell] = altitude;
+            map_blk[cell] = block;
+            if (!block) map_bk2[cell] = 0;
+            A4_WORD(0xff88 + cell * 2) = 0;
         }
     }
-
-    /* Add terrain-specific features (quick "make_woods_rocks" style from chunk, for visual test) */
-    /* Rocky: add clusters of high "rocks" */
-    if (conq_05_terrain == 3) {
-        for (int f = 0; f < 8; f++) {
-            uint16_t rx = ___newrand();
-            uint16_t ry = ___newrand();
-            int cx = (rx % 50) + 7;
-            int cy = (ry % 50) + 7;
-            for (int dy=-2; dy<=2; dy++) for (int dx=-2; dx<=2; dx++) {
-                int x = cx+dx, y=cy+dy;
-                if (x>=0&&x<DEMO_MAP_W&&y>=0&&y<DEMO_MAP_H && (dx*dx+dy*dy)<5) {
-                    demo_height_at(y, x) = 18 + (___newrand()%6); /* high rocks */
-                }
-            }
-        }
-    }
-    /* Desert: flatter with some dunes */
-    if (conq_05_terrain == 1) {
-        for (int f=0; f<5; f++) {
-            uint16_t rx = ___newrand(); uint16_t ry=___newrand();
-            int cx=(rx%55)+4, cy=(ry%55)+4;
-            for (int dy=-3;dy<=3;dy++)for(int dx=-3;dx<=3;dx++){
-                int x=cx+dx,y=cy+dy; if(x>=0&&x<DEMO_MAP_W&&y>=0&&y<DEMO_MAP_H) demo_height_at(y, x) = (demo_height_at(y, x) + 3) / 2;
-            }
-        }
-    }
-
-    /* Optional: rough stats so you can see that different CLI numbers really change the map */
-    int min_h = 99, max_h = -99;
-    for (int y = 0; y < DEMO_MAP_H; y++)
-        for (int x = 0; x < DEMO_MAP_W; x++) {
-            if (demo_height_at(y, x) < min_h) min_h = demo_height_at(y, x);
-            if (demo_height_at(y, x) > max_h) max_h = demo_height_at(y, x);
-        }
-
-    printf("[PRG] _make_map (real _newrand) seed=%d terrain=%d height range %d..%d  peeps=%d\n",
-           start_seed, ground_in, min_h, max_h, num_demo_peeps);
 }
 
+static void _make_map(void)
+{
+    core_make_map_region(0,0,63,63);
+}
 
+#define core_mana(owner) ((int32_t)A4_LONG(0x9a02 + (owner) * 16))
+#define core_tendency(owner) A4_WORD(0x99fa + (owner) * 16)
+#define core_leader(owner) A4_WORD(0x99f6 + (owner) * 16)
+#define core_target(owner) A4_WORD(0x99f8 + (owner) * 16)
+static int core_result, core_battles, core_settlements, core_tool;
+static const int16_t core_offsets[25] = {
+    0,-64,1,64,-1,-63,65,63,-65,-128,2,128,-2,-126,130,126,-130,
+    -127,-62,66,129,127,62,-66,-129
+}; /* asm:24274 */
+static const uint16_t core_city[9] = {42,44,43,44,43,41,41,41,41};
+static const int32_t core_mana_values[11] = {-250,10,200,2500,5000,7500,10000,40000,80000,160000,1999999};
+static int core_population(int owner)
+{
+    int total = 0;
+    for (int person = 0; person < no_peeps; ++person)
+        if (peep_owner(person) == owner && peep_word(person,4) > 0) total += peep_word(person,4);
+    return total;
+}
+static void core_add_mana(int owner, int amount)
+{
+    int64_t value = (int64_t)core_mana(owner) + amount;
+    if (value < -250) value = -250;
+    if (value > 1999999) value = 1999999;
+    A4_LONG(0x9a02 + owner * 16) = (uint32_t)(int32_t)value;
+}
+/* _valid_move asm:20912-20954. */
+static int core_valid_move(int position, int delta)
+{
+    if (position < 0 || position >= 4096) return 1;
+    if (!delta) return 0;
+    int destination = position + delta, horizontal = delta & 63;
+    if (horizontal > 3) horizontal -= 64;
+    int column = (position & 63) + horizontal;
+    if (destination < 0 || destination >= 4096 || column < 0 || column > 63) return 1;
+    if (map_blk[destination] == 0) return 3;
+    return map_blk[destination] == 47 ? 2 : 0;
+}
+/* _check_life asm:20958-21042, including neighbouring settlement exclusion. */
+static int core_check_life(int owner, int position)
+{
+    int life = 0;
+    A4_WORD(0x2ff8) = A4_WORD(0x2fb2) = 0;
+    for (int index = 0; index < 17; ++index) {
+        int valid = core_valid_move(position,core_offsets[index]);
+        if (valid) { if (valid == 2) life -= 15; continue; }
+        int cell = position+core_offsets[index];
+        if (map_blk[cell] == 31+owner || map_blk[cell] == 15) {
+            if (map_blk[cell] == 15) A4_WORD(0x2fb2) = 1;
+            if (!life) life = 50;
+            life += 15;
+        } else if (!index) return 0;
+        int building = map_bk2[cell];
+        if (index < 9 && map_bk2[position] == 42 && building >= 41 && building <= 44) ++A4_WORD(0x2ff8);
+        else if (index && building > 32 && building <= 44) return 0;
+    }
+    if (life < 35) return 0;
+    return life == 305 ? 3050 : life;
+}
+/* _set_town asm:5865-6062. Original block IDs, simplified drawing only. */
+static void core_set_town(int person, int remove)
+{
+    int position = peep_word(person,8), owner = peep_owner(person);
+    int old_city = map_bk2[position] == 42, city = !remove && peep_word(person,12) == 42;
+    if (remove || (old_city && !city)) {
+        for (int index = 0; index < (old_city ? 25 : 17); ++index) {
+            if (core_valid_move(position,core_offsets[index]) == 1) continue;
+            int cell = position+core_offsets[index];
+            if (old_city || index < 9) map_bk2[cell] = 0;
+            if (map_blk[cell] == 31+owner) map_blk[cell] = 15;
+        }
+        map_bk2[position] = 0;
+        if (remove) return;
+    }
+    for (int index = 0; index < (city ? 25 : 17); ++index) {
+        if (core_valid_move(position,core_offsets[index]) == 1) continue;
+        int cell = position+core_offsets[index];
+        if (index < 9) map_bk2[cell] = city ? core_city[index] : 0;
+        if (map_blk[cell] == 15) map_blk[cell] = 31+owner;
+    }
+    if (!city && map_blk[position] == 31+owner) map_bk2[position] = peep_word(person,12);
+}
+static void core_remove(int person)
+{
+    int owner = peep_owner(person), position = peep_word(person,8);
+    if (peeps[person*22]&1) core_set_town(person,1);
+    if (map_who[position] == person+1) map_who[position] = 0;
+    if (core_leader(owner) == person+1) core_leader(owner) = 0;
+    set_peep_word(person,4,0); peeps[person*22] = 0;
+}
+static void core_frame_town(int person, int capacity)
+{
+    set_peep_word(person,12,capacity >= 3050 ? 42 : 32+capacity*10/305);
+}
+/* _where_do_i_go asm:4622-4901: rank five choices over nine directional rays. */
+static int core_explore(int person)
+{
+    int distance[5] = {5,5,5,5,5}, choices[5] = {999,999,999,999,999};
+    int least_steps = 9999, direction = -1, owner = peep_owner(person);
+    for (int ray = 0; ray < 9; ++ray) {
+        if (direction == 0 && ray == 1) direction = (___newrand()&7)+1;
+        else if (++direction == 9) direction = 0;
+        int position = peep_word(person,8), delta = core_offsets[direction];
+        for (int depth = 0; depth < peeps[person*22+2]; ++depth) {
+            if (core_valid_move(position,delta)) break;
+            position += delta;
+            if (map_blk[position] == 15 && depth < distance[0]) {
+                int build = direction == 0 ? core_check_life(owner,position)>0 : 1;
+                if (direction) for (int index = 9; index < 17; ++index) {
+                    if (core_valid_move(position,core_offsets[index])) continue;
+                    int block = map_bk2[position+core_offsets[index]];
+                    if (block > 32 && block <= 44) build = 0;
+                }
+                if (build) { distance[0] = depth; choices[0] = delta; continue; }
+            }
+            if (!direction) continue;
+            int other = map_who[position]-1, choice = -1;
+            if (other >= 0 && other < no_peeps && other != person) {
+                if (peeps[other*22]&8) choice = 1;
+                else if (peep_owner(other) != owner) choice = 2;
+                else if (peeps[other*22]&2) choice = 3;
+            }
+            if (choice >= 0 && depth < distance[choice]) { distance[choice] = depth; choices[choice] = delta; continue; }
+            int steps = (uint16_t)A4_WORD(0xff88+position*2);
+            if (delta != peep_word(person,10) && (steps < least_steps || (steps == least_steps && depth < distance[4]))) {
+                least_steps = steps; distance[4] = depth; choices[4] = delta;
+            }
+        }
+    }
+    if (core_tendency(owner) == 3 && distance[2] != 5) return choices[2];
+    if (core_tendency(owner) == 2 && distance[3] != 5) return choices[3];
+    for (int index = 0; index < 5; ++index) if (distance[index] != 5) return choices[index];
+    return 999;
+}
+/* _move_magnet_peeps ordinary leader/follower path, no knight/auto-sculpt paths. */
+static int core_magnet_direction(int person)
+{
+    int owner = peep_owner(person), position = peep_word(person,8), leader = core_leader(owner)-1;
+    if (leader < 0 && position == core_target(owner)) core_leader(owner) = person+1;
+    int target = leader >= 0 && leader != person ? peep_word(leader,8) : core_target(owner);
+    int dx = (target%64 > position%64)-(target%64 < position%64);
+    int dy = (target/64 > position/64)-(target/64 < position/64);
+    if (!dx && !dy) return core_explore(person);
+    static const int directions[8] = {-64,-63,1,65,64,63,-1,-65};
+    int delta = dy*64+dx, primary = 0;
+    while (primary < 8 && directions[primary] != delta) ++primary;
+    if (!core_valid_move(position,delta)) { peeps[person*22+21] = (uint8_t)delta; return delta; }
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        int candidate = directions[(primary+7+attempt)%8];
+        if (!core_valid_move(position,candidate) && candidate != (int8_t)peeps[person*22+21]) {
+            peeps[person*22+21] = (uint8_t)candidate; return candidate;
+        }
+    }
+    return 999;
+}
+static void core_battle(int first, int second)
+{
+    /* _do_battle:6082-6158: both casualties use the lesser rolled strength. */
+    int second_strength = (___newrand()%3+1)*peep_word(second,4);
+    int first_strength = (___newrand()%3+1)*peep_word(first,4);
+    int lesser = first_strength < second_strength ? first_strength : second_strength;
+    int first_pop = peep_word(first,4)-(lesser/100*peeps[second*22+3]+10);
+    int second_pop = peep_word(second,4)-(lesser/100*peeps[first*22+3]+10);
+    set_peep_word(first,4,first_pop > 0 ? first_pop : 0);
+    set_peep_word(second,4,second_pop > 0 ? second_pop : 0);
+    if (first_pop > 0 && second_pop > 0) return;
+    if (first_pop <= 0 && second_pop <= 0) { core_remove(first); core_remove(second); return; }
+    int winner = first_pop > 0 ? first : second, loser = winner == first ? second : first;
+    int owner = peep_owner(winner), enemy = peep_owner(loser), reward = A4_WORD(0x3010);
+    if (peeps[loser*22]&1) {
+        int capacity = core_check_life(enemy,peep_word(loser,8));
+        int level = capacity >= 3050 ? 10 : capacity*10/305;
+        reward = A4_WORD(0x2ffa+level*2);
+        core_set_town(loser,1); peeps[winner*22] = 1;
+        capacity = core_check_life(owner,peep_word(winner,8));
+        peeps[winner*22] = capacity > 0 ? 1 : 2;
+        if (capacity > 0) { core_frame_town(winner,capacity); core_set_town(winner,0); }
+        peeps[loser*22] &= ~1;
+    } else {
+        peeps[winner*22] = (peeps[winner*22]&1) ? 1 : 2;
+        if (core_leader(enemy) == loser+1) reward = A4_WORD(0x3014);
+    }
+    core_add_mana(owner,reward); core_add_mana(enemy,-reward);
+    ++A4_WORD(0xae7a+owner*2); core_remove(loser);
+    map_who[peep_word(winner,8)] = winner+1; set_peep_word(winner,10,0);
+    if (!(peeps[winner*22]&1)) set_peep_word(winner,12,0);
+}
+static void core_move(int person)
+{
+    int owner = peep_owner(person), position = peep_word(person,8);
+    int delta = core_tendency(owner) ? core_explore(person) : core_magnet_direction(person);
+    if (delta == 999) return;
+    if (!delta && core_check_life(owner,position) > 0) {
+        peeps[person*22] = 1; set_peep_word(person,6,game_turn);
+        core_frame_town(person,core_check_life(owner,position)); core_set_town(person,0); ++core_settlements;
+        return;
+    }
+    if (core_valid_move(position,delta)) return;
+    int destination = position+delta, other = map_who[destination]-1;
+    if (other >= 0 && other < no_peeps && other != person) {
+        if (peeps[other*22]&8) return; /* Multi-party battle join is not ported. */
+        if (peep_owner(other) == owner) {
+            int sum = peep_word(other,4)+peep_word(person,4);
+            set_peep_word(other,4,sum > 32000 ? 32000 : sum);
+            if (peeps[person*22+3] > peeps[other*22+3]) peeps[other*22+3] = peeps[person*22+3];
+            int leader = core_leader(owner) == person+1;
+            core_remove(person); if (leader) core_leader(owner) = other+1;
+            return;
+        }
+        if (map_who[position] == person+1) map_who[position] = 0;
+        set_peep_word(person,8,destination); peeps[person*22] = 8; peeps[other*22] |= 8;
+        set_peep_word(person,6,other); set_peep_word(other,6,person); ++core_battles;
+        return;
+    }
+    if (map_who[position] == person+1) map_who[position] = 0;
+    set_peep_word(person,8,destination); set_peep_word(person,10,delta); map_who[destination] = person+1;
+    A4_WORD(0xff88+destination*2) = (uint16_t)A4_WORD(0xff88+destination*2)+1;
+}
+static void core_settle_tick(int person)
+{
+    int owner = peep_owner(person), position = peep_word(person,8), capacity = core_check_life(owner,position);
+    if (!capacity) { core_set_town(person,1); peeps[person*22] = 2; set_peep_word(person,12,0); return; }
+    core_frame_town(person,capacity); core_set_town(person,0);
+    /* asm:3667-3677: reclaim a departed walker's slot, never another occupant. */
+    if (!map_who[position]) map_who[position] = person+1;
+    if ((uint16_t)game_turn&7) return;
+    int level = peep_word(person,12)-32;
+    core_add_mana(owner,A4_WORD(0x2fb6+level*2)); peeps[person*22+3] = A4_WORD(0x2fcc+level*2)&255;
+    if (peep_word(person,4) > capacity) {
+        int child;
+        for (child = 0; child < 208 && peep_word(child,4)>0; ++child) {}
+        if (child < 208) {
+            memset(peeps+child*22,0,22); if (child >= no_peeps) no_peeps = child+1;
+            peeps[child*22] = 2; peeps[child*22+1] = owner;
+            peeps[child*22+2] = peeps[person*22+2]; peeps[child*22+3] = peeps[person*22+3];
+            set_peep_word(child,4,peep_word(person,4)-capacity/2); set_peep_word(person,4,capacity/2);
+            /* asm:3913-3929: the released walker carries the leader. */
+            if (core_leader(owner) == person+1) core_leader(owner) = child+1;
+            set_peep_word(child,8,position); set_peep_word(child,18,position);
+            /* asm:3964-3983: preserve a co-located walker or battle occupant. */
+            if (!map_who[position] || map_who[position] == person+1) map_who[position] = child+1;
+            if (peeps[person*22+2] < 4) ++peeps[person*22+2];
+        }
+    }
+    int population = peep_word(person,4)+A4_WORD(0x2fe2+level*2);
+    set_peep_word(person,4,population > 32000 ? 32000 : population);
+}
+/* _raise_point/_lower_point: the same 8-neighbour slope constraint, bounded work. */
+static int core_sculpt(int owner, int column, int row, int direction)
+{
+    if (owner < 0 || owner > 1 || pause || core_result || column < 0 || column > 64 || row < 0 || row > 64 ||
+        (direction != 1 && direction != -1) || (game_mode&GAME_MODE_NO_BUILD) ||
+        (direction < 0 && (game_mode&GAME_MODE_BUILD_ONLY_UP)) || core_mana(owner) < 10 ||
+        !(A4_WORD(0x82c4+owner*46)&1)) return 0;
+    int original = core_vertex(column,row), target_height = original+direction;
+    if (target_height < 0 || target_height > 8) return 0;
+    if ((game_mode&GAME_MODE_BUILD_NEAR_TOWNS) && original > 0) {
+        int near = 0;
+        for (int person = 0; person < no_peeps; ++person) {
+            int position = peep_word(person,8);
+            if (peep_word(person,4)>0 && peep_owner(person)==owner && (peeps[person*22]&1) &&
+                abs(position%64-column)<=2 && abs(position/64-row)<=2) near = 1;
+        }
+        if (!near) return 0;
+    }
+    int changed = 0, xmin = column, xmax = column, ymin = row, ymax = row;
+    for (int y = 0; y <= 64; ++y) for (int x = 0; x <= 64; ++x) {
+        int distance = abs(x-column)>abs(y-row) ? abs(x-column) : abs(y-row);
+        int height = core_vertex(x,y), bound = target_height-direction*distance;
+        if ((direction > 0 && height < bound) || (direction < 0 && height > bound)) {
+            changed += abs(bound-height); core_set_vertex(x,y,bound);
+            if (x < xmin) xmin = x;
+            if (x > xmax) xmax = x;
+            if (y < ymin) ymin = y;
+            if (y > ymax) ymax = y;
+        }
+    }
+    core_add_mana(owner,-(10+changed*4));
+    /* Original map-update bounds include the cells on both sides of changed
+     * vertices; remote terrain and navigation history must remain untouched. */
+    core_make_map_region(xmin > 0 ? xmin-1 : 0, ymin > 0 ? ymin-1 : 0,
+                         xmax < 64 ? xmax : 63, ymax < 64 ? ymax : 63);
+    for (int person = 0; person < no_peeps; ++person)
+        if (peep_word(person,4)>0 && (peeps[person*22]&1)) core_set_town(person,0);
+    return 1;
+}
 
 static void _place_first_people(void)
 {
-    ensure_prg_screen();
-
-    /* Place demo population using the loaded level data when available.
-     * This makes "level laden + init game status" directly visible and testable.
-     * Different CLI numbers now produce different starting populations + owners.
-     */
-    num_demo_peeps = current_start_pop_you;
-
-    if (in_conquest != (int16_t)0xffff) {
-        /* Clamp to reasonable */
-        if (num_demo_peeps < 3) num_demo_peeps = 3;
-        if (num_demo_peeps > MAX_DEMO_PEEPS) num_demo_peeps = MAX_DEMO_PEEPS;
+    memset(peeps, 0, 208 * 22);
+    memset(map_who, 0, 4096);
+    no_peeps = current_start_pop_you + current_start_pop_enemy;
+    /* Explicit synthetic, legal flat starting plots, not original level maps. */
+    for (int index = 0; index < no_peeps; ++index) {
+        int owner = index >= current_start_pop_you;
+        int local = owner ? index-current_start_pop_you : index;
+        int position = (8+(local/5)*7)*64 + 8+(local%5)*8+owner*3;
+        peeps[index * 22] = 2;
+        peeps[index * 22 + 1] = index >= current_start_pop_you;
+        peeps[index * 22 + 2] = 1;
+        peeps[index * 22 + 3] = 1;
+        set_peep_word(index, 4, 45);
+        set_peep_word(index, 8, position);
+        set_peep_word(index, 12, 255);
+        map_who[position] = index + 1;
     }
-
-    /* Also spawn a few enemy peeps based on table pop_enemy for demo balance (column 7) */
-    /* This tests mixed population init from level data */
-    int enemy_pop = 8; /* fallback */
-    if (g_argc > 1) {
-        int idx = atoi(g_argv[1]) % 8;
-        enemy_pop = demo_levels[idx][7];
-    }
-    int total = num_demo_peeps + enemy_pop;
-    if (total > MAX_DEMO_PEEPS) total = MAX_DEMO_PEEPS;
-    /* For simplicity we keep player count as primary, enemy as extra in the same list with owner=1 */
-    /* Extend the loop below would be ideal, but for now the mix in placement already has some enemy */
-    /* The key is: different N now changes total "game init pop" visibly in the overlay */
-
-    if (seed == 0) seed = start_seed;
-
-    for (int i = 0; i < num_demo_peeps; i++) {
-        uint16_t r1 = ___newrand();
-        uint16_t r2 = ___newrand();
-
-        demo_peep_x[i] = 30 + (r1 % 200);
-        demo_peep_y[i] = 30 + (r2 % 160);
-
-        /* Avoid extreme heights for placement (quick "valid" rule for init test, from original mechanics) */
-        int mx = demo_peep_x[i]/4, my = demo_peep_y[i]/4;
-        if (mx<0) mx=0; if (mx>63) mx=63;
-        if (my<0) my=0; if (my>63) my=63;
-        int h = demo_height_at(my, mx);
-        if (h < -15 || h > 15) {
-            /* nudge to better spot */
-            demo_peep_x[i] = 40 + (___newrand() % 180);
-            demo_peep_y[i] = 40 + (___newrand() % 140);
-        }
-
-        /* Fill the real peep struct (from the assembly peeps format) */
-        demo_peeps[i].owner  = (i & 1);     /* mix for demo testing of enemy vs player */
-        demo_peeps[i].flags  = 0x03;        /* draw in both normal and view mode (from _animate chunk) */
-        demo_peeps[i].x      = demo_peep_x[i] / 4;
-        demo_peeps[i].y      = demo_peep_y[i] / 4;
-        demo_peeps[i].frame  = 0;
-        demo_peeps[i].health = 80 + (___newrand() % 40);
-    }
-
-    printf("[PRG] _place_first_people - %d peeps (conquest-aware for quick testing)\n", num_demo_peeps);
 }
 
-#if 0
-/* old duplicate _animate skeleton */
 static void _animate(void)
 {
-    printf("[PRG] _animate (old skeleton)\n");
+    if (!game_reset(current_scenario)) { prg_status = EXIT_FAILURE; return; }
+    game_render();
+    Uint32 next_tick = SDL_GetTicks() + 50;
+    while (!prg_quit) {
+        ___keyboard();
+        if (prg_quit) break;
+        Uint32 now = SDL_GetTicks();
+        int catch_up = 0;
+        while ((Sint32)(now-next_tick) >= 0 && catch_up++ < 5) {
+            game_tick(); next_tick += 50;
+        }
+        if ((Sint32)(now-next_tick) >= 0) next_tick = now+50;
+        game_render();
+        SDL_Delay(10);
+    }
 }
-#endif
+
+static int game_reset(int scenario)
+{
+    if (scenario < 0 || scenario >= 8) return 0;
+    ensure_prg_screen();
+    if (!prg_screen) return 0;
+    LandRules loaded;
+    char error[160];
+    const char *directory = getenv("POPULOUS_DATA_DIR");
+    if (!land_rules_load(directory, demo_levels[scenario][5], &loaded, error, sizeof error)) {
+        fprintf(stderr,"Original LAND data: %s. Set POPULOUS_DATA_DIR to extracted land0..3.\n",error);
+        return 0;
+    }
+    current_scenario = scenario;
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    const uint16_t *tables[] = {loaded.population_add,loaded.mana_add,loaded.weapons_add,loaded.battle_add1,loaded.battle_add2,loaded.weapons_order};
+    const int offsets[] = {0x2fe2,0x2fb6,0x2fcc,0x2ffa,0x3010,0x2f96};
+    for (int table = 0; table < 6; ++table)
+        for (int index = 0; index < (table == 4 ? 3 : 11); ++index) A4_WORD(offsets[table]+index*2) = tables[table][index];
+    A4_WORD(0x2fb0) = loaded.walk_death;
+    memcpy(map_colour_data,loaded.map_colour,32);
+    for (int index = 0; index < 25; ++index) A4_WORD(0x842c+index*2) = core_offsets[index];
+    for (int index = 0; index < 9; ++index) A4_WORD(0x8474+index*2) = core_city[index];
+    for (int index = 0; index < 11; ++index) A4_LONG(0x8486+index*4) = (uint32_t)core_mana_values[index];
+    for (int owner = 0; owner < 2; ++owner) {
+        A4_LONG(0x9a02+owner*16) = 399; /* _setup_display asm:1070 */
+        core_tendency(owner) = 1; core_target(owner) = 0x820;
+    }
+    core_result = core_battles = core_settlements = core_tool = 0;
+    const uint8_t *entry = demo_levels[scenario];
+    conquest = entry[0];
+    conq_01_speed = entry[1];
+    conq_02_enemypow = entry[2];
+    conq_03_yourpow = entry[3];
+    conq_04_mode = entry[4];
+    conq_05_terrain = entry[5];
+    conq_08_seed = entry[8];
+    in_conquest = scenario * 5;
+    current_start_pop_you = entry[6];
+    current_start_pop_enemy = entry[7];
+    demo_mana = 50;
+    demo_shield_timer = growth_tick = 0;
+    prg_quit = 0;
+    _setup_display();
+    SDL_SetWindowTitle(prg_screen->window,"Populous - original-rule intermediate port");
+    return 1;
+}
+
+static void game_tick(void)
+{
+    if (pause || prg_quit || core_result) return;
+    game_turn = (int16_t)((uint16_t)game_turn + 1u);
+    _move_peeps();
+    int friendly = core_population(0), enemy = core_population(1);
+    A4_LONG(0x99fe) = friendly; A4_LONG(0x9a0e) = enemy;
+    if (!friendly || !enemy) core_result = !friendly ? (enemy ? 2 : 3) : 1;
+}
+
+static void game_render(void)
+{
+    ___draw_it(yoff, xoff);
+    if (prg_screen) amiga_present(prg_screen);
+}
 
 static void _keyboard(void) { printf("[PRG] _keyboard\n"); }
 static void _mouse(void)    { printf("[PRG] _mouse\n"); }
@@ -856,18 +1087,27 @@ static void ensure_prg_screen(void)
 
 static void _main(void)
 {
-    ensure_prg_screen();   /* create the visible window early for motivation */
+    ensure_prg_screen();
+    if (!prg_screen) { prg_status = EXIT_FAILURE; return; }
     _openlibrary();
 
     /* AllocMem sequence for the big buffers (exact sizes + attributes from the PEA/JSR) */
-    sprite_data    = (uint32_t)(uintptr_t)amiga_alloc_mem(0x5960, 0);
-    sprite_data_32 = (uint32_t)(uintptr_t)amiga_alloc_mem(0x2080, 0);
-    blk_data       = (uint32_t)(uintptr_t)amiga_alloc_mem(0x8340, 0);
-    back_scr       = (uint32_t)(uintptr_t)amiga_alloc_mem(0x7D00, 2);
-    screen_pointer = (uint32_t)(uintptr_t)amiga_alloc_mem(0xfa00, 0x00010002);
-    copper_list    = (uint32_t)(uintptr_t)amiga_alloc_mem(0x384, 0x00010002);
-    spare_cl       = (uint32_t)(uintptr_t)amiga_alloc_mem(0x12c, 0x00010002);
-    fb             = (uint32_t)(uintptr_t)amiga_alloc_mem(0x104, 0x00010002);
+    sprite_data    = amiga_alloc_mem(0x5960, 0);
+    sprite_data_32 = amiga_alloc_mem(0x2080, 0);
+    blk_data       = amiga_alloc_mem(0x8340, 0);
+    back_scr       = amiga_alloc_mem(0x7D00, 2);
+    screen_pointer = amiga_alloc_mem(0xfa00, 0x00010002);
+    copper_list    = amiga_alloc_mem(0x384, 0x00010002);
+    spare_cl       = amiga_alloc_mem(0x12c, 0x00010002);
+    fb             = amiga_alloc_mem(0x104, 0x00010002);
+    for (int index = 0; index < 8; ++index) {
+        if (!host_buffers[index]) {
+            fprintf(stderr, "PRG allocation failed\n");
+            prg_status = EXIT_FAILURE;
+            _closeall();
+            return;
+        }
+    }
 
     /* start_of_game from WB/cli (the $42 path or atoi of arg) */
     if (0 /* argc path */) {
@@ -884,7 +1124,7 @@ static void _main(void)
     /* 1989 had two lines (call + move); 1993 version */
     _setup_serial_interrupt();
 
-    *(int16_t *)A4_DISP(0x98a2) = 0x2580;
+    A4_WORD(0x98a2) = 0x2580;
     ___set_serial();
 
     _animate();
@@ -905,14 +1145,12 @@ static void _closeall(void)
     ___free_all_sounds();
     ___close_channels();
 
-    amiga_free_mem((void*)(uintptr_t)sprite_data);
-    amiga_free_mem((void*)(uintptr_t)sprite_data_32);
-    amiga_free_mem((void*)(uintptr_t)blk_data);
-    amiga_free_mem((void*)(uintptr_t)back_scr);
-    amiga_free_mem((void*)(uintptr_t)screen_pointer);
-    amiga_free_mem((void*)(uintptr_t)copper_list);
-    amiga_free_mem((void*)(uintptr_t)spare_cl);
-    amiga_free_mem((void*)(uintptr_t)fb);
+    for (int index = 0; index < 8; ++index) {
+        amiga_free_mem(host_buffers[index]);
+        host_buffers[index] = NULL;
+    }
+    amiga_destroy_screen(prg_screen);
+    prg_screen = NULL;
 
     printf("[HW] INTENA = 0x0010\n");
     _free_serial_interrupt();
@@ -1023,7 +1261,7 @@ static void _setup_display(void)
         _clear_map();
     }
 
-    if (0 /* 8,A5 == 0 */) {
+    { /* Generate the synthetic map before the first frame. */
         _make_alt();
         _make_map();   /* real version takes 4 args - stub for now */
         _make_woods_rocks();
@@ -1045,179 +1283,6 @@ static void _setup_display(void)
            conquest, conq_01_speed, conq_02_enemypow, conq_03_yourpow, game_mode, ground_in, start_seed);
 }
 
-/* _animate - core game loop from the chunk (scrolls, debug keys, peeps dots, etc.) */
-static void _animate(void)
-{
-    _setup_display();
-
-    ___toggle_icon(0x17e4, 3, 0, (void*)(uintptr_t)back_scr);
-    ___toggle_icon(0x17e4, 4, 0, (void*)(uintptr_t)back_scr);
-    ___toggle_icon(0x12c0, 1, 6, (void*)(uintptr_t)back_scr);
-    ___toggle_icon(0x12c0, 3, 4, (void*)(uintptr_t)back_scr);
-
-    if (start_of_game == 2) {
-        start_of_game = 0;
-        ___clr_wsc();
-        ___swap_screens();
-        for (;;) {
-            in_conquest = ___show_world();
-            if (in_conquest == (int16_t)0xffff) continue;
-            break;
-        }
-        ___return_to_game();
-        _setup_display();
-    }
-    start_of_game = 0;
-
-    for (;;) {
-        /* tempo / beat from pop (simplified) */
-        if (1 /* good_pop[player] */) {
-            tempo = 50 - 10;
-            if (tempo < 7) tempo = 7;
-            beat_two = tempo / 3;
-        } else {
-            tempo = 0; beat_two = 1;
-        }
-        if (tempo_now > tempo) tempo_now = tempo;
-
-        toggle = !toggle;
-
-        ___clr_wsc();
-        no_sprites = 0;
-        ok_to_build = 0;
-        sound_effect = 0;
-
-        if (mode == 2) pointer = player * 3 + 1;
-
-        _move_mana();
-        ___draw_it(yoff, xoff);
-
-        /* sprite list draw (32px or normal) - placeholder coords */
-        for (int s = 0; s < no_sprites; s++) {
-            ___draw_sprite(0, 0, 0, (void*)(uintptr_t)w_screen);
-        }
-
-        ___draw_sprite(0x54,
-            xoff + yoff + 6/2 - 3,
-            xoff + 0x43 - (yoff + 3) - 3,
-            (void*)(uintptr_t)w_screen);
-
-        if (pause || paint_map) {
-            /* view-mode peeps dots */
-            for (int p = 0; p < no_peeps; p++) {
-                uint8_t *pp = (uint8_t *)peeps + p*0x16;
-                if (*(int16_t*)(pp+4) == 0) continue;
-                if (pp[1] != player && !serial_off) continue;
-                if (pp[0] & 1) ___a_putpixel(1, *(int16_t*)(pp+8));
-                if (pp[0] & 2) ___a_putpixel(8 + (pp[1]?0:7), *(int16_t*)(pp+8));
-            }
-        } else {
-            _do_funny();
-            _move_peeps();
-        }
-
-        /* Autonomous population growth simulation (quick test for evolving "init game status").
-         * Slowly increases living peeps toward the level's starting pop cap (from demo_levels).
-         * This makes the pop bars and mana bar change over time without user input,
-         * exercising place_first_people logic + bars in a living demo.
-         * Growth rate biased by level speed and current pop (more room = faster "births").
-         */
-        growth_tick++;
-        if ((growth_tick % 19) == 0) {
-            int max_pop = current_start_pop_you + 4;  /* slight headroom */
-            if (g_argc > 1) {
-                int idx = atoi(g_argv[1]) % 8;
-                max_pop = demo_levels[idx][6] + 4;
-            }
-            if (num_demo_peeps < max_pop && num_demo_peeps < MAX_DEMO_PEEPS) {
-                /* "birth" a new peep at a reasonable spot */
-                int i = num_demo_peeps;
-                uint16_t r1 = ___newrand();
-                uint16_t r2 = ___newrand();
-                demo_peep_x[i] = 40 + (r1 % 200);
-                demo_peep_y[i] = 40 + (r2 % 140);
-                /* validate height like in place_first */
-                int mx = demo_peep_x[i]/4, my = demo_peep_y[i]/4;
-                if (mx<0) mx=0; if (mx>63) mx=63; if (my<0) my=0; if (my>63) my=63;
-                if (demo_height_at(my, mx) >= -15 && demo_height_at(my, mx) <= 15) {
-                    demo_peeps[i].owner  = (i & 1);
-                    demo_peeps[i].flags  = 0x03;
-                    demo_peeps[i].x      = demo_peep_x[i] / 4;
-                    demo_peeps[i].y      = demo_peep_y[i] / 4;
-                    demo_peeps[i].frame  = 0;
-                    demo_peeps[i].health = 70 + (___newrand() % 30);
-                    num_demo_peeps++;
-                    /* feed mana a bit on growth */
-                    demo_mana = (demo_mana + 8) > 180 ? 180 : demo_mana + 8;
-                }
-            }
-        }
-
-        if (view_timer) {
-            view_timer--;
-            if (!(left_button && right_button)) view_who = old_view_who;
-        }
-
-        if (game_turn == 0x1000) {
-            _do_place_funny(0); /* real takes arg from chunk */
-        }
-
-        _show_the_shield();
-        ___swap_screens();
-
-        ___keyboard();
-
-        if (inkey) {
-            uint8_t k = inkey;
-            if (k == 0x45 /* * */) {
-                if (mousex > 0x136 && mousey >= 0xa && mousey <= 0x14 && (bitfield_51645 & 1)) {
-                    ___text("CHEAT", 0xa, 0, (void*)(uintptr_t)w_screen);
-                    /* stat writes for the corner cheat */
-                }
-            } else if (k == 0x59 /* F9 */) {
-                ___display_debug();
-            } else {
-                /* numpad scroll directions (exact labels from source) */
-                if (k == /* right */ 0x4e) { if (xoff < 0x38) xoff++; }
-                /* ... nw/n/ne/w/e/sw/s/se + esc return ... */
-            }
-        }
-
-        if (mode & 0xe) {
-            _sculpt();
-        } else if (!(left_button && right_button)) {
-            _interogate();
-        }
-
-        _zoom_map(left_button ? 1 : 0);
-
-        if (left_button == 2) { /* final button test from chunk */ }
-
-        /* Real present + input so you see the window update */
-        ___swap_screens();
-        ___keyboard();
-
-        /* Held mouse buttons = continuous micro sculpt near mouse (quick test for button-driven
-         * map edits like real _sculpt / _do_raise/_do_lower while the transcribed branches run).
-         */
-        if (prg_screen && (left_button || right_button)) {
-            int mx = ((mousex + xoff) >> 2) & 63;
-            int my = ((mousey + yoff) >> 2) & 63;
-            if (mx >= 0 && mx < DEMO_MAP_W && my >= 0 && my < DEMO_MAP_H) {
-                if (left_button) demo_height_at(my, mx) = (demo_height_at(my, mx) < 20) ? demo_height_at(my, mx) + 1 : 20;
-                if (right_button) demo_height_at(my, mx) = (demo_height_at(my, mx) > -20) ? demo_height_at(my, mx) - 1 : -20;
-            }
-        }
-
-        static int t = 0;
-        if ((++t % 20) == 0) {
-            printf("[animate] tick player=%d xoff=%d yoff=%d (numpad/arr scroll, p=view, q/v power, mouse sculpt, r=reset, ESC quit)\n",
-                   player, xoff, yoff);
-        }
-
-        if (prg_quit) break;
-    }
-}
 
 /* Visible minimal drawing so you actually SEE something (motivation!).
  * These touch the real chunky_buffer and call present.
@@ -1225,24 +1290,20 @@ static void _animate(void)
  */
 static void _clear_map(void)
 {
-    ensure_prg_screen();
-
-    /* use A4-backed map (map_who). Zero the relevant area the first time. */
-    static int cleared = 0;
-    if (!cleared) {
-        memset((void*)map_who, 0, DEMO_MAP_W * DEMO_MAP_H);
-        cleared = 1;
-    }
-
-    /* Clear visual */
-    if (prg_screen) {
-        uint32_t bg = prg_screen->palette[2 + (ground_in & 3)];
-        for (int i = 0; i < prg_screen->width * prg_screen->height; i++)
-            prg_screen->chunky_buffer[i] = bg;
-    }
+    /* _alt is 65*65 words; cell buffers are each 64*64 bytes (asm 54274). */
+    memset(A4_DISP(0xae86), 0, 65 * 65 * 2);
+    memset(map_blk, 0, 4096);
+    memset(map_alt, 0, 4096);
+    memset(map_bk2, 0, 4096);
+    memset(map_who, 0, 4096);
 }
 
-static void _make_alt(void) {}
+static void _make_alt(void)
+{
+    /* Valid synthetic plane for the bounded scenarios; original generator pending. */
+    for (int row = 0; row <= 64; ++row)
+        for (int column = 0; column <= 64; ++column) core_set_vertex(column,row,1);
+}
 static void _make_woods_rocks(void) {}
 
 #if 0
@@ -1262,261 +1323,104 @@ static void _place_first_people(void)
 
 static void _move_mana(void)
 {
-    /* Simple visible simulation of _move_mana from the _animate loop.
-     * Mana (or "manna" in some docs) is tied to population in Populous.
-     * We update a demo value here so the top bar in _draw_it shows activity
-     * as peeps move and pop changes. This exercises more of the transcribed loop.
-     */
-    /* Rough: base from initial pop + current living peeps, plus small tick */
-    int target = (current_start_pop_you * 3) + (num_demo_peeps / 2) + (toggle ? 5 : 0);
-    if (demo_mana < target) demo_mana++;
-    else if (demo_mana > target) demo_mana--;
-    if (demo_mana < 0) demo_mana = 0;
-    if (demo_mana > 200) demo_mana = 200;
+    /* Original _move_mana is presentation only, never mana generation. */
 }
 
 static void _draw_it(int16_t y, int16_t x)
 {
     ensure_prg_screen();
     if (!prg_screen) return;
-
-    /* Visible height-map + peeps renderer.
-     * Uses the shared demo_height + demo_peep_* variables (populated by _make_map and _place_first_people).
-     */
-
-    int w = prg_screen->width;
-    int h = prg_screen->height;
-
-    uint32_t base_col = prg_screen->palette[2 + (ground_in & 3)];
-
-    /* Draw shaded landscape - height gives real visual difference per "level" */
-    for (int yy = 0; yy < h; yy++) {
-        for (int xx = 0; xx < w; xx++) {
-            int mx = ((xx + x) >> 2) & 63;
-            int my = ((yy + y) >> 2) & 63;
-
-            int8_t height = demo_height_at(my, mx);
-            int shade = 5 + (height / 2);     /* height shading */
-            if (shade < 0) shade = 0;
-            if (shade > 15) shade = 15;
-
-            uint32_t col = prg_screen->palette[shade];
-
-            /* terrain tint + "loaded ground tiles" bitmap modulation (enhanced bild/ground shim).
-             * Uses start_seed for slight pattern phase (different levels look different even on same terrain).
-             * Height deltas give "edge" detail simulating real tile data / sculpt.
-             */
-            int phase = (start_seed & 3);
-            if (((xx + yy + phase) & 2) == 0)
-                col = base_col;
-
-            /* cheap but distinctive per-terrain ground texture (loaded "tiles") */
-            int tx = (xx >> 1) & 1;
-            int ty = (yy >> 1) & 1;
-            int hcur = demo_height_at(my, mx);
-            int hnext = demo_height_at(my, (mx+1)&63);
-            if (conq_05_terrain == 0) { /* grass: dither + edges */
-                if (tx ^ ty) col = prg_screen->palette[(shade + 2 + phase) & 15];
-                if (abs(hcur - hnext) > 3) col = prg_screen->palette[(shade + 1) & 15];
-            } else if (conq_05_terrain == 1) { /* desert: spots + flat */
-                if (tx && ty) col = prg_screen->palette[(shade/2 + phase) & 15];
-                if (hcur < -1) col = prg_screen->palette[shade/2];
-            } else if (conq_05_terrain == 2) { /* snow: bright patches */
-                if (!(tx | ty)) col = prg_screen->palette[(shade + 4 + (phase&1)) & 15];
-                if (abs(hcur - hnext) > 2) col = prg_screen->palette[(shade + 3) & 15];
-            } else if (conq_05_terrain == 3) { /* rocky: dark edges + rocks */
-                if (tx | ty) col = prg_screen->palette[1];
-                if (abs(hcur - hnext) > 4) col = prg_screen->palette[0];
+    const int width = 320, height = 256;
+    for (int screen_y = 0; screen_y < height; ++screen_y) {
+        for (int screen_x = 0; screen_x < width; ++screen_x) {
+            int column = (screen_x+x)/4, row = (screen_y+y)/4;
+            uint32_t colour = 0xff182028;
+            if (column < 64 && row < 64 && screen_y < 240) {
+                int cell = row*64+column, block = map_blk[cell];
+                colour = !block ? 0xff285899 : 0xff427346 + map_alt[cell]*0x090909;
+                if (block && block != 15 && block != 31 && block != 32) colour = 0xff70805a;
+                if (block == 31) colour = 0xff568980;
+                if (block == 32) colour = 0xff88544c;
+                if (((screen_x+x)%4 == 0 || (screen_y+y)%4 == 0) && block) colour &= 0xffeeeeee;
             }
-
-            /* Render special high "rocks" from the feature pass darker (make_woods_rocks style) */
-            if (hcur > 17 && conq_05_terrain == 3) {
-                col = prg_screen->palette[0]; /* dark rock */
-            }
-
-            prg_screen->chunky_buffer[yy * w + xx] = col;
+            prg_screen->chunky_buffer[screen_y*width+screen_x] = colour;
         }
     }
-
-    /* Draw demo peeps using the real struct (owner color, flags from the translated _animate chunk).
-     * Player peeps one color, enemy another – directly testable via level init.
-     * When paint_map (toggled with 'p') is set we hide the big blobs so the pop-dot overlay
-     * (BTST/a_putpixel logic from _animate) is the main visible thing — "population view".
-     */
-    if (!paint_map) {
-        for (int i = 0; i < num_demo_peeps; i++) {
-            int sx = demo_peep_x[i] - x;
-            int sy = demo_peep_y[i] - y;
-
-            if (sx >= 2 && sx < w-2 && sy >= 2 && sy < h-2) {
-                /* Color by owner – matches the BTST #0/#1 logic in the _animate peeps view code */
-                uint32_t pcol = (demo_peeps[i].owner == 0) ? prg_screen->palette[14] : prg_screen->palette[11];
-
-                /* 5x5 blob for visibility when testing different populations */
-                for (int dy = -2; dy <= 2; dy++) {
-                    for (int dx = -2; dx <= 2; dx++) {
-                        int idx = (sy + dy) * w + (sx + dx);
-                        if (idx >= 0 && idx < w * h)
-                            prg_screen->chunky_buffer[idx] = pcol;
-                    }
-                }
-            }
+    for (int person = 0; person < no_peeps; ++person) {
+        if (peep_word(person,4) <= 0) continue;
+        int sx = peep_screen_x(person)-x, sy = peep_screen_y(person)-y;
+        int town = peeps[person*22]&1, battle = peeps[person*22]&8;
+        uint32_t colour = peep_owner(person) ? 0xffff795d : 0xff8cffff;
+        int radius = paint_map ? 0 : town ? 3 : 1;
+        if (battle) colour = 0xffffff00;
+        for (int dy = -radius; dy <= radius; ++dy) for (int dx = -radius; dx <= radius; ++dx) {
+            int xx = sx+dx, yy = sy+dy;
+            if (xx < 0 || xx >= width || yy < 0 || yy >= 240) continue;
+            if (town && abs(dx)<radius && abs(dy)<radius && !paint_map) continue;
+            prg_screen->chunky_buffer[yy*width+xx] = colour;
         }
     }
-
-    /* Population view overlay - directly from the translated _animate chunk logic.
-     * Draw small pixels for each peep (simulating the btst + a_putpixel in view mode).
-     * Uses different colors per owner/bit. Perfect for seeing init differences.
-     */
-    for (int i = 0; i < num_demo_peeps; i++) {
-        int sx = demo_peep_x[i] - x;
-        int sy = demo_peep_y[i] - y;
-
-        if (sx >= 1 && sx < w-1 && sy >= 1 && sy < h-1) {
-            /* Color simulation from the stats table + offset logic in the chunk */
-            uint32_t col1 = (demo_peeps[i].owner == 0) ? prg_screen->palette[10] : prg_screen->palette[9];
-            uint32_t col2 = (demo_peeps[i].owner == 0) ? prg_screen->palette[14] : prg_screen->palette[11];
-
-            prg_screen->chunky_buffer[sy * w + sx]     = col1;
-            if (sx+1 < w) prg_screen->chunky_buffer[sy * w + sx + 1] = col2;
-            if (sy+1 < h) prg_screen->chunky_buffer[(sy+1)*w + sx]   = col2;
-        }
+    int population[2] = {core_population(0),core_population(1)};
+    int total = population[0]+population[1];
+    for (int owner = 0; owner < 2; ++owner) {
+        int length = total ? population[owner]*300/total : 0;
+        for (int pixel = 0; pixel < length; ++pixel)
+            prg_screen->chunky_buffer[(244+owner*3)*width+10+pixel] = owner ? 0xffff795d : 0xff8cffff;
     }
-
-    /* Simple visible game init status bar at bottom (for quick testing different level inits) */
-    /* Shows relative player vs enemy pop from the loaded level data */
-    int bar_y = h - 8;
-
-    /* Visible _show_the_shield effect (called from _animate every frame).
-     * Short bright flash/overlay to show the "god protection" / heartbeat effect.
-     * Makes conquest init runs more lively; auto-triggers via growth_tick.
-     */
-    if (demo_shield_timer > 0) {
-        uint32_t shield_col = prg_screen->palette[15];  /* bright white-ish */
-        int strength = demo_shield_timer;
-        for (int yy = 0; yy < h; yy += 3) {
-            for (int xx = 0; xx < w; xx += 3) {
-                if (((xx + yy) & 7) == 0) {
-                    int idx = yy * w + xx;
-                    /* simple brightening overlay */
-                    prg_screen->chunky_buffer[idx] = shield_col;
-                }
-            }
-        }
-        /* edge "shield" ring */
-        for (int i=0; i<strength*2; i++) {
-            int x1 = 5 + i; int y1 = 5 + i;
-            int x2 = w-6 - i; int y2 = h-6 - i;
-            if (x1 < w && y1 < h) prg_screen->chunky_buffer[y1*w + x1] = shield_col;
-            if (x2 >=0 && y1 < h) prg_screen->chunky_buffer[y1*w + x2] = shield_col;
-            if (x1 < w && y2 >=0) prg_screen->chunky_buffer[y2*w + x1] = shield_col;
-            if (x2 >=0 && y2 >=0) prg_screen->chunky_buffer[y2*w + x2] = shield_col;
-        }
+    int mana_length = core_mana(0) > 0 ? core_mana(0)/10 : 0;
+    if (mana_length > 300) mana_length = 300;
+    for (int pixel = 0; pixel < mana_length; ++pixel)
+        prg_screen->chunky_buffer[251*width+10+pixel] = 0xffd8c060;
+    if (pause || core_result) {
+        uint32_t colour = core_result == 1 ? 0xff8cffff : core_result ? 0xffff795d : 0xffffff80;
+        for (int pixel=0; pixel<width; ++pixel) prg_screen->chunky_buffer[pixel] = colour;
     }
-    int bar_w = w - 20;
-    /* Live evolving player pop from autonomous growth (num_demo_peeps grows toward level target).
-     * Makes status bars change over time after loading a level — direct test of init + sim.
-     */
-    int live_player = (num_demo_peeps > 0 ? num_demo_peeps : current_start_pop_you);
-    int player_bar = (live_player * bar_w) / 25; /* scale */
-    int enemy_bar = 0;
-    if (g_argc > 1) {
-        int idx = atoi(g_argv[1]) % 8;
-        enemy_bar = (demo_levels[idx][7] * bar_w) / 25;
-    }
-    for (int bx=10; bx<10+bar_w; bx++) {
-        if (bx < 10 + player_bar) prg_screen->chunky_buffer[bar_y * w + bx] = prg_screen->palette[14];
-        if (bx < 10 + enemy_bar) prg_screen->chunky_buffer[(bar_y+2) * w + bx] = prg_screen->palette[11];
-    }
-
-    /* Mana bar driven by _move_mana (called every frame from the transcribed _animate loop).
-     * Gives visible feedback that the core heartbeat is "running" and population affects resources.
-     */
-    int mana_y = bar_y - 4;
-    int mana_val = demo_mana;
-    int mana_w = (mana_val > 0 ? (mana_val * bar_w) / 120 : 0);
-    for (int bx=10; bx<10+bar_w && bx<w; bx++) {
-        if (bx < 10 + mana_w) prg_screen->chunky_buffer[mana_y * w + bx] = prg_screen->palette[5]; /* distinct color */
-    }
+    char title[512];
+    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; mouse raise/lower; Space pause R reset Esc quit",
+        core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : "RUNNING",
+        population[0],population[1],core_mana(0),core_tool ? "MAGNET (200)" : "TERRAIN (10+4/point)");
+    SDL_SetWindowTitle(prg_screen->window,title);
 }
 
-static void _do_quake(void)
-{
-    /* Visible stub so that when real _animate / _do_action paths call it (or debug), the landscape reacts.
-     * Uses same demo map as the interactive q/mouse sculpt for instant test feedback.
-     */
-    ensure_prg_screen();
-    int cx = 20 + (___newrand() % 24);
-    int cy = 18 + (___newrand() % 20);
-    for (int dy=-2; dy<=2; dy++) for (int dx=-2; dx<=2; dx++) {
-        int mx=cx+dx, my=cy+dy;
-        if (mx>=0&&mx<DEMO_MAP_W && my>=0&&my<DEMO_MAP_H) {
-            demo_height_at(my, mx) -= (2 + (___newrand()&1));
-            if (demo_height_at(my, mx) < -24) demo_height_at(my, mx) = -24;
-        }
-    }
-    if (prg_screen) {
-        _draw_it(yoff, xoff);
-        amiga_present(prg_screen);
-    }
-    printf("[PRG] _do_quake (demo visible at ~%d,%d)\n", cx, cy);
-}
+static void _do_quake(void) { /* Disabled until original power rules are ported. */ }
 static void _do_funny(void) {}
 static void _move_peeps(void)
 {
-    /* Lightweight movement on the struct (from the real _move_peeps / _where_do_i_go logic in the chunk).
-     * Different levels start with different numbers of "alive" peeps that move at speeds from the
-     * loaded demo_levels table (conq_01_speed). Plus very simple height bias so terrain inits look
-     * and behave differently (peeps "prefer" flatter/lower ground on some levels).
-     * Immediate visual feedback on init + simulation tick.
-     */
-    static int tick = 0;
-    tick++;
-
-    /* Speed from level data (higher = faster movement in this demo) */
-    int speed = (g_argc > 1) ? (demo_levels[atoi(g_argv[1]) % 8][1] / 2 + 1) : 2;
-    int interval = 6 - speed; if (interval < 2) interval = 2;
-
-    for (int i = 0; i < num_demo_peeps; i++) {
-        if ((tick + i) % interval == 0) {
-            int dx = (___newrand() % 3) - 1;
-            int dy = (___newrand() % 3) - 1;
-
-            /* Tiny height bias: sample current and nudge (visual terrain interaction) */
-            int mx = demo_peep_x[i] / 4, my = demo_peep_y[i] / 4;
-            if (mx<0) mx=0; if (mx>63) mx=63; if (my<0) my=0; if (my>63) my=63;
-            int h = demo_height_at(my, mx);
-            if (h > 8) { dx = (dx > 0 ? -1 : dx); dy = (dy > 0 ? -1 : dy); } /* avoid steep */
-            else if (h < -6) { dx = (dx < 0 ? 1 : dx); dy = (dy < 0 ? 1 : dy); } /* slide downhill-ish */
-
-            demo_peep_x[i] += dx;
-            demo_peep_y[i] += dy;
-
-            /* Keep on screen and update the struct position (for future real drawing) */
-            if (demo_peep_x[i] < 20) demo_peep_x[i] = 20;
-            if (demo_peep_x[i] > 280) demo_peep_x[i] = 280;
-            if (demo_peep_y[i] < 20) demo_peep_y[i] = 20;
-            if (demo_peep_y[i] > 220) demo_peep_y[i] = 220;
-
-            demo_peeps[i].x = demo_peep_x[i] / 4;
-            demo_peeps[i].y = demo_peep_y[i] / 4;
-            demo_peeps[i].frame = (demo_peeps[i].frame + 1) & 3; /* simple anim tick */
+    /* Ordinary walker/town/battle closure of _move_peeps. Specials are disabled. */
+    for (int person = 0; person < no_peeps; ++person) {
+        if (peep_word(person,4) <= 0) continue;
+        int flags = peeps[person*22];
+        int position = peep_word(person,8);
+        if (!map_blk[position] && !(flags&8)) {
+            if (flags&1) core_set_town(person,1);
+            peeps[person*22] = 18;
+            if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
+            int population = peep_word(person,4)-2*A4_WORD(0x2fb0);
+            set_peep_word(person,4,population > 0 ? population : 0);
+            if (population <= 0) core_remove(person);
+            continue;
+        }
+        if (flags&16) { peeps[person*22] = 2; set_peep_word(person,12,0); flags = 2; }
+        if (flags&8) {
+            int other = peep_word(person,6);
+            if (other > person && other < no_peeps && peep_word(other,4)>0) core_battle(person,other);
+        } else if (flags&1) core_settle_tick(person);
+        else {
+            int frame = peep_word(person,12)+1;
+            if (frame < 8) { set_peep_word(person,12,frame); continue; }
+            set_peep_word(person,12,0);
+            int position = peep_word(person,8);
+            if (!map_blk[position]) {
+                if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
+                set_peep_word(person,4,peep_word(person,4)-A4_WORD(0x2fb0));
+            }
+            core_move(person);
+            if (peep_word(person,4)>0) set_peep_word(person,4,peep_word(person,4)-A4_WORD(0x2fb0));
+            if (peep_word(person,4)<=0) core_remove(person);
         }
     }
 }
-static void _show_the_shield(void)
-{
-    /* Visible stub for the call in _animate (every frame in the transcribed loop).
-     * In real game this draws the "god shield" / protection effect.
-     * For demo motivation we trigger a short flash/overlay when called (or on demand).
-     * Can be triggered more visibly via growth or debug key later.
-     */
-    if (demo_shield_timer > 0) demo_shield_timer--;
-    /* Occasionally auto-trigger a short shield for visible "game running" effect in conquest init tests */
-    if ((growth_tick % 47) == 0 && demo_shield_timer == 0) {
-        demo_shield_timer = 8;  /* frames of effect */
-    }
-}
+static void _show_the_shield(void) {}
 static void _sculpt(void) {}
 static void _interogate(void) {}
 static void _zoom_map(int16_t d) {}
@@ -1536,44 +1440,14 @@ static void ___start_game(void){printf("[PRG] start_game\n");}
 static void ___set_serial(void){printf("[PRG] set_serial\n");}
 static void ___load_ground(int16_t a, int16_t terrain)
 {
-    ensure_prg_screen();
-    if (!prg_screen) return;
-
-    /* "Ground / bild" loading shim — simulates loading terrain-specific tile data / palette
-     * from the original ground files (demo.pic / level ground). Different conquest levels
-     * (via CLI N) now load visibly distinct ground "tilesets".
-     */
-    printf("[PRG] ___load_ground terrain=%d (bild/ground shim)\n", terrain);
-
-    /* Distinct Amiga-style palettes per terrain type (0=grass,1=desert,2=snow,3=rocky).
-     * These are "loaded" here so the chunky renderer + _draw_it see the ground immediately.
-     */
-    if (terrain == 0) { /* grass / classic */
-        for (int i=0; i<16; i++) {
-            int g = 0xA0 + ((i*3)&0x3F);
-            amiga_set_color(prg_screen, i, (i<<8) | ((g>>4)<<4) | (i&0xF) ); /* greenish */
-        }
-    } else if (terrain == 1) { /* desert */
-        for (int i=0; i<16; i++) {
-            int v = 0x70 + ((i*4)&0x7F);
-            amiga_set_color(prg_screen, i, (v<<8) | ((v>>1)<<4) | (i&0x7) ); /* yellow/orange */
-        }
-    } else if (terrain == 2) { /* snow */
-        for (int i=0; i<16; i++) {
-            int b = 0xC0 + ((i*2)&0x3F);
-            amiga_set_color(prg_screen, i, (i<<8) | (i<<4) | (b & 0xF) ); /* bright bluish white */
-        }
-    } else { /* rocky */
-        for (int i=0; i<16; i++) {
-            int v = ((i + 2) * 11) & 0xFF;
-            amiga_set_color(prg_screen, i, (v<<8) | (v<<4) | ((v>>2)&0xF) ); /* grays/browns */
-        }
-    }
+    /* Rule data is validated transactionally by game_reset before A4 changes.
+     * Original graphics/sprite decoding remains outside this bounded port. */
+    (void)a; (void)terrain;
 }
 static void ___Setscreen(int16_t m,void *s1,void *s2){printf("[SDL] Setscreen\n");}
 static void ___copy_screen(void *d,void *s){printf("[SDL] copy_screen\n");}
 static void ___toggle_icon(int16_t i,int16_t a,int16_t b,void *scr){printf("[SDL] toggle_icon 0x%04x\n",(uint16_t)i);}
-static void ___draw_it(int16_t y,int16_t x){printf("[SDL] draw_it\n");}
+static void ___draw_it(int16_t y,int16_t x){_draw_it(y, x);}
 static void ___draw_s_32(int16_t x,int16_t y,void *scr){printf("[SDL] draw_s_32\n");}
 static void ___draw_sprite(int16_t f,int16_t x,int16_t y,void *scr){printf("[SDL] draw_sprite\n");}
 static void ___clr_wsc(void)
@@ -1600,130 +1474,60 @@ static void ___text(const char *s,int16_t y,int16_t x,void *scr){printf("[SDL] t
 static void ___a_putpixel(int16_t c,int16_t pos){printf("[SDL] a_putpixel\n");}
 static void ___keyboard(void)
 {
-    ensure_prg_screen();
-    SDL_Event ev;
-    while (SDL_PollEvent(&ev)) {
-        if (ev.type == SDL_QUIT) prg_quit = 1;
-        if (ev.type == SDL_KEYDOWN) {
-            switch (ev.key.keysym.sym) {
-                case SDLK_ESCAPE: prg_quit = 1; break;
-                case SDLK_KP_4: case SDLK_LEFT:  if (xoff > 0) xoff--; break;
-                case SDLK_KP_6: case SDLK_RIGHT: if (xoff < 0x38) xoff++; break;
-                case SDLK_KP_8: case SDLK_UP:    if (yoff > 0) yoff--; break;
-                case SDLK_KP_2: case SDLK_DOWN:  if (yoff < 0x38) yoff++; break;
-                case SDLK_KP_7: if (xoff>0) xoff--; if (yoff>0) yoff--; break; /* nw etc. simplified */
-                case SDLK_KP_9: if (xoff<0x38) xoff++; if (yoff>0) yoff--; break;
-                case SDLK_KP_1: if (xoff>0) xoff--; if (yoff<0x38) yoff++; break;
-                case SDLK_KP_3: if (xoff<0x38) xoff++; if (yoff<0x38) yoff++; break;
-                case SDLK_a: /* demo "win" - clear some peeps area */
-                    for (int i = 100; i < 200 && i < prg_screen->width*prg_screen->height; i+=3)
-                        prg_screen->chunky_buffer[i] = prg_screen->palette[0];
-                    break;
-                case SDLK_F9:
-                    printf("[debug] F9 stats (stub)\n");
-                    break;
-                case SDLK_q: {
-                    /* DEMO: visible quake / sculpt power effect (tests map mutation + redraw like real _do_quake/_sculpt).
-                     * Different levels (via CLI N) start with different terrain; q deforms it live so you can see
-                     * init status + dynamic changes without restarting. Matches the quick-test priority.
-                     */
-                    int cx = 30 + ((xoff + 20) % 30);
-                    int cy = 30 + ((yoff + 16) % 28);
-                    for (int dy = -3; dy <= 3; dy++) {
-                        for (int dx = -3; dx <= 3; dx++) {
-                            int mx = cx + dx, my = cy + dy;
-                            if (mx >= 0 && mx < 64 && my >= 0 && my < 64) {
-                                int delta = 3 + (___newrand() & 3);
-                                demo_height_at(my, mx) -= delta;
-                                if (demo_height_at(my, mx) < -24) demo_height_at(my, mx) = -24;
-                            }
-                        }
-                    }
-                    _draw_it(yoff, xoff);
-                    if (prg_screen) amiga_present(prg_screen);
-                    printf("[DEMO] quake centered ~%d,%d (press q again, scroll, or r to reset)\n", cx, cy);
-                    break;
-                }
-                case SDLK_r: {
-                    /* Quick re-init current level's map + peeps for live testing of make_map/place without restart */
-                    _make_map();
-                    _place_first_people();
-                    _draw_it(yoff, xoff);
-                    if (prg_screen) amiga_present(prg_screen);
-                    printf("[DEMO] map+peeps reset for current level init\n");
-                    break;
-                }
-                case SDLK_p: {
-                    /* Toggle paint_map (population view mode) — exercises the if(pause || paint_map) branch
-                     * and the a_putpixel dot logic from the transcribed _animate chunk. Big peeps hide,
-                     * tiny owner-colored dots + landscape remain (great for inspecting init pop distribution
-                     * on different levels).
-                     */
-                    paint_map = paint_map ? 0 : 1;
-                    _draw_it(yoff, xoff);
-                    if (prg_screen) amiga_present(prg_screen);
-                    printf("[DEMO] paint_map (pop view) = %d (press p again to toggle)\n", (int)paint_map);
-                    break;
-                }
-                case SDLK_v: {
-                    /* DEMO volcano (raise) — symmetric to q (quake/lower). Tests positive power mutation
-                     * on top of any loaded level init (different terrain reacts differently).
-                     */
-                    int cx = 30 + ((xoff + 18) % 28);
-                    int cy = 28 + ((yoff + 14) % 26);
-                    for (int dy = -3; dy <= 3; dy++) {
-                        for (int dx = -3; dx <= 3; dx++) {
-                            int mx = cx + dx, my = cy + dy;
-                            if (mx >= 0 && mx < 64 && my >= 0 && my < 64) {
-                                int delta = 3 + (___newrand() & 3);
-                                demo_height_at(my, mx) += delta;
-                                if (demo_height_at(my, mx) > 24) demo_height_at(my, mx) = 24;
-                            }
-                        }
-                    }
-                    _draw_it(yoff, xoff);
-                    if (prg_screen) amiga_present(prg_screen);
-                    printf("[DEMO] volcano centered ~%d,%d (q=quake, v=volcano, mouse sculpt, r=reset)\n", cx, cy);
-                    break;
-                }
-                default: break;
-            }
-            /* crude inkey for the asm logic */
-            /* inkey = ... ; left_button/right_button can be set from mouse too */
+    SDL_Event event;
+    while (!prg_quit && SDL_PollEvent(&event)) game_handle_event(&event);
+}
+
+static void game_handle_event(const SDL_Event *event)
+{
+    if (event->type == SDL_QUIT) { prg_quit = 1; return; }
+    if (event->type == SDL_KEYDOWN) {
+        SDL_Keycode key = event->key.keysym.sym;
+        if (key == SDLK_ESCAPE) { prg_quit = 1; return; }
+        if (!event->key.repeat) {
+            if (key == SDLK_SPACE) pause = !pause;
+            if (key == SDLK_p) paint_map = !paint_map;
+            if (key == SDLK_r && !game_reset(current_scenario)) { prg_status = EXIT_FAILURE; prg_quit = 1; }
+            if (!pause && !core_result && key >= SDLK_0 && key <= SDLK_3) core_tendency(0) = key-SDLK_0;
+            if (key == SDLK_m) core_tool = !core_tool;
         }
-        if (ev.type == SDL_MOUSEMOTION) {
-            /* wire real mouse for transcribed _animate branches (interogate/sculpt/zoom/view_who etc) */
-            big_mousex = ev.motion.x;
-            big_mousey = ev.motion.y;
-            mousex = ev.motion.x / 2;  /* scale roughly to Amiga coords */
-            mousey = ev.motion.y / 2;
-        }
-        if (ev.type == SDL_MOUSEBUTTONDOWN) {
-            if (ev.button.button == SDL_BUTTON_LEFT) left_button = 1;
-            if (ev.button.button == SDL_BUTTON_RIGHT) right_button = 1;
-            /* Immediate visible sculpt/raise/lower at mouse pos (quick test for button-driven map edits like real _sculpt/_raise/_lower).
-             * Mouse now drives A4 mousex/y + left/right_button which the transcribed _animate already reads.
-             */
-            if (prg_screen) {
-                int mx = ((ev.button.x / 2) + xoff) >> 2;   /* map to the 64x64 demo grid using current scroll */
-                int my = ((ev.button.y / 2) + yoff) >> 2;
-                if (mx >= 0 && mx < 64 && my >= 0 && my < 64) {
-                    if (ev.button.button == SDL_BUTTON_LEFT) {
-                        demo_height_at(my, mx) = (demo_height_at(my, mx) < 20) ? demo_height_at(my, mx) + 4 : 20;
-                    } else if (ev.button.button == SDL_BUTTON_RIGHT) {
-                        demo_height_at(my, mx) = (demo_height_at(my, mx) > -20) ? demo_height_at(my, mx) - 4 : -20;
-                    }
-                    _draw_it(yoff, xoff);
-                    amiga_present(prg_screen);
-                    printf("[DEMO] sculpt at map %d,%d (left=raise, right=lower; also q for area quake)\n", mx, my);
-                }
-            }
-        }
-        if (ev.type == SDL_MOUSEBUTTONUP) {
-            if (ev.button.button == SDL_BUTTON_LEFT) left_button = 0;
-            if (ev.button.button == SDL_BUTTON_RIGHT) right_button = 0;
+        if ((key == SDLK_LEFT || key == SDLK_KP_4 || key == SDLK_KP_7 || key == SDLK_KP_1) && xoff > 0) --xoff;
+        if ((key == SDLK_RIGHT || key == SDLK_KP_6 || key == SDLK_KP_9 || key == SDLK_KP_3) && xoff < 56) ++xoff;
+        if ((key == SDLK_UP || key == SDLK_KP_8 || key == SDLK_KP_7 || key == SDLK_KP_9) && yoff > 0) --yoff;
+        if ((key == SDLK_DOWN || key == SDLK_KP_2 || key == SDLK_KP_1 || key == SDLK_KP_3) && yoff < 56) ++yoff;
+
+    }
+    if (event->type == SDL_MOUSEMOTION && prg_screen) {
+        int width, height;
+        SDL_GetWindowSize(prg_screen->window, &width, &height);
+        if (width > 0 && height > 0) {
+            int x = event->motion.x, y = event->motion.y;
+            if (x < 0) x = 0;
+            if (x >= width) x = width - 1;
+            if (y < 0) y = 0;
+            if (y >= height) y = height - 1;
+            mousex = (int16_t)((int64_t)x * prg_screen->width / width);
+            mousey = (int16_t)((int64_t)y * prg_screen->height / height);
+            big_mousex = mousex;
+            big_mousey = mousey;
         }
     }
+    if (event->type == SDL_MOUSEBUTTONDOWN && prg_screen && !pause && !core_result) {
+        int width,height; SDL_GetWindowSize(prg_screen->window,&width,&height);
+        if (width <= 0 || height <= 0 || event->button.x < 0 || event->button.y < 0 ||
+            event->button.x >= width || event->button.y >= height) return;
+        int sx = (int64_t)event->button.x*320/width, sy = (int64_t)event->button.y*256/height;
+        if (sy >= 240) return;
+        int column = (sx+xoff)/4, row = (sy+yoff)/4;
+        if (column >= 64 || row >= 64) return;
+        if (core_tool) {
+            if (event->button.button == SDL_BUTTON_LEFT && core_leader(0) && core_mana(0)>=200) {
+                core_add_mana(0,-200); core_target(0)=row*64+column; core_tendency(0)=0;
+            }
+        } else if (event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT)
+            core_sculpt(0,column,row,event->button.button == SDL_BUTTON_LEFT ? 1 : -1);
+    }
+    /* q/v and unsupported special powers remain inert. */
 }
 static void ___setup_mouse(void){printf("[SDL] setup_mouse\n");}
 static void ___AddIntServer(int16_t l,void *is){printf("[PRG] AddIntServer %d\n",l);}

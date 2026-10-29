@@ -3,54 +3,72 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 
 AmigaScreen *amiga_create_screen(int width, int height, int depth)
 {
+    /* SDL dimensions/pitch are signed ints; buffer sizes must also fit size_t. */
+    if (width <= 0 || height <= 0 || depth < 1 || depth > 8 ||
+        width > INT_MAX / (int)sizeof(uint32_t) || height > INT_MAX / 2 ||
+        (size_t)width > SIZE_MAX / sizeof(uint32_t) / (size_t)height) {
+        SDL_SetError("Invalid Amiga screen dimensions or depth");
+        fprintf(stderr, "amiga_create_screen: %s\n", SDL_GetError());
+        return NULL;
+    }
     AmigaScreen *scr = calloc(1, sizeof(AmigaScreen));
-    if (!scr) return NULL;
+    if (!scr) goto allocation_failed;
 
     scr->width = width;
     scr->height = height;
     scr->depth = depth;
 
-    /* Allocate bitplane memory (CHIP style - we just use normal RAM here) */
-    for (int p = 0; p < depth && p < 8; p++) {
-        scr->bitplanes[p] = calloc(1, (width * height) / 8);
-        if (!scr->bitplanes[p]) {
-            fprintf(stderr, "Failed to allocate bitplane %d\n", p);
-        }
+    /* Bitplane rows include padding when the width is not a multiple of eight. */
+    size_t row_bytes = ((size_t)width + 7) / 8;
+    for (int plane = 0; plane < depth; ++plane) {
+        scr->bitplanes[plane] = calloc((size_t)height, row_bytes);
+        if (!scr->bitplanes[plane]) goto allocation_failed;
     }
-
     scr->palette = calloc(256, sizeof(uint32_t));
+    if (!scr->palette) goto allocation_failed;
+    scr->chunky_buffer = calloc((size_t)width * (size_t)height, sizeof(uint32_t));
+    if (!scr->chunky_buffer) goto allocation_failed;
 
-    /* Default Amiga-like palette (very rough) */
-    for (int i = 0; i < 16; i++) {
-        int v = (i * 17) & 0xFF; /* rough 4-bit to 8-bit */
-        scr->palette[i] = 0xFF000000 | (v << 16) | (v << 8) | v;
+    for (int index = 0; index < 16; ++index) {
+        unsigned value = (unsigned)index * 17;
+        scr->palette[index] = 0xFF000000u | (value << 16) | (value << 8) | value;
     }
 
-    scr->chunky_buffer = calloc(width * height, sizeof(uint32_t));
-
-    /* Create SDL window + renderer (low level feel) */
     scr->window = SDL_CreateWindow("Populous Amiga Port (SDL2 low-level)",
                                    SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                   width * 2, height * 2,  /* integer scale for visibility */
-                                   SDL_WINDOW_SHOWN);
+                                   width * 2, height * 2, SDL_WINDOW_SHOWN);
     if (!scr->window) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+        goto failed;
     }
-
-    scr->renderer = SDL_CreateRenderer(scr->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    scr->renderer = SDL_CreateRenderer(scr->window, -1,
+                                      SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!scr->renderer) {
-        fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
+        fprintf(stderr, "Accelerated renderer unavailable: %s; trying software\n", SDL_GetError());
+        scr->renderer = SDL_CreateRenderer(scr->window, -1, SDL_RENDERER_SOFTWARE);
+        if (!scr->renderer) {
+            fprintf(stderr, "Software renderer failed: %s\n", SDL_GetError());
+            goto failed;
+        }
     }
-
-    scr->texture = SDL_CreateTexture(scr->renderer,
-                                     SDL_PIXELFORMAT_ARGB8888,
-                                     SDL_TEXTUREACCESS_STREAMING,
-                                     width, height);
-
+    scr->texture = SDL_CreateTexture(scr->renderer, SDL_PIXELFORMAT_ARGB8888,
+                                     SDL_TEXTUREACCESS_STREAMING, width, height);
+    if (!scr->texture) {
+        fprintf(stderr, "SDL_CreateTexture failed: %s\n", SDL_GetError());
+        goto failed;
+    }
     return scr;
+
+allocation_failed:
+    SDL_OutOfMemory();
+    fprintf(stderr, "amiga_create_screen: %s\n", SDL_GetError());
+failed:
+    amiga_destroy_screen(scr);
+    return NULL;
 }
 
 void amiga_destroy_screen(AmigaScreen *scr)

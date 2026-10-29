@@ -237,9 +237,16 @@ static void sub_29e(void)
 /* SUB_2C6 - cleanup of early allocations */
 static void sub_2c6(void)
 {
-    if (g.copper_area)   amiga_free_mem(g.copper_area);
-    if (g.load_pic_struct) amiga_free_mem(g.load_pic_struct);
-    /* The big screen allocs are usually kept until later */
+    amiga_free_mem(g.copper_area);
+    amiga_free_mem(g.load_pic_struct);
+    amiga_free_mem(g.startup_struct);
+    amiga_free_mem(g.alloc_1f400);
+    amiga_free_mem(g.alloc_8340);
+    amiga_free_mem(g.alloc_7d00);
+    amiga_free_mem(g.alloc_4b0);
+    if (g.intuition_base) amiga_close_library(g.intuition_base);
+    if (g.graphics_base) amiga_close_library(g.graphics_base);
+    memset(&g, 0, sizeof(g));
 }
 
 /* SUB_308 - select one of the allocated buffers */
@@ -291,16 +298,18 @@ int main(int argc, char **argv)
 {
     printf("=== Populous Amiga - C Port (SDL2 low-level) ===\n\n");
 
+    int status = EXIT_FAILURE;
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        fprintf(stderr, "SDL_Init failed\n");
-        return 1;
+        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        SDL_Quit();
+        return status;
     }
 
     /* Create a low-level Amiga-style screen */
     screen = amiga_create_screen(320, 256, 4);
     if (!screen) {
         fprintf(stderr, "Failed to create screen\n");
-        return 1;
+        goto cleanup;
     }
 
     /* === Exact order from the first chunk of the disassembly === */
@@ -312,6 +321,11 @@ int main(int argc, char **argv)
     sub_16e();          /* set up loader structures for demo.pic + populous.prg */
 
     sub_226();          /* copper / extra screen control area */
+    if (!g.alloc_1f400 || !g.alloc_8340 || !g.alloc_7d00 || !g.alloc_4b0 ||
+        !g.load_pic_struct || !g.startup_struct || !g.copper_area) {
+        fprintf(stderr, "Launcher allocation failed\n");
+        goto cleanup;
+    }
     sub_29e();          /* display params */
 
     /* The original then called several more inits, then the loader */
@@ -337,8 +351,13 @@ int main(int argc, char **argv)
         extern char **g_argv;
         g_argc = argc;
         g_argv = argv;
-        prg_main();   /* does not return in current implementation (owns the loop) */
-        /* If it ever returns we would fall through to cleanup */
+        /* SDL belongs to the launcher; PRG owns its own screen and event loop. */
+        amiga_destroy_screen(screen);
+        screen = NULL;
+        prg_main();
+        extern int prg_exit_status(void);
+        status = prg_exit_status();
+        goto cleanup;
     }
 
     /* Very crude "we loaded the picture" (first-chunk demo path for other choices) */
@@ -372,11 +391,12 @@ int main(int argc, char **argv)
         SDL_Delay(16);
     }
 
-    /* Cleanup */
+    status = EXIT_SUCCESS;
+cleanup:
     sub_2c6();
     amiga_destroy_screen(screen);
+    screen = NULL;
     SDL_Quit();
 
-    printf("\nFirst chunk port finished.\n");
-    return 0;
+    return status;
 }
