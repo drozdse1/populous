@@ -59,6 +59,10 @@
 #include <limits.h>
 
 #include "land_data.h"
+#include "graphics.h"
+#ifndef POPULOUS_DEFAULT_ASSET_DIR
+#define POPULOUS_DEFAULT_ASSET_DIR "binaries/populous-extracted"
+#endif
 #include "symbols_prg.h"  /* all the _function addresses and data from the map */
 #include "sdl_lowlevel.h" /* our low-level Amiga gfx emulation (bitplanes, sprites, copper/vsync, palette) */
 
@@ -82,6 +86,9 @@ static AmigaScreen *prg_screen = NULL;
 static int prg_quit = 0;
 static int prg_status = EXIT_SUCCESS;
 static void *host_buffers[8];
+static GraphicsAssets *game_assets;
+static uint8_t game_pixels[GFX_WIDTH * GFX_HEIGHT];
+static int diagnostic_view;
 
 /* Forward so we can use it in prg_main for the immediate test pattern */
 static void ensure_prg_screen(void);
@@ -993,11 +1000,22 @@ static int game_reset(int scenario)
     if (!prg_screen) return 0;
     LandRules loaded;
     char error[160];
+    const char *asset_directory = getenv("POPULOUS_ASSET_DIR");
+    if (!asset_directory) asset_directory = POPULOUS_DEFAULT_ASSET_DIR;
+    char default_data[4096];
+    int path_length = snprintf(default_data,sizeof default_data,"%s/raw",asset_directory);
+    if (path_length < 0 || (size_t)path_length >= sizeof default_data) return 0;
     const char *directory = getenv("POPULOUS_DATA_DIR");
+    if (!directory) directory = default_data;
     if (!land_rules_load(directory, demo_levels[scenario][5], &loaded, error, sizeof error)) {
         fprintf(stderr,"Original LAND data: %s. Set POPULOUS_DATA_DIR to extracted land0..3.\n",error);
         return 0;
     }
+    GraphicsAssets *loaded_assets = graphics_load(asset_directory,demo_levels[scenario][5],loaded.sprite_set,error,sizeof error);
+    if (!loaded_assets) { fprintf(stderr,"Original graphics: %s\n",error); return 0; }
+    graphics_free(game_assets);
+    game_assets = loaded_assets;
+    diagnostic_view = 0;
     current_scenario = scenario;
     memset(prg_a4_area, 0, sizeof prg_a4_area);
     const uint16_t *tables[] = {loaded.population_add,loaded.mana_add,loaded.weapons_add,loaded.battle_add1,loaded.battle_add2,loaded.weapons_order};
@@ -1029,6 +1047,7 @@ static int game_reset(int scenario)
     demo_shield_timer = growth_tick = 0;
     prg_quit = 0;
     _setup_display();
+    xoff = yoff = 6;
     SDL_SetWindowTitle(prg_screen->window,"Populous - original-rule intermediate port");
     return 1;
 }
@@ -1076,11 +1095,8 @@ static void ensure_prg_screen(void)
     if (!prg_screen) {
         prg_screen = amiga_create_screen(320, 256, 4);  /* 16 colors for starters */
         if (prg_screen) {
-            /* Rough Amiga-like palette */
-            for (int i = 0; i < 16; i++) {
-                int v = (i * 17) & 0xFF;
-                amiga_set_color(prg_screen, i, (i << 8) | (i << 4) | i);
-            }
+            for (int index = 0; index < 16; ++index)
+                amiga_set_color(prg_screen,index,graphics_palette[index]);
         }
     }
 }
@@ -1149,6 +1165,8 @@ static void _closeall(void)
         amiga_free_mem(host_buffers[index]);
         host_buffers[index] = NULL;
     }
+    graphics_free(game_assets);
+    game_assets = NULL;
     amiga_destroy_screen(prg_screen);
     prg_screen = NULL;
 
@@ -1326,11 +1344,114 @@ static void _move_mana(void)
     /* Original _move_mana is presentation only, never mana generation. */
 }
 
+/* A compact port HUD font, not an interpretation of the original font.dat. */
+static void hud_text(int left, int top, const char *text)
+{
+    static const uint16_t letters[] = {
+        0x5f7a,0x3b6b,0x624e,0x3b6e,0x73cf,0x13cf,0x6b4e,0x5bed,0x7497,
+        0x2b24,0x5aed,0x7249,0x5bfd,0x5ffd,0x3b6e,0x12eb,0x6f6a,0x5aeb,
+        0x38ce,0x2497,0x3b6d,0x2b6d,0x5fed,0x5aad,0x24ad,0x72a7
+    };
+    static const uint16_t digits[] = {0x7b6f,0x2492,0x73e7,0x79e7,0x49ed,0x79cf,0x7bcf,0x4927,0x7bef,0x79ef};
+    for (; *text && left+3 < 320; ++text,left+=4) {
+        uint16_t bits = 0;
+        if (*text >= 'A' && *text <= 'Z') bits=letters[*text-'A'];
+        else if (*text >= '0' && *text <= '9') bits=digits[*text-'0'];
+        else if (*text == '-') bits=7<<6;
+        else if (*text == '/') bits=0x12a4;
+        else if (*text == ':') bits=0x410;
+        for (int row=0; row<5; ++row) for (int col=0; col<3; ++col)
+            if ((bits & (1u<<(row*3+col))) && top+row>=0 && top+row<256 && left+col>=0)
+                prg_screen->chunky_buffer[(top+row)*320+left+col]=0xffcccccc;
+    }
+}
+
+static int game_pick(int sx, int sy, int *column, int *row)
+{
+    int16_t heights[81];
+    for (int v=0; v<=8; ++v) for (int u=0; u<=8; ++u)
+        heights[v*9+u]=core_vertex(xoff+u,yoff+v);
+    int u,v;
+    if (!graphics_pick(heights,sx,sy,&u,&v)) return 0;
+    *column=xoff+u; *row=yoff+v;
+    return 1;
+}
+
+static void draw_original(int view_x, int view_y)
+{
+    if (!game_assets || view_x<0 || view_x>56 || view_y<0 || view_y>56) return;
+    memset(game_pixels,0,sizeof game_pixels);
+    memcpy(game_pixels,game_assets->background,sizeof game_assets->background);
+    GraphicsSheet land=graphics_land(game_assets), small=graphics_sprites(game_assets);
+    int phase=((uint16_t)game_turn/4)&1;
+    /* _draw_it, asm:15794-15949: row-major tiles, raised overlays, front faces. */
+    for (int v=0; v<8; ++v) for (int u=0; u<8; ++u) {
+        int cell=(view_y+v)*64+view_x+u, left,top;
+        if (!graphics_tile(u,v,map_alt[cell],&left,&top)) continue;
+        int frame=map_blk[cell];
+        if (!frame && !phase) frame=16;
+        graphics_blit(game_pixels,64000,320,200,land,frame,left,top);
+        if (map_bk2[cell]) graphics_blit(game_pixels,64000,320,200,land,map_bk2[cell],left,top-8);
+        for (int owner=0; owner<2; ++owner)
+            if (core_tendency(owner)==0 && core_target(owner)==cell)
+                graphics_blit(game_pixels,64000,320,200,land,45+owner,left,top-8);
+    }
+    for (int v=0; v<8; ++v)
+        for (int level=0; level<map_alt[(view_y+v)*64+view_x+7]; ++level)
+            graphics_blit(game_pixels,64000,320,200,small,77,304-16*v,128+8*v-8*level);
+    for (int u=7; u>=0; --u)
+        for (int level=0; level<map_alt[(view_y+7)*64+view_x+u]; ++level)
+            graphics_blit(game_pixels,64000,320,200,small,76,64+16*u,128+8*u-8*level);
+    /* Original queues occupants then draws them after terrain (asm:623-657).
+     * Core movement commits its destination immediately: no second interpolation. */
+    for (int v=0; v<8; ++v) for (int u=0; u<8; ++u) {
+        int cell=(view_y+v)*64+view_x+u, person=(int)map_who[cell]-1;
+        if (person<0 || person>=no_peeps || peep_word(person,4)<=0 || peep_word(person,8)!=cell) continue;
+        int left,top,owner=peep_owner(person),flags=peeps[person*22];
+        if (owner>1 || !graphics_tile(u,v,map_alt[cell],&left,&top)) continue;
+        int frame=graphics_walker_frame(peep_word(person,10),owner,phase);
+        int sx=left+8, sy=top-8+(map_blk[cell]==15 ? 0 : 4);
+        if (flags==1) { frame=64+phase+owner*2; sx=left+16; sy=top-8; }
+        else if (flags&8) { frame=138+phase; sx=left+16; sy=top-8; }
+        else if (flags&16) frame=93+((uint16_t)game_turn&3)+owner*4;
+        graphics_blit(game_pixels,64000,320,200,small,frame,sx,sy);
+    }
+    /* Original overview projection (_a_putpixel, asm:16758-16777). */
+    for (int row=0; row<64; ++row) for (int column=0; column<64; ++column) {
+        int cell=row*64+column, mx=64+column-row, my=(column+row)/2;
+        int colour=map_colour_data[map_blk[cell]&15];
+        int person=(int)map_who[cell]-1;
+        if (person>=0 && person<no_peeps && peep_word(person,4)>0) colour=peep_owner(person) ? 8 : 15;
+        if (column>=view_x && column<=view_x+7 && row>=view_y && row<=view_y+7 &&
+            (column==view_x || column==view_x+7 || row==view_y || row==view_y+7)) colour=5;
+        game_pixels[my*320+mx]=(uint8_t)colour;
+    }
+    int column,row;
+    if (game_pick(mousex,mousey,&column,&row)) {
+        int sx,sy;
+        graphics_vertex(column-xoff,row-yoff,core_vertex(column,row),&sx,&sy);
+        for (int delta=-2;delta<=2;++delta) {
+            if (sy>=0 && sy<200 && sx+delta>=64 && sx+delta<320) game_pixels[sy*320+sx+delta]=5;
+            if (sy+delta>=0 && sy+delta<200 && sx>=64 && sx<320) game_pixels[(sy+delta)*320+sx]=5;
+        }
+    }
+    for (size_t pixel=0; pixel<sizeof game_pixels; ++pixel)
+        prg_screen->chunky_buffer[pixel]=prg_screen->palette[game_pixels[pixel]];
+    char status[80];
+    snprintf(status,sizeof status,"%s  BLUE %d RED %d MANA %d",core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : "PLAY",core_population(0),core_population(1),core_mana(0));
+    hud_text(4,204,status);
+    hud_text(4,213,"LMB RAISE / RMB LOWER / ARROWS SCROLL / MAP CLICK");
+    hud_text(4,222,"0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET");
+    hud_text(4,231,"SPACE PAUSE / R RESET / ESC QUIT / D DIAGNOSTIC");
+    hud_text(4,240,core_tool ? "MAGNET TOOL - ORIGINAL TOOLBAR IS DECORATIVE" : "TERRAIN TOOL - ORIGINAL TOOLBAR IS DECORATIVE");
+}
+
 static void _draw_it(int16_t y, int16_t x)
 {
     ensure_prg_screen();
     if (!prg_screen) return;
     const int width = 320, height = 256;
+    if (diagnostic_view) {
     for (int screen_y = 0; screen_y < height; ++screen_y) {
         for (int screen_x = 0; screen_x < width; ++screen_x) {
             int column = (screen_x+x)/4, row = (screen_y+y)/4;
@@ -1375,10 +1496,11 @@ static void _draw_it(int16_t y, int16_t x)
         uint32_t colour = core_result == 1 ? 0xff8cffff : core_result ? 0xffff795d : 0xffffff80;
         for (int pixel=0; pixel<width; ++pixel) prg_screen->chunky_buffer[pixel] = colour;
     }
+    } else draw_original(x,y);
     char title[512];
     snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; mouse raise/lower; Space pause R reset Esc quit",
         core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : "RUNNING",
-        population[0],population[1],core_mana(0),core_tool ? "MAGNET (200)" : "TERRAIN (10+4/point)");
+        core_population(0),core_population(1),core_mana(0),core_tool ? "MAGNET (200)" : "TERRAIN (10+4/point)");
     SDL_SetWindowTitle(prg_screen->window,title);
 }
 
@@ -1440,8 +1562,7 @@ static void ___start_game(void){printf("[PRG] start_game\n");}
 static void ___set_serial(void){printf("[PRG] set_serial\n");}
 static void ___load_ground(int16_t a, int16_t terrain)
 {
-    /* Rule data is validated transactionally by game_reset before A4 changes.
-     * Original graphics/sprite decoding remains outside this bounded port. */
+    /* Rule tables and indexed graphics are loaded transactionally by game_reset. */
     (void)a; (void)terrain;
 }
 static void ___Setscreen(int16_t m,void *s1,void *s2){printf("[SDL] Setscreen\n");}
@@ -1487,6 +1608,7 @@ static void game_handle_event(const SDL_Event *event)
         if (!event->key.repeat) {
             if (key == SDLK_SPACE) pause = !pause;
             if (key == SDLK_p) paint_map = !paint_map;
+            if (key == SDLK_d) { diagnostic_view = !diagnostic_view; xoff = yoff = diagnostic_view ? 0 : 6; }
             if (key == SDLK_r && !game_reset(current_scenario)) { prg_status = EXIT_FAILURE; prg_quit = 1; }
             if (!pause && !core_result && key >= SDLK_0 && key <= SDLK_3) core_tendency(0) = key-SDLK_0;
             if (key == SDLK_m) core_tool = !core_tool;
@@ -1512,15 +1634,30 @@ static void game_handle_event(const SDL_Event *event)
             big_mousey = mousey;
         }
     }
-    if (event->type == SDL_MOUSEBUTTONDOWN && prg_screen && !pause && !core_result) {
+    if (event->type == SDL_MOUSEBUTTONDOWN && prg_screen) {
         int width,height; SDL_GetWindowSize(prg_screen->window,&width,&height);
         if (width <= 0 || height <= 0 || event->button.x < 0 || event->button.y < 0 ||
             event->button.x >= width || event->button.y >= height) return;
         int sx = (int64_t)event->button.x*320/width, sy = (int64_t)event->button.y*256/height;
-        if (sy >= 240) return;
-        int column = (sx+xoff)/4, row = (sy+yoff)/4;
-        if (column >= 64 || row >= 64) return;
+        int column,row;
+        if (!diagnostic_view && sy<64 && sx>=1 && sx<=127) {
+            column=sy+(sx-64)/2; row=sy-(sx-64)/2;
+            if (column>=0 && column<64 && row>=0 && row<64) {
+                if (event->button.button==SDL_BUTTON_LEFT) {
+                    xoff=column<4 ? 0 : column>60 ? 56 : column-4;
+                    yoff=row<4 ? 0 : row>60 ? 56 : row-4;
+                }
+                return;
+            }
+        }
+        if (pause || core_result) return;
+        if (diagnostic_view) {
+            if (sy>=240) return;
+            column=(sx+xoff)/4; row=(sy+yoff)/4;
+            if (column>=64 || row>=64) return;
+        } else if (!game_pick(sx,sy,&column,&row)) return;
         if (core_tool) {
+            if (column>=64 || row>=64) return;
             if (event->button.button == SDL_BUTTON_LEFT && core_leader(0) && core_mana(0)>=200) {
                 core_add_mana(0,-200); core_target(0)=row*64+column; core_tendency(0)=0;
             }

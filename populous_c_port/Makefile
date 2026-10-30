@@ -7,7 +7,8 @@ TEST_TIMEOUT ?= 20s
 SANITIZER_FLAGS = -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 
 TARGET = populous_init_port
-SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c
+SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c graphics.c
+CPPFLAGS += -DPOPULOUS_DEFAULT_ASSET_DIR='"$(abspath ../binaries/populous-extracted)"'
 OBJS = $(SRCS:.c=.o)
 HEADERS = $(wildcard *.h)
 RUNTIME_SOURCES = tests/test_runtime.c populous_init.c sdl_lowlevel.c $(HEADERS)
@@ -45,11 +46,11 @@ test-sanitize: tests/test_runtime_sanitize
 # Only activate game checks once the core step supplies real test sources.
 ifneq ($(wildcard tests/test_game.c),)
 .PHONY: test-game
-tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c $(HEADERS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c -o $@ $(LDLIBS)
+tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c graphics.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c graphics.c -o $@ $(LDLIBS)
 
-tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c $(HEADERS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c -o $@ $(LDLIBS)
+tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c graphics.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c graphics.c -o $@ $(LDLIBS)
 
 test-game: tests/test_game
 	SDL_VIDEODRIVER=dummy timeout $(TEST_TIMEOUT) ./tests/test_game
@@ -83,11 +84,28 @@ test-land-local: tests/test_land
 	@test -n "$(LAND_DATA_DIR)" || { printf '%s\n' 'Set LAND_DATA_DIR to your external land0..3 directory'; exit 1; }
 	timeout $(TEST_TIMEOUT) ./tests/test_land "$(LAND_DATA_DIR)"
 
-test: test-land
-test-sanitize: test-land-sanitize
+.PHONY: test-assets
+test-assets:
+	PYTHONDONTWRITEBYTECODE=1 timeout $(TEST_TIMEOUT) $(PYTHON) tests/test_extract_assets.py
+
+test: test-land test-assets test-graphics
+test-sanitize: test-land-sanitize test-graphics-sanitize
+
+.PHONY: test-graphics test-graphics-sanitize test-graphics-local
+tests/test_graphics: tests/test_graphics.c graphics.c graphics.h
+	$(CC) $(CFLAGS) $(LDFLAGS) tests/test_graphics.c graphics.c -o $@
+tests/test_graphics_sanitize: tests/test_graphics.c graphics.c graphics.h
+	$(CC) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) tests/test_graphics.c graphics.c -o $@
+test-graphics: tests/test_graphics
+	timeout $(TEST_TIMEOUT) ./tests/test_graphics
+test-graphics-sanitize: tests/test_graphics_sanitize
+	timeout $(TEST_TIMEOUT) ./tests/test_graphics_sanitize
+test-graphics-local: tests/test_graphics
+	@test -n "$(ASSET_DIR)" || { printf '%s\n' 'Set ASSET_DIR to an extract_assets.py export'; exit 1; }
+	timeout $(TEST_TIMEOUT) ./tests/test_graphics "$(ASSET_DIR)"
 
 clean:
-	rm -f $(OBJS) $(TARGET) tests/test_runtime tests/test_runtime_sanitize tests/test_game tests/test_game_sanitize tests/test_land tests/test_land_sanitize
+	rm -f $(OBJS) $(TARGET) tests/test_runtime tests/test_runtime_sanitize tests/test_game tests/test_game_sanitize tests/test_land tests/test_land_sanitize tests/test_graphics tests/test_graphics_sanitize
 
 run: $(TARGET)
 	./$(TARGET)

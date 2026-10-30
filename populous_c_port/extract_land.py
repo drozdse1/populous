@@ -15,8 +15,16 @@ LAND_SIZE = 114 + 0x8340
 LAND_NAMES = tuple(f"land{index}" for index in range(4))
 
 
-def extract_land_files(image):
-    """Return four validated OFS file payloads, or raise ValueError."""
+def extract_ofs_files(image, names):
+    """Return present, explicitly named root files; validate all selected chains.
+
+    Missing names are omitted. No recursion, executable discovery or sector scan.
+    Supports variable lengths and OFS extension tables, not FFS or hard links.
+    """
+    names = tuple(dict.fromkeys(name.lower() for name in names))
+    if any(not name or len(name) > 30 or name in (".", "..") or
+           any(char in name for char in ("\0", "/", "\\")) for name in names):
+        raise ValueError("unsafe requested OFS name")
     if len(image) != ADF_SIZE or image[:4] != b"DOS\0":
         raise ValueError("expected an uncompressed 880 KiB DOS0/OFS ADF")
 
@@ -52,45 +60,68 @@ def extract_land_files(image):
             name = name_bytes.decode("latin1").lower()
             if name in (".", ".."):
                 raise ValueError("unsafe OFS entry name")
-            if name in LAND_NAMES:
+            if name in names:
                 if name in headers:
                     raise ValueError(f"duplicate {name}")
-                if words[127] != 0xfffffffd or words[81] != LAND_SIZE:
-                    raise ValueError(f"{name}: expected a regular {LAND_SIZE}-byte file")
-                # These small LAND files fit in one header's 72 block pointers.
-                if words[2] != 70 or words[126] != 0:
-                    raise ValueError(f"{name}: invalid block count or unexpected extension")
+                if words[127] != 0xfffffffd or words[81] > ADF_SIZE:
+                    raise ValueError(f"{name}: expected a bounded regular file")
                 headers[name] = (pointer, words)
             pointer = words[124]
-    if set(headers) != set(LAND_NAMES):
-        raise ValueError("ADF must contain root land0, land1, land2 and land3")
 
     files = {}
-    for name in LAND_NAMES:
-        owner, header = headers[name]
+    for name, (owner, header) in headers.items():
+        expected_count = (header[81] + 487) // 488
+        table = header
+        pointers = []
+        while True:
+            count = min(72, expected_count - len(pointers))
+            if table[2] != count:
+                raise ValueError(f"{name}: invalid block table count")
+            entries = list(reversed(table[6:78]))
+            if any(entries[count:]) or any(not entry for entry in entries[:count]):
+                raise ValueError(f"{name}: invalid block table entries")
+            pointers.extend(entries[:count])
+            extension = table[126]
+            if len(pointers) == expected_count:
+                if extension:
+                    raise ValueError(f"{name}: unexpected extension")
+                break
+            if not extension or extension in visited:
+                raise ValueError(f"{name}: missing, shared or cyclic extension")
+            visited.add(extension)
+            _, table = block(extension)
+            if (table[0], table[1], table[125], table[127]) != (16, extension, owner, 0xfffffffd):
+                raise ValueError(f"{name}: invalid extension type, key or parent")
         pointer = header[4]
         payload = bytearray()
-        sequence = 1
-        while pointer:
+        for sequence, expected_pointer in enumerate(pointers, 1):
+            if pointer != expected_pointer:
+                raise ValueError(f"{name}: data chain disagrees with header block table")
             if pointer in visited:
                 raise ValueError(f"{name}: data cycle or shared block")
             visited.add(pointer)
             data, words = block(pointer)
             if (words[0], words[1], words[2]) != (8, owner, sequence):
                 raise ValueError(f"{name}: invalid data type, owner or sequence")
-            if sequence > 70 or header[78 - sequence] != pointer:
-                raise ValueError(f"{name}: data chain disagrees with header block table")
             size = words[3]
-            remaining = LAND_SIZE - len(payload)
-            if size != min(488, remaining) or size == 0:
+            if size != min(488, header[81] - len(payload)) or size == 0:
                 raise ValueError(f"{name}: invalid data payload size")
             payload.extend(data[24:24 + size])
             pointer = words[4]
-            sequence += 1
-        if len(payload) != LAND_SIZE or sequence != 71:
-            raise ValueError(f"{name}: truncated data chain")
+        if len(payload) != header[81] or pointer:
+            raise ValueError(f"{name}: invalid data chain length")
         files[name] = bytes(payload)
     return files
+
+
+def extract_land_files(image):
+    """Compatibility API: require all four original, exact-length LAND files."""
+    files = extract_ofs_files(image, LAND_NAMES)
+    if set(files) != set(LAND_NAMES):
+        raise ValueError("ADF must contain root land0, land1, land2 and land3")
+    if any(len(payload) != LAND_SIZE for payload in files.values()):
+        raise ValueError(f"LAND requires regular {LAND_SIZE}-byte files")
+    return {name: files[name] for name in LAND_NAMES}
 
 
 def main():

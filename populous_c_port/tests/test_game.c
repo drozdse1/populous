@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include <unistd.h>
+#include <sys/stat.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -244,12 +245,13 @@ static void test_sculpt_projection_and_rejection(void)
     assert(game_reset(0));
     SDL_SetWindowSize(prg_screen->window,960,768);
     SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_RIGHT;
-    for (int step=0;step<8;++step) { assert(SDL_PushEvent(&key)==1); }
+    assert(xoff==6 && yoff==6); /* Both first populations are in the 8x8 view. */
+    for (int step=0;step<2;++step) { assert(SDL_PushEvent(&key)==1); }
     ___keyboard();
     game_render();
     uint32_t pixels[320*256]; memcpy(pixels,prg_screen->chunky_buffer,sizeof pixels);
     SDL_Event click={.type=SDL_MOUSEBUTTONDOWN};
-    click.button.button=SDL_BUTTON_LEFT; click.button.x=99; click.button.y=123;
+    click.button.button=SDL_BUTTON_LEFT; click.button.x=480; click.button.y=336;
     assert(SDL_PushEvent(&click)==1); ___keyboard();
     assert(core_vertex(10,10)==2 && core_mana(0)==385);
     game_render(); assert(memcmp(pixels,prg_screen->chunky_buffer,sizeof pixels)!=0);
@@ -280,7 +282,7 @@ static void test_load_failure_and_magnet(void)
     key.key.keysym.sym=SDLK_m; assert(SDL_PushEvent(&key)==1); ___keyboard();
     SDL_SetWindowSize(prg_screen->window,640,512);
     SDL_Event click={.type=SDL_MOUSEBUTTONDOWN}; click.button.button=SDL_BUTTON_LEFT;
-    click.button.x=82; click.button.y=82;
+    click.button.x=384; click.button.y=256;
     int32_t mana_before=core_mana(0);
     assert(SDL_PushEvent(&click)==1); ___keyboard();
     assert(core_target(0)==650 && core_mana(0)==mana_before-200);
@@ -426,6 +428,8 @@ static void test_match_events(void)
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
     assert(game_reset(0));
     SDL_Event key = {.type=SDL_KEYDOWN};
+    key.key.keysym.sym = SDLK_d; /* Explicit legacy diagnostic view for this regression. */
+    assert(SDL_PushEvent(&key)==1); ___keyboard();
     key.key.keysym.sym = SDLK_3;
     assert(SDL_PushEvent(&key)==1); ___keyboard();
     assert(core_tendency(0)==3);
@@ -456,6 +460,7 @@ static void test_match_events(void)
     key.key.keysym.sym=SDLK_r;
     assert(SDL_PushEvent(&key)==1); ___keyboard();
     assert(!core_result && !game_turn && core_population(0)==540);
+    key.key.keysym.sym=SDLK_d; assert(SDL_PushEvent(&key)==1); ___keyboard();
     /* Defeat is also reached via legal input, not an outcome flag or population patch. */
     SDL_SetWindowSize(prg_screen->window,640,512);
     for (int tick=0;tick<512;++tick) game_tick();
@@ -483,6 +488,13 @@ static void test_match_events(void)
 
 /* Synthetic rule files exercise mechanics, never pretend to be commercial LAND. */
 static char test_data_directory[] = "/tmp/populous-game-test-XXXXXX";
+static void fixture_pixels(const char *name,size_t size,int keep)
+{
+    char path[512]; snprintf(path,sizeof path,"%s/pixels/%s",test_data_directory,name);
+    FILE *file=fopen(path,"wb"); assert(file);
+    for (size_t pixel=0;pixel<size;++pixel) assert(fputc(keep ? 1 : (pixel%15)+1,file)!=EOF);
+    assert(!fclose(file));
+}
 static void prepare_rule_data(void)
 {
     if (getenv("POPULOUS_TEST_REAL_DATA")) return;
@@ -503,6 +515,15 @@ static void prepare_rule_data(void)
         assert(fwrite(data,1,sizeof data,file)==sizeof data && fclose(file)==0);
     }
     assert(setenv("POPULOUS_DATA_DIR",test_data_directory,1)==0);
+    char path[512]; snprintf(path,sizeof path,"%s/pixels",test_data_directory); assert(!mkdir(path,0700));
+    fixture_pixels("qaz.pic.indices.u8",64000,0);
+    fixture_pixels("sprites0.dat.indices.u8",GFX_SPRITE_PIXELS,0);
+    fixture_pixels("sprites0.dat.keep.u8",GFX_SPRITE_PIXELS,1);
+    for (int land=0;land<4;++land) {
+        char name[64]; snprintf(name,sizeof name,"land%d.indices.u8",land); fixture_pixels(name,GFX_LAND_PIXELS,0);
+        snprintf(name,sizeof name,"land%d.keep.u8",land); fixture_pixels(name,GFX_LAND_PIXELS,1);
+    }
+    assert(!setenv("POPULOUS_ASSET_DIR",test_data_directory,1));
 }
 static void cleanup_rule_data(void)
 {
@@ -511,12 +532,144 @@ static void cleanup_rule_data(void)
         char path[256]; snprintf(path,sizeof path,"%s/land%d",test_data_directory,land);
         assert(unlink(path)==0);
     }
+    char path[512];
+    const char *names[]={"qaz.pic.indices.u8","sprites0.dat.indices.u8","sprites0.dat.keep.u8"};
+    for (int n=0;n<3;++n) { snprintf(path,sizeof path,"%s/pixels/%s",test_data_directory,names[n]); assert(!unlink(path)); }
+    for (int land=0;land<4;++land) {
+        snprintf(path,sizeof path,"%s/pixels/land%d.indices.u8",test_data_directory,land); assert(!unlink(path));
+        snprintf(path,sizeof path,"%s/pixels/land%d.keep.u8",test_data_directory,land); assert(!unlink(path));
+    }
+    snprintf(path,sizeof path,"%s/pixels",test_data_directory); assert(!rmdir(path));
     assert(rmdir(test_data_directory)==0);
+}
+
+/* Real isometric SDL inputs: navigation first, then projected vertex click.
+ * No camera/world/result mutation: this exercises exactly the exposed controls. */
+static void iso_click_vertex(int column,int row,int button)
+{
+    int center_x=column>63 ? 63 : column, center_y=row>63 ? 63 : row;
+    SDL_Event event={.type=SDL_MOUSEBUTTONDOWN};
+    event.button.button=SDL_BUTTON_LEFT;
+    event.button.x=2*(64+center_x-center_y); event.button.y=2*((center_x+center_y)/2);
+    game_handle_event(&event);
+    int u=column-xoff,v=row-yoff;
+    assert(u>=0 && u<=8 && v>=0 && v<=8);
+    event.button.button=button;
+    event.button.x=2*(192+16*(u-v));
+    event.button.y=2*(72+8*(u+v)-8*core_vertex(column,row));
+    game_handle_event(&event);
+}
+
+static void test_isometric_match(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    assert(!diagnostic_view);
+    SDL_SetWindowSize(prg_screen->window,640,512);
+    SDL_Event event={.type=SDL_KEYDOWN}; event.key.keysym.sym=SDLK_SPACE;
+    game_handle_event(&event);
+    int32_t mana=core_mana(0);
+    iso_click_vertex(63,63,SDL_BUTTON_LEFT);
+    assert(xoff==56 && yoff==56 && core_vertex(63,63)==1 && core_mana(0)==mana);
+    game_handle_event(&event);
+    iso_click_vertex(63,63,SDL_BUTTON_LEFT);
+    assert(core_vertex(63,63)==2 && core_mana(0)==mana-14);
+    iso_click_vertex(63,63,SDL_BUTTON_RIGHT);
+    assert(core_vertex(63,63)==1);
+    event.key.keysym.sym=SDLK_r; game_handle_event(&event);
+    for (int tick=0;tick<512;++tick) game_tick();
+    for (int tick=0;tick<2000 && !core_result;++tick) {
+        if (tick%8==0) for (int person=0;person<no_peeps && !core_result;++person) {
+            if (peep_owner(person) || peep_word(person,4)<=0) continue;
+            int position=peep_word(person,8);
+            for (int dy=0;dy<2;++dy) for (int dx=0;dx<2;++dx)
+                iso_click_vertex(position%64+dx,position/64+dy,SDL_BUTTON_RIGHT);
+        }
+        game_tick();
+    }
+    fprintf(stderr,"isometric defeat turns=%u pop=%d/%d\n",(uint16_t)game_turn,core_population(0),core_population(1));
+    assert(core_result==2 && core_population(0)==0);
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    game_tick(); game_render(); assert(!memcmp(before,prg_a4_area,sizeof before));
+    game_handle_event(&event); assert(!core_result && xoff==6 && yoff==6);
+    event.key.keysym.sym=SDLK_3; game_handle_event(&event);
+    for (int tick=0;tick<12000 && !core_result;++tick) {
+        game_tick();
+        if (tick>6000 && tick%8==0) for (int person=0;person<no_peeps;++person) {
+            if (!peep_owner(person) || peep_word(person,4)<=0) continue;
+            int position=peep_word(person,8);
+            for (int dy=0;dy<2;++dy) for (int dx=0;dx<2;++dx)
+                iso_click_vertex(position%64+dx,position/64+dy,SDL_BUTTON_RIGHT);
+        }
+    }
+    fprintf(stderr,"isometric fight result=%d turns=%u battles=%d towns=%d pop=%d/%d\n",core_result,(uint16_t)game_turn,core_battles,core_settlements,core_population(0),core_population(1));
+    assert(core_result && core_battles>0 && core_settlements>0);
+    if (getenv("POPULOUS_TEST_REAL_DATA")) assert(core_result==1);
+    event.key.keysym.sym=SDLK_ESCAPE; game_handle_event(&event); assert(prg_quit);
+    _closeall(); SDL_Quit();
+}
+
+static void test_original_graphics_output(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    GraphicsAssets *assets_before=game_assets;
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    char *directory=strdup(getenv("POPULOUS_ASSET_DIR") ? getenv("POPULOUS_ASSET_DIR") : POPULOUS_DEFAULT_ASSET_DIR);
+    assert(directory && !setenv("POPULOUS_ASSET_DIR","/nonexistent-populous-assets",1));
+    assert(!game_reset(0) && game_assets==assets_before && !memcmp(before,prg_a4_area,sizeof before));
+    assert(!setenv("POPULOUS_ASSET_DIR",directory,1)); free(directory);
+    game_render();
+    assert(prg_screen->chunky_buffer[190*320+20]==prg_screen->palette[game_assets->background[190*320+20]]);
+    assert(prg_screen->palette[15]==0xff2266cc);
+    /* Sparse synthetic assets make frame, placement and layering expectations literal. */
+    memset(game_assets->background,1,sizeof game_assets->background);
+    memset(game_assets->land_keep,1,sizeof game_assets->land_keep);
+    memset(game_assets->land_indices,0,sizeof game_assets->land_indices);
+    memset(game_assets->sprite_keep,1,sizeof game_assets->sprite_keep);
+    memset(game_assets->sprite_indices,0,sizeof game_assets->sprite_indices);
+    game_assets->land_indices[15*768+8*32+16]=2;
+    game_assets->land_indices[42*768+8*32+16]=4;
+    game_assets->sprite_indices[8*256]=8;
+    game_render();
+    assert(game_pixels[72*320+192]==3); /* first flat tile */
+    assert(game_pixels[88*320+184]==9); /* first walker at (8,8), no interpolation */
+    assert(!memcmp(before,prg_a4_area,sizeof before));
+    for (int tick=0;tick<16;++tick) game_tick();
+    int settlements=0;
+    for (int cell=0;cell<4096;++cell) settlements+=map_bk2[cell]==42;
+    assert(settlements>0);
+    game_assets->sprite_indices[64*256]=8;
+    game_render();
+    assert(game_pixels[96*320+192]==5); /* town overlay, tile_top-8 */
+    assert(game_pixels[88*320+192]==9); /* settled occupant uses frame 64 */
+    /* _move_sprite compares flags to exactly 1: flags 9 is a town defending
+     * a battle, not a peaceful occupant. Distinct frame pixels catch precedence. */
+    assert(peep_word(0,8)==8*64+8 && map_who[8*64+8]==1);
+    for (int owner=0;owner<2;++owner) for (int phase=0;phase<2;++phase) {
+        peeps[0]=9; peeps[1]=owner; game_turn=16+phase*4;
+        game_assets->sprite_indices[(64+phase+owner*2)*256]=8;
+        game_assets->sprite_indices[(138+phase)*256]=2+phase*2;
+        memcpy(before,prg_a4_area,sizeof before);
+        game_render();
+        assert(game_pixels[88*320+192]==(phase ? 5 : 3));
+        assert(prg_screen->chunky_buffer[88*320+192]==prg_screen->palette[phase ? 5 : 3]);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    /* High terrain projects beside (not inside) the minimap diamond. */
+    for (int row=0;row<=64;++row) for (int column=0;column<=64;++column) core_set_vertex(column,row,8);
+    _make_map();
+    SDL_SetWindowSize(prg_screen->window,640,512);
+    SDL_Event click={.type=SDL_MOUSEBUTTONDOWN}; click.button.button=SDL_BUTTON_RIGHT;
+    click.button.x=224; click.button.y=96; /* vertex (6,11), local (0,5), h=8 */
+    game_handle_event(&click);
+    assert(core_vertex(6,11)==7);
+    _closeall(); SDL_Quit();
 }
 
 int main(void)
 {
     prepare_rule_data();
+    test_original_graphics_output();
+    test_isometric_match();
     test_battle_casualties_and_rewards();
     test_near_town_sculpt();
     test_split_leader_and_occupancy();

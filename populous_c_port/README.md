@@ -14,8 +14,9 @@ All eight synthetic scenarios start on explicitly legal flat vertex terrain
 with both populations. `_make_map` now derives original block masks and cell
 altitudes from 65x65 vertex heights. The 22-byte A4 peep records drive movement,
 settlement, eight-tick growth/mana, splitting, ordinary combat and outcomes.
-There is no second population simulator. The SDL top-down drawing is simplified,
-not the original isometric graphics.
+There is no second population simulator. The default SDL view now uses the
+original `qaz.pic` background, 8x8 isometric LAND terrain and settlement overlays,
+and small sprites. `d` explicitly toggles the old top-down diagnostic view.
 
 A4 has storage on both sides of its signed 16-bit base. Word/long access uses
 GCC-compatible packed/may-alias accessors, and peep words use `memcpy`; this
@@ -41,7 +42,8 @@ The original `_load_ground` reads gameplay tables from `landN` files, including
 (`src/populous_prg.asm:16468-16514`). Reset validates the selected file before
 changing A4 and installs its actual values plus original initialized tables.
 Missing/invalid files fail startup: there is no invented-rule fallback.
-Original graphics rendering, audio, campaign, save/load and multiplayer remain absent.
+Audio, campaign, save/load and multiplayer remain absent. The original toolbar
+is decorative; use the keyboard controls shown below the game view.
 
 ## Local original data (required to play)
 
@@ -68,6 +70,53 @@ LAND headers; it is included in `test`. The C parser/loader also runs under
 ASan/UBSan in `test-sanitize`. The explicitly opt-in `test-land-local` checks all
 four external files and fails if missing. Use the toolchain overrides below if
 make/SDL2 are not installed globally.
+
+### Original graphics and values export
+
+`extract_assets.py` exports an explicit allowlist of original root assets with
+Python's standard library only (including its PNG writer). The source ADF is
+read-only; the output parent must exist and the output directory must not exist,
+including symlinks. It never exports executable files. The original four-file
+`extract_land.py` CLI remains compatible; its reusable OFS reader now also
+validates variable lengths and chained extension block tables.
+
+```sh
+python3 populous_c_port/extract_assets.py binaries/populous.adf /path/to/new/populous-extracted
+make -C populous_c_port test-assets
+```
+
+The export contains `raw/` byte-exact original files, `graphics/` PNG sheets and
+full pictures, `pixels/` frame-major/row-major byte indices and keep masks,
+`values.json` with stored LAND tables, palettes and neutral level records, and
+`manifest.json` with source/artifact SHA-256 hashes, frame offsets/coordinates,
+present/missing assets and verified/inferred/unsupported format status. The
+manifest itself is not included in its own artifact hash table. Original files
+remain outside the repository. For the port, point `POPULOUS_DATA_DIR` at the
+export's `raw/` directory and `POPULOUS_ASSET_DIR` at the export root.
+
+LAND sheets use 70 32x24 frames after the 114-byte rule header. Small sprites use
+16x16 frames; large sprites use 32x32 frames. All complete file frames are kept:
+the supplied small-sprite file has 147 frames even though the gameplay loader
+reads 143 (the intro reads 147). PNG alpha is used only if every keep-mask pixel
+has zero colour bits. Otherwise the entire sheet is an opaque preview on index
+0, with conflicts reported; the original `(background AND mask) OR bits`
+compositing remains recoverable from raw data and separate masks. Mask PNG white
+means keep background; black means replace. Palette indices are never discarded.
+
+The source-documented full pictures are `qaz.pic`, `demo.pic`, `lord.pic` (four
+planes) and `load.pic` (five planes), 320x200, plane-major. `lord.pic` and
+`load.pic` carry RGB12 palette words at the end. Unknown picture variants retain
+raw bytes and, when the plane layout is known, indices without inventing colours.
+`font.dat` and `mouths.pic` are preserved raw because this exporter does not
+verify their rendering formats. Level entries retain eight bytes and a BE16
+word, not guessed semantic labels or campaign maps. These are static extractions,
+not complete animation reconstruction, copper effects or a complete Amiga renderer.
+The playable renderer consumes the exported indices and keep masks directly.
+
+`test-assets` and the old extractor suite use only synthetic data: bitplane and
+endianness sentinels, mask conflicts, PNG CRC/scanlines, raw/hash integrity,
+unknown formats, output refusal, variable OFS lengths and extension-chain
+corruption. Both run as part of `make test`.
 
 ### Rule interface and source layout
 
@@ -104,6 +153,66 @@ copy of weapons into ascending `weapons_order` (lines 16540-16606); the parser
 performs both setup operations. It does not load sprites, decode graphics or
 claim that the presence of these tables makes the preview playable.
 
+## Playable original graphics
+
+`graphics.c` loads `pixels/qaz.pic.indices.u8`, selected `landN` indices/keep masks,
+and the LAND-selected `spritesN.dat` indices/keep masks. It validates regular
+non-symlink files, exact lengths (143..147 complete small-sprite frames), indices
+0..15 and masks 0..1 before replacing the active assets. Startup/reset fails
+with a diagnostic rather than silently falling back to placeholder art. LAND
+rules continue to come from `POPULOUS_DATA_DIR` through the existing parser.
+
+`POPULOUS_ASSET_DIR` names the export root, not `pixels/` or `graphics/`. If unset,
+make embeds the absolute local `binaries/populous-extracted` path; the executable
+can therefore start from the repo root or port directory. If `POPULOUS_DATA_DIR`
+is unset, it defaults to `<asset-root>/raw`. Explicit invalid settings never fall
+back. Rebuild after moving the repository, or set both paths explicitly:
+
+```sh
+POPULOUS_ASSET_DIR=/path/to/populous-extracted \
+POPULOUS_DATA_DIR=/path/to/populous-extracted/raw \
+./populous_c_port/populous_init_port
+```
+
+The framebuffer stays indexed until all `(destination AND keep) OR colour`
+operations finish; only then does it expand RGB12 to ARGB. This matters for
+LAND2's nonzero colour bits under keep masks. PNG alpha previews are not used.
+The source projection is `left=176+16*(u-v)`, `top=64+8*(u+v)-8*map_alt`,
+row-major 8x8 cells; overlays are eight pixels higher. Front faces use small
+frames 77/76. The height-aware cursor uses the corresponding 9x9 vertex lattice,
+`x=192+16*(u-v)`, `y=72+8*(u+v)-8*vertex_height`, choosing a nearby projected
+vertex (frontmost on ties). This is bounded geometric picking, not an exact
+translation of every original `_sculpt` screen-region heuristic.
+
+Walkers use direction frames 0,2,..14 plus owner and animation phase; settlements
+use 64+phase+owner*2. Frames animate from simulation ticks and stop when paused.
+The canonical core commits movement destinations immediately, so sprites use
+that authoritative cell without the original sub-cell movement interpolation.
+Battle animation is representative, not original battle timing. No copper,
+large-sprite specials, original cursor/font, audio or functional power toolbar
+is claimed. A separate compact HUD explains the implemented keyboard controls.
+
+`test-graphics` checks synthetic AND/OR conflicts, clipped/invalid blits, malformed
+asset lengths/indices/masks, and projection/picking. `test-game` checks literal
+terrain/overlay/occupant pixels, transactional load failure, scaled isometric
+sculpt/magnet input, minimap navigation, pause, and reset. Its original top-down
+match regression remains available through an explicit diagnostic toggle. A
+second end-to-end match uses actual isometric clicks and minimap navigation only.
+With supplied real data the isometric sequence reaches victory at tick 8353
+(288 battles, 287 settlement formations, population 111498/0), and legal
+self-sculpt reaches defeat at tick 694. Normal and sanitizer suites cover these
+paths; no outcome, population or camera patches are used in the match sequence.
+
+```sh
+make -C populous_c_port test-graphics-local ASSET_DIR="$PWD/binaries/populous-extracted"
+```
+
+The implementation's real X11 check captured original graphics, settlements,
+pause and a visible raised vertex in `/tmp/populous-original-graphics.png` and
+`/tmp/populous-original-sculpt.png`. These are local screenshots, not distributable
+assets or proof of a human-played victory. The older independent review below
+used the diagnostic renderer; a fresh independent graphics review is separate.
+
 ## Build and run
 
 Requires GCC-compatible C11, GNU make, SDL2 development files (`sdl2-config`), and
@@ -111,8 +220,8 @@ Requires GCC-compatible C11, GNU make, SDL2 development files (`sdl2-config`), a
 
 ```sh
 make -C populous_c_port
-POPULOUS_DATA_DIR=/tmp/populous-original-data ./populous_c_port/populous_init_port
-POPULOUS_DATA_DIR=/tmp/populous-original-data ./populous_c_port/populous_init_port 7
+./populous_c_port/populous_init_port
+./populous_c_port/populous_init_port 7
 make -C populous_c_port test
 make -C populous_c_port test-sanitize
 ```
@@ -125,9 +234,9 @@ effective low-byte seed offsets are preserved explicitly.
 
 ## Controls
 
-- Cyan is your population; red is the opponent. Hollow squares are settlements,
-  yellow markers are battles. Bottom bars show population share and your mana.
-  The window title reports population, mana, tool, pause and outcome.
+- Blue is your population; red is the opponent. Original houses/castles show
+  settlements. The lower HUD and window title report population, mana, tool,
+  pause and outcome. The historic toolbar artwork does not activate powers.
 - Left/right mouse: raise/lower the selected vertex. Neighbouring vertices follow
   the original maximum slope of one, height 0..8. Cost is 10 plus 4 per changed
   vertex; the original admission threshold is 10, so a large operation can leave
@@ -136,8 +245,11 @@ effective low-byte seed offsets are preserved explicitly.
 - `0`: gather walkers at the initial magnet (32,32). After a leader reaches it,
   `m` selects magnet placement; left-click moves the target for 200 mana. `m`
   again returns to terrain. Settlements release walkers when over capacity.
-- Arrows/numpad: scroll. `p`: dot overview. Space: pause. `r`: reset. Escape/window
-  close: quit. Pause and outcome stop rules, not event handling or drawing.
+- Arrows/numpad: scroll by world cells. Click the upper-left diamond minimap to
+  recenter anywhere (also while paused); its white outline marks the viewport.
+  `d`: explicit top-down diagnostic view; `p`: dots in that diagnostic view only.
+  Space: pause. `r`: reset to original graphics and initial view (6,6).
+  Escape/window close: quit. Pause/outcome stop rules, not navigation/drawing.
 
 The opponent independently settles, grows, explores, merges and fights. Flatten
 plots to encourage settlement, wait for population/mana, and lower the four
@@ -153,7 +265,7 @@ errors. `test-game` includes the production PRG and launcher code and checks A4
 boundaries/unaligned access, map separation, all eight start populations and
 occupancy, deterministic reset, renderer output, SDL event handling, pause,
 scroll limits, scaled mouse coordinates, inert powers, allocation-failure
-cleanup, repeated Escape/quit, and CLI failure propagation. Both are included
+cleanup, repeated Escape/quit, and CLI failure propagation. These and `test-graphics` are included
 in `test` and ASan/UBSan `test-sanitize`; each invocation has a 20-second timeout.
 
 `test-game` additionally exercises legal start plots, source-derived capacity,
@@ -168,7 +280,9 @@ Normal tests generate synthetic LAND files under a temporary directory and
 remove them. Original-data integration is explicit:
 
 ```sh
-POPULOUS_TEST_REAL_DATA=1 POPULOUS_DATA_DIR=/tmp/populous-original-data \
+POPULOUS_TEST_REAL_DATA=1 \
+  POPULOUS_DATA_DIR="$PWD/binaries/populous-extracted/raw" \
+  POPULOUS_ASSET_DIR="$PWD/binaries/populous-extracted" \
   SDL_VIDEODRIVER=dummy ./populous_c_port/tests/test_game
 ```
 
@@ -195,14 +309,15 @@ rechecked. No blocking defects remained within this intermediate scope.
 For a human-paced visible check (procedure, not a verified winning strategy):
 
 1. Start scenario 0 without scrolling, press `3`, and wait 30 seconds. Confirm
-   both populations change and hollow settlement squares appear.
-2. Press Space. At the default 640x512 window, vertex (10,10) is near pixel
-   (82,82). A click while paused must not change terrain. Unpause, left-click
-   once, then right-click once to restore it; allow a second between clicks.
-3. Let the match run for about five minutes. Watch for yellow battle markers;
+   both populations change and original settlement buildings appear.
+2. Press Space. At the default 640x512 window, vertex (10,10) initially projects
+   to (384,256). A click while paused must not change terrain. Unpause and
+   left-click once; its raised position is now (384,240). Right-click there
+   to restore it; allow a second between clicks.
+3. Let the match run for about five minutes. Watch for battle sprites;
    record the population/title rather than assuming an outcome on a timer.
 4. Lower one visible hostile plot at a time: right-click its four vertex corners,
-   roughly eight window pixels apart at default size, at no more than one click
+   using the white hover marker at each projected vertex, at no more than one click
    per second. Watch mana and the changed terrain. Repeat as needed, letting the
    simulation run; there is no guaranteed human-paced completion bound yet.
 5. If an outcome appears, verify it remains stable, then press `r` to restore the
@@ -210,8 +325,8 @@ For a human-paced visible check (procedure, not a verified winning strategy):
    closing the window on a fresh launch. Report missing outcomes or quit failures.
 
 This acceptance covers the bounded intermediate port, not complete original-rule
-fidelity or a human-tested winning strategy. The simplified graphics, synthetic
-starts and unsupported features listed above remain intentional limitations.
+fidelity or a human-tested winning strategy. Synthetic starts and unsupported
+features listed above remain intentional limitations.
 
 The development environment used an unpacked toolchain under
 `/tmp/populous-toolchain` rather than system packages. Its reproducible command
@@ -228,7 +343,6 @@ LD_LIBRARY_PATH=/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu:/tmp/populous-t
 Launch with that unpacked toolchain's runtime libraries:
 
 ```sh
-POPULOUS_DATA_DIR=/tmp/populous-original-data \
 LD_LIBRARY_PATH=/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu:/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu/pulseaudio:/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu/sdl2-classic \
 ./populous_c_port/populous_init_port
 ```

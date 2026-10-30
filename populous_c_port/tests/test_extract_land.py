@@ -142,5 +142,86 @@ class ExtractLandTests(unittest.TestCase):
             self.assertEqual(outside.read_bytes(), b"do not overwrite")
 
 
+def make_file_disk(payload):
+    """One root file with noncontiguous data and as many extension tables as needed."""
+    image = bytearray(901120)
+    image[:4] = b"DOS\0"
+    put(image, 0, 8, 880)
+    for offset, value in ((0, 2), (12, 72), (24, 900), (508, 1)):
+        put(image, 880, offset, value)
+    count = (len(payload) + 487) // 488
+    pointers = [100 + index * 2 for index in range(count)]
+    table_count = max(1, (count + 71) // 72)
+    for table_index in range(table_count):
+        number = 900 + table_index
+        part = pointers[table_index * 72:(table_index + 1) * 72]
+        for offset, value in ((0, 2 if not table_index else 16), (4, number),
+                              (8, len(part)), (500, 900 if table_index else 880),
+                              (504, number + 1 if table_index + 1 < table_count else 0),
+                              (508, 0xfffffffd)):
+            put(image, number, offset, value)
+        for index, pointer in enumerate(part):
+            put(image, number, 308 - index * 4, pointer)
+        if not table_index:
+            put(image, number, 16, pointers[0] if pointers else 0)
+            put(image, number, 324, len(payload))
+            image[number * 512 + 432:number * 512 + 441] = b"\x08test.dat"
+        checksum(image, number)
+    for index, number in enumerate(pointers):
+        piece = payload[index * 488:(index + 1) * 488]
+        for offset, value in ((0, 8), (4, 900), (8, index + 1), (12, len(piece)),
+                              (16, pointers[index + 1] if index + 1 < count else 0)):
+            put(image, number, offset, value)
+        image[number * 512 + 24:number * 512 + 24 + len(piece)] = piece
+        checksum(image, number)
+    checksum(image, 880)
+    return image
+
+
+class TargetedOfsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("extract_land", TOOL)
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def extract(self, image, names=("test.dat", "missing.dat")):
+        self.assertTrue(hasattr(self.module, "extract_ofs_files"), "targeted OFS reader missing")
+        return self.module.extract_ofs_files(image, names)
+
+    def test_variable_lengths_and_multiple_extension_tables(self):
+        for size in (0, 1, 488, 489, 72 * 488, 72 * 488 + 1, 145 * 488 + 17):
+            with self.subTest(size=size):
+                payload = bytes(index % 251 for index in range(size))
+                self.assertEqual(self.extract(make_file_disk(payload)), {"test.dat": payload})
+
+    def test_extension_corruption_and_chain_disagreement(self):
+        for block, offset, value in ((901, 0, 2), (901, 4, 900), (901, 500, 880),
+                                     (901, 508, 2), (901, 8, 1), (901, 504, 901),
+                                     (901, 308, 100), (900, 504, 1760),
+                                     (900, 504, 0), (900, 324, 901120),
+                                     (244, 8, 1), (244, 16, 100), (244, 4, 901)):
+            with self.subTest(block=block, offset=offset):
+                image = make_file_disk(bytes(40064))
+                put(image, block, offset, value)
+                checksum(image, block)
+                with self.assertRaises(ValueError):
+                    self.extract(image)
+
+    def test_target_names_are_safe_and_normalized(self):
+        image = make_file_disk(b"abc")
+        self.assertEqual(self.extract(image, ("TEST.DAT",)), {"test.dat": b"abc"})
+        for name in ("../test.dat", "a/b", "a\\b", "", ".", ".."):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.extract(image, (name,))
+
+    def test_unselected_payload_is_not_extracted(self):
+        image = make_file_disk(b"abc")
+        image[100 * 512 + 30] ^= 1
+        self.assertEqual(self.extract(image, ("missing.dat",)), {})
+        with self.assertRaises(ValueError):
+            self.extract(image)
+
+
 if __name__ == "__main__":
     unittest.main()
