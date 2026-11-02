@@ -310,8 +310,8 @@ static int set_peep_reference(int subject, int target)
     return 1;
 }
 static int peep_owner(int index) { return peeps[index * 22 + 1]; }
-/* _get_heading asm:5469-5536. Used by validated heading navigation; knight
- * creation remains separate. The original ASR.W #6 floors negative rows;
+/* _get_heading asm:5469-5536. Used by knight creation and validated heading
+ * navigation. The original ASR.W #6 floors negative rows;
  * use division explicitly so signed right shift is not implementation-defined. */
 static int core_get_heading(int subject)
 {
@@ -1418,6 +1418,31 @@ static int core_flood(int owner)
     return 1;
 }
 
+/* _do_knight asm:8392-8478. Diagnostic views never grant editor powers. */
+static int core_knight(int owner)
+{
+    if (owner < 0 || owner > 1 || no_peeps < 0 || no_peeps > 208 ||
+        pause || A4_WORD(0xae80) || core_result || prg_quit) return 0;
+    int leader=core_leader(owner);
+    if (leader < 1 || leader > no_peeps) return 0;
+    int subject=leader-1, position=peep_word(subject,8);
+    if (peep_word(subject,4) <= 0 || peep_owner(subject) != owner ||
+        position < 0 || position >= 4096) return 0;
+    uint32_t mana=A4_LONG(0x9a02+owner*16), cost=A4_LONG(0x849a);
+    /* Signed CMP.L admission, unsigned SUB.L/ADD.L wrap, as in core_war. */
+    if ((mana ^ 0x80000000u) < (cost ^ 0x80000000u) ||
+        !(A4_WORD(0x82c4+owner*46)&0x20)) return 0;
+    A4_LONG(0x9a02+owner*16)=mana-cost;
+    if (owner == player) A4_LONG(0xae72)+=150;
+    peeps[subject*22+20]=1;
+    core_get_heading(subject);
+    core_target(owner)=position;
+    A4_WORD(owner ? 0xae76 : 0xae78)=position;
+    core_leader(owner)=0;
+    A4_WORD(0x2fac)=69;
+    return 1;
+}
+
 /* _do_war asm:8482-8530, gameplay only: diagnostic P is not editor mode. */
 static int core_war(int owner)
 {
@@ -2217,7 +2242,7 @@ static void draw_original(int view_x, int view_y)
         "WAR - TERRAIN AND MAGNET INPUT LOCKED / ARROWS SCROLL / MAP CLICK" : core_swamp_selected ?
         "S SWAMP ARMED 5000 / LMB TARGET / RMB INERT" :
         "LMB RAISE / RMB LOWER / ARROWS SCROLL / MAP CLICK");
-    hud_text(4,222,"0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET / S SWAMP 5000");
+    hud_text(4,222,"0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET / S SWAMP 5000 / K KNIGHT 7500");
     hud_text(4,231,"Q QUAKE 2500 / F FLOOD 40000 / V VOLCANO 10000 / A ARMAGEDDON 80000");
     hud_text(4,249,"SPACE PAUSE / R RESET / ESC QUIT / D VIEW");
     hud_text(4,240,core_swamp_selected ?
@@ -2279,7 +2304,7 @@ static void _draw_it(int16_t y, int16_t x)
     }
     } else draw_original(x,y);
     char title[512];
-    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; Q quake 2500; F flood 40000; V volcano 10000; A Armageddon 80000; Space pause R reset Esc quit",
+    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; K knight 7500; Q quake 2500; F flood 40000; V volcano 10000; A Armageddon 80000; Space pause R reset Esc quit",
         core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : A4_WORD(0xae80) ? "WAR" : "RUNNING",
         core_population(0),core_population(1),core_mana(0),A4_WORD(0xae80) ?
         "TERRAIN AND MAGNET INPUT LOCKED / ARROWS SCROLL / MAP CLICK" : core_swamp_selected ?
@@ -2289,6 +2314,7 @@ static void _draw_it(int16_t y, int16_t x)
     SDL_SetWindowTitle(prg_screen->window,title);
 }
 
+static void _do_knight(void) { core_knight(player); }
 static void _do_war(void) { core_war(player); }
 static void _do_flood(void) { core_flood(player); }
 static void _do_quake(void) { core_quake(player,xoff,yoff,___newrand); }
@@ -2339,7 +2365,7 @@ static void _move_peeps(void)
         core_target(0) = core_target(1) = 0x820;
         A4_WORD(0xae78) = A4_WORD(0xae76) = 0x820;
     }
-    /* Existing walker/town/battle/remnant consumption; knight creation and nonwar AI remain disabled. */
+    /* Existing walker/town/battle/remnant consumption; nonwar AI remains disabled. */
     for (int person = 0; person < no_peeps; ++person) {
         if (peep_word(person,4) <= 0) continue;
         int flags = peeps[person*22];
@@ -2489,6 +2515,7 @@ static void game_handle_event(const SDL_Event *event)
             if (key == SDLK_q) _do_quake();
             if (key == SDLK_f) _do_flood();
             if (key == SDLK_v) _do_volcano();
+            if (key == SDLK_k) _do_knight();
             /* Host binding, not original A (which was a debug win). */
             if (key == SDLK_a) _do_war();
             /* Host S mapping for source selection asm:2021-2042 (> cost). */

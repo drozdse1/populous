@@ -4305,9 +4305,10 @@ static void test_armageddon_render(void)
     const char *lines[]={
         "Q QUAKE 2500 / F FLOOD 40000 / V VOLCANO 10000 / A ARMAGEDDON 80000",
         "WAR - TERRAIN AND MAGNET INPUT LOCKED / ARROWS SCROLL / MAP CLICK",
-        "SPACE PAUSE / R RESET / ESC QUIT / D VIEW"
+        "SPACE PAUSE / R RESET / ESC QUIT / D VIEW",
+        "0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET / S SWAMP 5000 / K KNIGHT 7500"
     };
-    const int rows[]={231,213,249};
+    const int rows[]={231,213,249,222};
     for (unsigned line=0;line<sizeof lines/sizeof lines[0];++line) {
         assert(4+4*strlen(lines[line])<=320 && rows[line]+5<=256);
         hud_text(4,rows[line],lines[line]);
@@ -5468,8 +5469,306 @@ static void test_heading_navigation(void)
     test_heading_navigation_water(); test_heading_leader_release();
 }
 
+static void knight_fixture(int owner)
+{
+    armageddon_fixture(); no_peeps=3; player=owner;
+    A4_LONG(0x849a)=7500;
+    A4_LONG(0x9a02)=A4_LONG(0x9a12)=15000;
+    A4_WORD(0x82c4)=A4_WORD(0x82c4+46)=0x20;
+    for (int person=0; person<3; ++person) {
+        memset(peeps+person*22,0x5a,22);
+        peeps[person*22]=2; peeps[person*22+1]=person==1 ? 1-owner : owner;
+        set_peep_word(person,4,100); set_peep_word(person,8,650+person);
+    }
+    core_leader(owner)=1; diagnostic_view=0;
+}
+
+/* Source cast oracle: only these fields may change, including byte-wide marker
+ * overwrite and a full four-byte heading. No consumer is run to obtain it. */
+static void knight_expected(uint8_t *expected, int owner, uint32_t heading)
+{
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    int subject=core_leader(owner)-1, position=peep_word(subject,8);
+    A4_LONG(0x9a02+owner*16)-=A4_LONG(0x849a);
+    if (owner==player) A4_LONG(0xae72)+=150;
+    peeps[subject*22+20]=1; memcpy(peeps+subject*22+14,&heading,4);
+    core_target(owner)=position; A4_WORD(owner ? 0xae76 : 0xae78)=position;
+    core_leader(owner)=0; A4_WORD(0x2fac)=69;
+    memcpy(expected,prg_a4_area,sizeof prg_a4_area);
+    memcpy(prg_a4_area,before,sizeof before);
+}
+
+static void test_knight_guards(void)
+{
+    /* Every rejection compares all A4 bytes through both core and SDL entry. */
+    const int invalid_owner[]={INT_MIN,-1,2,255,INT_MAX};
+    const int invalid_count[]={INT16_MIN,-1,0,209,INT16_MAX};
+    const int invalid_leader[]={INT16_MIN,-1,0,4,209,INT16_MAX};
+    const int invalid_position[]={INT16_MIN,-1,4096,INT16_MAX};
+    for (int owner=0; owner<2; ++owner) for (int paint=0; paint<2; ++paint)
+    for (int diagnostic=0; diagnostic<2; ++diagnostic) for (int gate=0; gate<41; ++gate) {
+        knight_fixture(owner); paint_map=paint; diagnostic_view=diagnostic;
+        int side=owner;
+        if (gate<5) side=invalid_owner[gate];
+        else if (gate<10) no_peeps=invalid_count[gate-5];
+        else if (gate<16) core_leader(owner)=invalid_leader[gate-10];
+        else if (gate<20) set_peep_word(0,8,invalid_position[gate-16]);
+        else if (gate==20) set_peep_word(0,4,0);
+        else if (gate==21) set_peep_word(0,4,-1);
+        else if (gate==22) set_peep_word(0,4,INT16_MIN);
+        else if (gate==23) peeps[1]=1-owner;
+        else if (gate==24) peeps[1]=255;
+        else if (gate==25) pause=-1;
+        else if (gate==26) A4_WORD(0xae80)=1;
+        else if (gate==27) A4_WORD(0xae80)=INT16_MIN;
+        else if (gate>=28 && gate<=30) core_result=gate-27;
+        else if (gate==31) prg_quit=1;
+        else if (gate==32) A4_LONG(0x9a02+owner*16)=7499;
+        else if (gate==33) A4_LONG(0x9a02+owner*16)=0x80000000u;
+        else if (gate==34) A4_LONG(0x9a02+owner*16)=0xffffffffu;
+        else if (gate==35) A4_WORD(0x82c4+owner*46)=0xffdf;
+        else if (gate==36) A4_WORD(0x82c4+owner*46)=4;
+        else if (gate==37) A4_WORD(0x82c4+owner*46)=0x2000;
+        else if (gate==38) { A4_LONG(0x849a)=16001; }
+        else if (gate==39) { A4_LONG(0x849a)=0x7fffffffu; A4_LONG(0x9a02+owner*16)=0x80000000u; }
+        else { A4_LONG(0x849a)=0xffffffffu; A4_LONG(0x9a02+owner*16)=0xfffffffeu; }
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(!core_knight(side)); assert(!memcmp(before,prg_a4_area,sizeof before));
+        /* The core takes int; player is a signed word, so use representative
+         * invalid words for extremes which would truncate to a valid owner. */
+        player=side==INT_MIN || side==INT_MAX ? -1 : side;
+        memcpy(before,prg_a4_area,sizeof before);
+        SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_k;
+        game_handle_event(&key); assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(core_tool==1 && core_swamp_selected==1 && !core_battles && !core_settlements);
+    }
+}
+
+static void assert_knight_cast(int owner, uint32_t heading)
+{
+    uint8_t expected[sizeof prg_a4_area]; knight_expected(expected,owner,heading);
+    assert(core_knight(owner)); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    assert(core_tool==1 && core_swamp_selected==1 && !core_battles && !core_settlements);
+}
+
+static void test_knight_cast(void)
+{
+    const uint32_t headings[]={0,1,208,UINT32_MAX,0x53014};
+    /* All 256 source flags admitted; no inferred weapon/terrain/occupancy gate. */
+    for (int owner=0; owner<2; ++owner) for (int local=0; local<2; ++local)
+    for (int state=0; state<256; ++state) {
+        knight_fixture(owner); player=local; peeps[0]=state;
+        paint_map=state&1; diagnostic_view=(state>>1)&1;
+        peeps[3]=state; peeps[20]=state; map_blk[650]=state; map_who[650]=state;
+        memcpy(peeps+14,&headings[state%5],4); A4_LONG(0xae72)=0xfffffff0u;
+        assert_knight_cast(owner,2);
+        assert(A4_LONG(0xae72)==(owner==local ? 134u : 0xfffffff0u));
+    }
+    const struct { uint32_t mana,cost,remainder; } cases[]={
+        {7500,7500,0}, {173,173,0}, {174,173,1},
+        {0x7fffffffu,0xffffffffu,0x80000000u},
+        {0x80000000u,0x80000000u,0}, {0xffffffffu,0xffffffffu,0},
+        {0xffffffffu,0x80000000u,0x7fffffffu}, {0,0,0},
+        {0x7fffffffu,0x7fffffffu,0}
+    };
+    for (int owner=0; owner<2; ++owner)
+    for (unsigned sample=0; sample<sizeof cases/sizeof cases[0]; ++sample) {
+        knight_fixture(owner); A4_LONG(0x9a02+owner*16)=cases[sample].mana;
+        A4_LONG(0x849a)=cases[sample].cost;
+        assert_knight_cast(owner,2); assert(A4_LONG(0x9a02+owner*16)==cases[sample].remainder);
+    }
+    const int counts[]={1,207,208}, positions[]={0,4095};
+    for (int owner=0; owner<2; ++owner) for (int count=0; count<3; ++count)
+    for (int place=0; place<2; ++place) {
+        knight_fixture(owner); no_peeps=counts[count];
+        memset(peeps,0,208*22); memset(peeps+208*22,0xa5,22);
+        int subject=no_peeps-1; core_leader(owner)=subject+1;
+        peeps[subject*22+1]=owner; set_peep_word(subject,4,INT16_MAX);
+        set_peep_word(subject,8,positions[place]); assert_knight_cast(owner,subject+1);
+    }
+    /* Selector stays unmodified: nearest, ascending tie, dead/remnant skip,
+     * self fallback, and out-of-map signed enemy positions remain eligible. */
+    for (int sample=0; sample<7; ++sample) {
+        knight_fixture(0); peeps[45]=1;
+        set_peep_word(1,8,654); set_peep_word(2,8,648);
+        uint32_t expected=3;
+        if (sample==1) { set_peep_word(1,8,652); expected=2; }
+        if (sample==2) { set_peep_word(2,4,0); expected=2; }
+        if (sample==3) { peeps[44]=0x80; expected=2; }
+        if (sample==4) { peeps[23]=peeps[45]=0; expected=1; }
+        if (sample==5) { set_peep_word(0,8,63); set_peep_word(1,8,-1); set_peep_word(2,8,1000); expected=2; }
+        if (sample==6) { set_peep_word(1,8,INT16_MIN); set_peep_word(2,8,INT16_MAX); expected=2; }
+        assert_knight_cast(0,expected);
+    }
+    knight_fixture(0); assert_knight_cast(0,2);
+    A4_LONG(0x84a6)=80000; A4_LONG(0x9a02)=80000; A4_WORD(0x82c4)=0x100;
+    assert(core_war(0)); assert(peep_reference(0)==-1 && peeps[20]==1);
+}
+
+static void test_knight_render(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    const char *line="0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET / S SWAMP 5000 / K KNIGHT 7500";
+    /* Four-pixel advance and three-pixel glyph: remain inside the HUD. */
+    assert(4+4*strlen(line)<=302);
+    for (int state=0; state<6; ++state) {
+        core_result=state>=3 ? state-2 : 0; pause=state==1; A4_WORD(0xae80)=state==2;
+        core_swamp_selected=core_tool=1;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        game_render(); assert(!memcmp(before,prg_a4_area,sizeof before));
+        const char *title=SDL_GetWindowTitle(prg_screen->window);
+        assert(strstr(title,"K knight 7500") && strstr(title,"Esc quit") && strlen(title)<512);
+        uint32_t hud[320*56]; memcpy(hud,prg_screen->chunky_buffer+320*200,sizeof hud);
+        hud_text(4,222,line);
+        assert(!memcmp(hud,prg_screen->chunky_buffer+320*200,sizeof hud));
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    _closeall(); SDL_Quit();
+}
+
+static void test_knight_input(void)
+{
+    knight_fixture(0);
+    uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+    memcpy(before,prg_a4_area,sizeof before); knight_expected(expected,0,2);
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_k;
+    key.key.repeat=1; game_handle_event(&key);
+    assert(!memcmp(before,prg_a4_area,sizeof before));
+    key.key.repeat=0; game_handle_event(&key);
+    assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    game_handle_event(&key); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    core_leader(0)=3; knight_expected(expected,0,2);
+    game_handle_event(&key); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    assert(core_mana(0)==0 && A4_LONG(0xae72)==300);
+    assert(core_tool==1 && core_swamp_selected==1 && !core_battles && !core_settlements);
+}
+
+static void test_knight_lifecycle(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    for (int owner=0; owner<2; ++owner) {
+        assert(game_reset(0)); player=owner;
+        for (int vertex=0; vertex<4225; ++vertex) A4_WORD(0xae86+vertex*2)=1;
+        memset(map_blk,0,4096); memset(map_bk2,0,4096); memset(map_who,0,4096);
+        _make_map(); memset(peeps,0,208*22); no_peeps=3;
+        const int positions[]={650,654,3000};
+        for (int person=0; person<3; ++person) {
+            peeps[person*22]=person ? 1 : 2; peeps[person*22+1]=person ? 1-owner : owner;
+            peeps[person*22+2]=1; peeps[person*22+3]=person ? 1 : 100;
+            set_peep_word(person,4,person==0 ? 3000 : person==1 ? 10 : 1000);
+            set_peep_word(person,8,positions[person]); set_peep_word(person,12,person ? 32 : 7);
+            map_who[positions[person]]=person+1;
+            if (person) core_set_town(person,0);
+        }
+        core_leader(owner)=1; core_leader(1-owner)=3;
+        core_tool=core_swamp_selected=1;
+        A4_LONG(0x9a02+owner*16)=7500; A4_WORD(0x82c4+owner*46)|=0x20;
+        uint8_t expected[sizeof prg_a4_area]; knight_expected(expected,owner,2);
+        SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_k;
+        assert(SDL_PushEvent(&key)==1); ___keyboard();
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        int moved=0, battle=0, remnant=0, celebrated=0, resumed=0, expired=0;
+        /* No world/state writes after K: all phases come from ordinary ticks. */
+        for (int tick=1; tick<=500 && !expired && !core_result; ++tick) {
+            game_tick();
+            if (peep_word(0,8)!=650) moved=1;
+            if (peeps[0]&8) { assert(moved); battle=1; }
+            if (peeps[22]==0x80) {
+                assert(battle); remnant=1;
+                assert(map_blk[654]==66 && map_bk2[654]>=53 && map_bk2[654]<=63);
+            }
+            if (peeps[0]==6) { assert(remnant); celebrated=1; }
+            if (celebrated && peeps[0]==2) resumed=1;
+            if (remnant && !peep_word(1,4)) expired=1;
+            assert(peep_word(0,4)>0 && core_tool==1 && core_swamp_selected==1);
+            assert_mailbox_empty(); assert_live_occupancy();
+            if (!(tick%10)) {
+                memcpy(expected,prg_a4_area,sizeof expected); game_render();
+                assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            }
+        }
+        printf("Knight controlled ticks: owner=%d moved=%d battle=%d remnant=%d celebration=%d resumed=%d expired=%d tick=%d\n",
+               owner,moved,battle,remnant,celebrated,resumed,expired,game_turn);
+        assert(moved && battle && remnant && celebrated && resumed && expired);
+        assert(core_battles>=1 && peeps[20]==0 && peep_word(2,4)>0);
+    }
+    _closeall(); SDL_Quit();
+}
+
+static void test_knight_ordinary_actions(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    SDL_SetWindowSize(prg_screen->window,640,512);
+    core_leader(0)=1; A4_LONG(0x9a02)=20000; A4_WORD(0x82c4)=0x31;
+    core_tool=core_swamp_selected=0;
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_k;
+    assert(SDL_PushEvent(&key)==1); ___keyboard();
+    assert(core_mana(0)==12500 && peep_reference(0)>=0);
+    /* A knight is not a global terrain or tool lock. */
+    iso_click_vertex(20,20,SDL_BUTTON_LEFT);
+    assert(core_vertex(20,20)==2 && core_mana(0)==12486);
+    key.key.keysym.sym=SDLK_s; assert(SDL_PushEvent(&key)==1); ___keyboard();
+    assert(core_swamp_selected);
+    iso_click_vertex(25,25,SDL_BUTTON_LEFT);
+    assert(!core_swamp_selected && core_mana(0)==7486);
+    assert(A4_LONG(0xae72)==200 && peep_reference(0)>=0);
+    /* Existing owner mailboxes remain executable after the cast. */
+    A4_DISP(0x82b6)[0]=1; A4_DISP(0x82b7)[0]=40; A4_DISP(0x82b8)[0]=40;
+    core_consume_terrain_mailboxes();
+    assert(core_vertex(40,40)==2 && core_mana(0)==7472);
+    assert_mailbox_empty();
+    _closeall(); SDL_Quit();
+}
+
+static void test_knight_original(const char *directory)
+{
+    assert(!setenv("POPULOUS_DATA_DIR",directory,1));
+    char assets[4096]; snprintf(assets,sizeof assets,"%s/..",directory);
+    assert(!setenv("POPULOUS_ASSET_DIR",assets,1));
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    for (int owner=0; owner<2; ++owner) {
+        assert(game_reset_start((StartSelection){START_ORIGINAL,0}));
+        assert_original_world(); assert(A4_LONG(0x849a)==7500);
+        /* The original start's player is untouched: core entry tests red;
+         * blue traverses the SDL queue. Only funding/permission is injected. */
+        int subject=core_leader(owner)-1, position=peep_word(subject,8);
+        assert(subject>=0 && subject<no_peeps && peep_owner(subject)==owner);
+        uint32_t heading=subject+1; int distance=9999;
+        for (int person=0; person<no_peeps; ++person) {
+            if (peep_owner(person)==owner || peep_word(person,4)<=0 || (peeps[person*22]&0x80)) continue;
+            int cell=peep_word(person,8);
+            assert(cell>=0 && cell<4096);
+            int candidate=abs(cell%64-position%64)+abs(cell/64-position/64);
+            if (candidate<distance) { distance=candidate; heading=person+1; }
+        }
+        A4_LONG(0x9a02+owner*16)=7500; A4_WORD(0x82c4+owner*46)|=0x20;
+        uint8_t expected[sizeof prg_a4_area]; knight_expected(expected,owner,heading);
+        if (owner==player) {
+            SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_k;
+            assert(SDL_PushEvent(&key)==1); ___keyboard();
+        } else assert(core_knight(owner));
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        game_render(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(strstr(SDL_GetWindowTitle(prg_screen->window),"K knight 7500"));
+        for (int tick=0; tick<100; ++tick) {
+            assert(!core_result); game_tick(); assert_live_occupancy(); assert_mailbox_empty();
+        }
+        memcpy(expected,prg_a4_area,sizeof expected); game_render();
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        printf("Original funded knight smoke: owner=%d ticks=%d populations=%d/%d (not manual-play evidence)\n",
+               owner,game_turn,core_population(0),core_population(1));
+    }
+    _closeall(); SDL_Quit();
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==3 && !strcmp(argv[1],"--knight")) { test_knight_original(argv[2]); return 0; }
+    if (argc==2 && !strcmp(argv[1],"--knight")) {
+        test_knight_input(); test_knight_guards(); test_knight_cast();
+        prepare_rule_data(); test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions(); cleanup_rule_data();
+        puts("focused knight: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--special-sprites")) {
         prepare_rule_data(); test_special_sprites(); cleanup_rule_data();
         puts("focused special sprites: PASS"); return 0;
@@ -5595,6 +5894,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_knight_input(); test_knight_guards(); test_knight_cast();
     test_heading_battle(); test_celebration();
     test_heading(); test_heading_navigation();
     test_armageddon_input_smoke(); test_armageddon_cast(); test_armageddon_delayed(); test_armageddon_islands();
@@ -5618,6 +5918,7 @@ int main(int argc, char **argv)
     test_original_generator();
     test_original_placement();
     prepare_rule_data();
+test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_heading_seeded_encounter();
     test_armageddon_locks(); test_armageddon_render();
     test_terrain_defaults();

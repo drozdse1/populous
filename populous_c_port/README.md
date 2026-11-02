@@ -34,8 +34,7 @@ ordinary `_where_do_i_go`/magnet navigation, settlement growth/mana/splitting,
 ordinary `_do_battle`/`_battle_over`, joining, water loss and vertex sculpting.
 Source labels and assembly ranges appear beside each implementation. The
 opponent uses the same settlement/exploration rules, not timer-created units.
-Knight creation, original computer
-power/auto-level logic and exact Amiga movement
+Original computer power/auto-level logic and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
 Population is bounded at 32000; ordinary mana helpers clamp to -250..1999999.
@@ -147,7 +146,7 @@ tendency, prevents settlement and releases an existing leader before war recente
 Opaque out-of-range metadata stays intact and uses bounded magnet fallback without
 leader acquisition; unsafe map coordinates never become map accesses. The exact
 selector remains position-word based rather than silently filtering its candidates.
-Knight creation remains deferred.
+Gameplay knight creation connects these paths through `K` (see below).
 A heading-involved fight with one survivor now enters the
 original completion tail: walker/town celebration, headed-loser reward precedence,
 owner bookkeeping, conditional occupancy and loser-view transfer. Raw heading
@@ -516,6 +515,32 @@ clamped bounds rectangle is rebuilt rather than unconditionally rebuilding the
 whole footprint. No residents or occupancy are changed directly by casting.
 Original toolbar, audio, editor mode and exact queued-command timing remain open.
 
+## Knight power
+
+`K` immediately converts the current living friendly leader using active
+permission `0x20` and the original 7500-mana cost. Pause, war, a finished match,
+quit or an invalid leader reject the action without spending mana. Diagnostics
+are not an editor bypass; keyboard repeats are ignored.
+
+The cast sets the leader's byte-20 marker to 1, selects an enemy through the
+original heading algorithm, leaves the magnet at that resident's position,
+releases the leader and records effect 69. A player cast earns 150 points.
+It does not increase weapons, spend population, force a walking state, move
+people or alter terrain. Existing town, waiting and battle states retain their
+normal dispatch order. A second cast needs a newly acquired leader.
+
+Pursuit, swamp avoidance, combat completion, town burning, timed remnants and
+canonical original sprites are connected. Terrain/tool use remains available;
+Armageddon later clears headings through its existing path. Original toolbar,
+audio, strategic AI, phased movement and complete combat parity remain open.
+
+`--knight` checks atomic casts, all 256 leader flags, costs, permissions, HUD and
+post-cast ordinary actions. Its controlled SDL-K scenario reaches pursuit,
+combat, burnt town, celebration and remnant expiry at tick 68 for both owners,
+without post-cast state injection. A separate funded original-level smoke runs
+100 ticks for each side. Full normal/sanitized suites and all 495 original starts
+passed; these fixtures do not establish a manual winning strategy.
+
 ## Armageddon power
 
 `A` is the port's immediate Armageddon binding, not the original debug-A instant
@@ -532,7 +557,7 @@ magnet mouse actions are locked during war; camera, pause, reset and quit remain
 available. Armed swamp/tool selection is retained. There is no editor bypass.
 
 This is gameplay integration, not complete original-game parity: original toolbar,
-audio, editor/AI activation, knights, phased water behavior and original end-game
+audio, editor/AI activation, other special figures, phased water behavior and original end-game
 accounting remain open. C still recomputes surviving population immediately and
 reports simultaneous extinction as a draw. In the controlled cast-through-SDL
 island test, either caster activates war, a route is raised, combat starts at
@@ -553,6 +578,7 @@ there is no terrain/population injection after the cast.
 - `0`: gather walkers at the initial magnet (32,32). After a leader reaches it,
   `m` selects magnet placement; left-click moves the target for 200 mana. `m`
   again returns to terrain. Settlements release walkers when over capacity.
+- `k`: convert the current leader to a knight, if allowed, for 7500 mana; unavailable during war.
 - `a`: Armageddon, if allowed, for 80000 mana; terrain/magnet clicks lock during war.
 - `v`: volcano on the current viewport, if allowed, for 10000 mana.
 - `f`: global flood, if allowed, for 40000 mana.
