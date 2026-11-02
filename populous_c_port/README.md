@@ -37,10 +37,10 @@ opponent uses the same settlement/exploration rules, not timer-created units.
 Original computer power/auto-level logic and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
-Population is bounded at 32000; ordinary mana helpers clamp to -250..1999999.
-Raw terrain commands and single-winner battle completion instead
-preserve their source word/32-bit arithmetic, using defined unsigned operations
-rather than C signed overflow.
+Ordinary population helpers cap at 32000; ordinary mana helpers clamp to -250..1999999.
+Raw terrain commands, single-winner battle completion and already-submerged
+non-combat water loss instead preserve their source word/32-bit arithmetic, using
+unsigned operations rather than C signed overflow.
 
 The exact `0x80` peep remnant now consumes its original unsigned 16-bit timer
 (`src/populous_prg.asm:4283-4315`): it claims only empty occupancy and is removed
@@ -127,8 +127,8 @@ bit `0x10` queue before the port's water loss or land recovery, unless fatal-wat
 mode or the existing battle exemption applies. Newly assigned water flags do not
 produce in that same pass. Later residents overwrite earlier same-owner commands;
 no terrain changes until the consumer runs. Nonwar AI and swamp-target command
-production remain disabled. Already-wet loss/recovery and combat-water differences
-remain unchanged; newly submerged non-combat residents use the entry transition below.
+production remain disabled. Dry recovery and combat-water differences remain
+unchanged; entry and still-submerged non-combat processing are described below.
 A controlled two-island fixture raises a route solely through movement-produced
 commands, enters combat at tick 41 and reaches mutual extinction at tick 45 in
 normal and sanitized builds. This is a prerequisite integration test, not an
@@ -139,14 +139,30 @@ Newly submerged non-combat residents follow the original entry transition
 and clear the stored frame only if its signed word is at least 8. The entry update
 preserves population, timers and occupancy; it does not move, queue rescue, apply
 fatal-water removal or deduct drowning loss. Those water effects begin on the
-next update carrying bit `0x10`. The existing already-wet branch, dry-land
-recovery, combat exemption and word-arithmetic differences remain separate work.
+next update carrying bit `0x10`. Dry-land recovery, combat exemption and broader
+mixed-state dispatch remain separate work.
 This is not full drowning or original movement-phase parity. `--water-entry`
 checks full-A4 transitions, town/city footprints at map boundaries, opaque heading
 preservation, all 65,536 frame words, subsequent cleanup, deferred rescue and
 pause/result/quit gates without changing the match input or winner assertions.
 Focused and full normal/ASan/UBSan suites, original-data matches and all 495
 original starts passed after this transition.
+
+Already-wet non-combat residents that remain on a zero block use the original
+word-sized doubled loss and subtraction (`src/populous_prg.asm:3544-3559`). Death
+is decided from the signed wrapped result, not an unbounded C intermediate; for
+example population 100 with walk loss 30000 becomes 5636. Word wrapping can leave
+up to 32767 population; this path does not apply the ordinary 32000 helper cap.
+Survivors preserve their flags, frames, timers, metadata and town footprints.
+Fatal mode removes them without producing a rescue command; nonfatal war rescue
+is queued before loss, even for a dying producer. Cleanup retains the host's
+existing leader/view and occupancy policy. No drowning frame, waiting timer or movement advances while
+still submerged. Recovery on dry land, including its fatal-mode difference,
+remains unchanged and is not covered by this source-parity claim. `--water-loss`
+checks signed loss boundaries, all 65,536 loss words per owner, state/footprint
+preservation, death bookkeeping and deferred rescue. Full normal/sanitized suites,
+original-data matches and all 495 starts passed; match outcomes remain unchanged
+from the delayed-entry milestone.
 
 Heading target selection (`_get_heading`) now has a bounded implementation:
 self when no enemy qualifies, otherwise the first nearest living different-owner

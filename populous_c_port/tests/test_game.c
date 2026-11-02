@@ -1433,7 +1433,7 @@ static void test_celebration_dispatch(void)
                     set_peep_word(0,4,population); map_blk[650]=0; game_mode=fatal;
                     _move_peeps();
                     int survives=!old_water || (!fatal && population==3);
-                    assert(peeps[0]==(survives ? 18 : 0));
+                    assert(peeps[0]==(survives ? (old_water ? 0x16 : 18) : 0));
                     assert(peep_word(0,4)==(old_water ? survives : population));
                     assert(peep_word(0,12)==(old_water ? 85 : 0) && peep_word(0,6)==123);
                     assert(map_who[650]==survives && peep_word(0,8)==650 && seed==123);
@@ -1703,6 +1703,176 @@ static void test_water_entry(void)
     test_water_entry_second_tick(); test_water_entry_tick_gates();
     test_water_entry_heading_payload(); test_water_entry_death_cleanup();
     test_water_entry_edge_footprints();
+}
+
+/* Old wet loss: catch widened arithmetic, premature flag/footprint changes,
+ * dispatch fallthrough, and fatal queueing. Oracles never call core_remove. */
+static void water_loss_expected(uint8_t *expected, int owner, int position, int remaining)
+{
+    memcpy(expected,prg_a4_area,sizeof prg_a4_area);
+    int16_t population=remaining>0 ? remaining : 0;
+    memcpy(expected+(peeps-prg_a4_area)+4,&population,2);
+    if (A4_WORD(0xae80)) {
+        celebration_expected_word(expected,0x99f8,0x820);
+        celebration_expected_word(expected,0x9a08,0x820);
+        celebration_expected_word(expected,0xae78,0x820);
+        celebration_expected_word(expected,0xae76,0x820);
+        if (!(game_mode&1)) {
+            expected[A4_DISP(0x82b6+owner*46)-prg_a4_area]=1;
+            expected[A4_DISP(0x82b7+owner*46)-prg_a4_area]=position%64;
+            expected[A4_DISP(0x82b8+owner*46)-prg_a4_area]=position/64;
+            celebration_expected_word(expected,0x82be + owner*46,1);
+        }
+    }
+    if (remaining>0) return;
+    expected[peeps-prg_a4_area]=0;
+    if (map_who[position]==1) expected[map_who-prg_a4_area+position]=0;
+    if (core_leader(owner)==1) {
+        celebration_expected_word(expected,0x99f6+owner*16,0);
+        celebration_expected_word(expected,0x99f8+owner*16,position);
+        celebration_expected_word(expected,owner ? 0xae76 : 0xae78,position);
+    }
+    if (view_who==1) celebration_expected_word(expected,0xae68,0);
+    if (!(peeps[0]&1)) return;
+    int city=map_bk2[position]==42;
+    /* Clipped Cartesian coordinates, independent of the production offsets. */
+    for (int row=0; row<64; ++row) for (int column=0; column<64; ++column) {
+        int dy=abs(row-position/64), dx=abs(column-position%64);
+        if (dy>2 || dx>2 || (!city && ((dy==2 && dx==1) || (dy==1 && dx==2)))) continue;
+        int cell=row*64+column;
+        if (map_blk[cell]==31+owner) expected[map_blk-prg_a4_area+cell]=15;
+        if (city || (dy<=1 && dx<=1)) expected[map_bk2-prg_a4_area+cell]=0;
+    }
+}
+
+static void test_water_loss_state(void)
+{
+    const struct { int population, loss, result; } arithmetic[]={
+        {3,1,1},{2,1,0},{1,1,-1},{100,32767,102},{100,16384,-32668},
+        {1,16385,32767},{1,-1,3},{32767,-1,-32767},
+        {100,-32768,100},{100,30000,5636}
+    };
+    const int flags[]={18,0x10,0x11,0x15,0x16,0x17,0x30,0x52,0x76,0x90,0x91,0x96};
+    const int frames[]={-32768,-1,0,7,87,32767};
+    const int timers[]={32767,-32768,0,15,-1,123};
+    for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal)
+    for (int war=0; war<2; ++war)
+    for (unsigned state=0; state<sizeof flags/sizeof flags[0]; ++state)
+    for (unsigned sample=0; sample<sizeof arithmetic/sizeof arithmetic[0]; ++sample) {
+        setup_water_entry(owner,flags[state],frames[sample%6],state%2);
+        game_mode=fatal; A4_WORD(0xae80)=war;
+        set_peep_word(0,4,arithmetic[sample].population);
+        set_peep_word(0,6,timers[sample%6]); A4_WORD(0x2fb0)=arithmetic[sample].loss;
+        /* Alternate leader cleanup and opaque heading preservation; never let
+         * the heading prepass consume the latter. */
+        if (sample%2) { core_leader(owner)=0; memcpy(peeps+14,"\x12\x34\x56\x78",4); }
+        no_peeps=2; peeps[22]=8; peeps[23]=1-owner;
+        set_peep_word(1,4,100); set_peep_word(1,6,1); set_peep_word(1,8,650);
+        map_who[650]=sample%3;
+        /* Existing owner command must survive fatal removal, not be erased. */
+        for (int command_owner=0; command_owner<2; ++command_owner) {
+            A4_DISP(0x82b6+command_owner*46)[0]=2;
+            A4_DISP(0x82b7+command_owner*46)[0]=27;
+            A4_DISP(0x82b8+command_owner*46)[0]=31;
+            A4_WORD(0x82be + command_owner*46)=7;
+            A4_WORD(0x82bc+command_owner*46)=1; /* No new nonwar AI predicate. */
+        }
+        uint8_t expected[sizeof prg_a4_area];
+        int remaining=fatal ? 0 : arithmetic[sample].result;
+        water_loss_expected(expected,owner,650,remaining);
+        _move_peeps();
+        assert(peep_word(0,4)==(remaining>0 ? remaining : 0));
+        assert(peeps[0]==(remaining>0 ? flags[state] : 0));
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(!core_battles && !core_settlements && !core_result && seed==123);
+    }
+}
+
+static void test_water_loss_words(void)
+{
+    /* Every walk_death word, one population: modular residue oracle uses
+     * division/remainder rather than the production word-shift/subtract. */
+    for (int owner=0; owner<2; ++owner) {
+        setup_water_entry(owner,0x96,-32768,0); core_leader(owner)=0; view_who=0;
+        for (unsigned word=0; word<=UINT16_MAX; ++word) {
+            peeps[0]=0x96; set_peep_word(0,4,100); map_who[650]=1;
+            A4_WORD(0x2fb0)=word;
+            unsigned residue=(131172u-2u*word)%65536u;
+            int want=residue>0 && residue<32768 ? (int)residue : 0;
+            _move_peeps();
+            assert(peep_word(0,4)==want && peeps[0]==(want ? 0x96 : 0));
+            assert(map_who[650]==(want ? 1 : 0));
+            assert(peep_word(0,12)==-32768 && peep_word(0,6)==123 && peep_word(0,10)==-64);
+        }
+    }
+}
+
+static void test_water_loss_edges(void)
+{
+    const int positions[]={0,63,4032,4095,32,2048,2047,4064};
+    for (int owner=0; owner<2; ++owner) for (int city=0; city<2; ++city)
+    for (int fatal=0; fatal<2; ++fatal) for (int population=1; population<=3; population+=2)
+    for (unsigned sample=0; sample<sizeof positions/sizeof positions[0]; ++sample) {
+        setup_water_entry(owner,0x95,-1,city); game_mode=fatal;
+        int position=positions[sample]; set_peep_word(0,8,position); set_peep_word(0,4,population);
+        memset(map_who,0,4096); map_who[position]=1;
+        for (int row=0; row<64; ++row) for (int column=0; column<64; ++column) {
+            map_blk[row*64+column]=31+(row+column)%2;
+            map_bk2[row*64+column]=37;
+        }
+        map_blk[position]=0; map_bk2[position]=city ? 42 : 37;
+        uint8_t expected[sizeof prg_a4_area];
+        water_loss_expected(expected,owner,position,fatal ? 0 : population-2);
+        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(!core_battles && !core_settlements);
+    }
+}
+
+static void test_water_loss_gates(void)
+{
+    const int dead[]={0,-1,-32768};
+    for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal) {
+        for (unsigned sample=0; sample<sizeof dead/sizeof dead[0]; ++sample) {
+            setup_water_entry(owner,0x95,32767,1); game_mode=fatal;
+            set_peep_word(0,4,dead[sample]);
+            uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+            _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        }
+        setup_water_entry(owner,0x96,-32768,0); game_mode=fatal;
+        set_peep_word(0,4,3); no_peeps=18;
+        peeps[17*22]=2; peeps[17*22+1]=1-owner;
+        set_peep_word(17,4,100); set_peep_word(17,8,900);
+        map_blk[900]=1; map_who[900]=18;
+        for (int gate=0; gate<5; ++gate) {
+            pause=gate==0; core_result=gate>=1 && gate<=3 ? gate : 0; prg_quit=gate==4;
+            uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+            game_tick(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            assert(core_result==(gate>=1 && gate<=3 ? gate : 0));
+        }
+        pause=core_result=prg_quit=0;
+        uint8_t expected[sizeof prg_a4_area]; water_loss_expected(expected,owner,650,fatal ? 0 : 1);
+        int16_t frame=1; memcpy(expected+(peeps-prg_a4_area)+17*22+12,&frame,2);
+        int16_t turn=game_turn+1; memcpy(expected+((uint8_t *)&game_turn-prg_a4_area),&turn,2);
+        int32_t friendly=owner ? 100 : !fatal, enemy=owner ? !fatal : 100;
+        memcpy(expected+(A4_DISP(0x99fe)-prg_a4_area),&friendly,4);
+        memcpy(expected+(A4_DISP(0x9a0e)-prg_a4_area),&enemy,4);
+        game_tick(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(core_result==(fatal ? (owner ? 1 : 2) : 0));
+        assert(peep_word(17,12)==1 && peep_word(17,4)==100 && map_who[900]==18);
+    }
+    /* Mixed combat+water intentionally retains host recovery, not wet loss. */
+    const int combat[]={0x18,0x19,0x1e,0x98};
+    for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal)
+    for (unsigned sample=0; sample<sizeof combat/sizeof combat[0]; ++sample) {
+        setup_water_entry(owner,combat[sample],32767,1); game_mode=fatal;
+        uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,2,1);
+        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+}
+
+static void test_water_loss(void)
+{
+    test_water_loss_state(); test_water_loss_words(); test_water_loss_edges(); test_water_loss_gates();
 }
 
 /* Synthetic consumer fixtures; production integration is in --heading-town. */
@@ -4400,6 +4570,35 @@ static void test_war_terrain_order_and_death(void)
     assert(core_vertex(10,10)==1 && map_blk[650]==17 && core_mana(0)==100 && seed==123);
     assert_mailbox_empty();
 }
+static void test_water_loss_rescue(void)
+{
+    for (int owner=0; owner<2; ++owner) {
+        war_terrain_fixture(); peeps[0]=0x96; peeps[1]=owner; map_blk[650]=0;
+        set_peep_word(0,4,3); set_peep_word(0,6,-32768); set_peep_word(0,12,32767);
+        no_peeps=3;
+        for (int person=1; person<3; ++person) {
+            peeps[person*22]=8; peeps[person*22+1]=person-1;
+            set_peep_word(person,4,100); set_peep_word(person,6,person);
+            set_peep_word(person,8,900+person); map_who[900+person]=person+1;
+        }
+        /* Start-only setup: source producer, deferred terrain consumer, then
+         * unchanged host dry recovery; no state injection between steps. */
+        _move_peeps();
+        assert(peep_word(0,4)==1 && peeps[0]==0x96 && peep_word(0,12)==32767);
+        assert(peep_word(0,6)==-32768 && map_blk[650]==0 && core_vertex(10,10)==0);
+        assert_war_command(owner,650);
+        core_consume_terrain_mailboxes();
+        assert(map_blk[650]==17 && core_vertex(10,10)==1 && peep_word(0,4)==1);
+        assert_mailbox_empty();
+        game_tick();
+        assert(peeps[0]==2 && peep_word(0,4)==1 && peep_word(0,12)==1);
+        assert(peep_word(0,6)==-32768 && peep_word(0,8)==650 && map_who[650]==1);
+        assert(!core_result && !core_battles && !core_settlements && seed==123);
+        assert(core_population(owner)==101 && core_population(1-owner)==100);
+        assert_mailbox_empty();
+    }
+}
+
 static void test_war_terrain_obstacle(void)
 {
     /* Start-only fixture: two height-1 islands separated by a four-vertex sea
@@ -6441,6 +6640,12 @@ static void test_battle_frame_render_and_entry(void)
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--water-loss")) {
+        test_water_loss(); test_water_loss_rescue(); test_water_entry();
+        test_celebration_dispatch(); test_flood_delayed_hazards();
+        test_war_terrain_old_water(); test_war_terrain_order_and_death();
+        puts("focused already-wet loss: PASS (960 state cases, 131072 word cases, 128 edge cases)"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--water-entry")) {
         test_water_entry(); puts("focused newly submerged entry: PASS"); return 0;
     }
@@ -6591,6 +6796,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_water_loss(); test_water_loss_rescue();
     test_water_entry();
     test_battle_entry_state(); test_battle_entry_wait_retry(); test_battle_entry_town_reward();
     test_battle_frame_helper(); test_battle_frame_integration(); test_battle_frame_deaths();

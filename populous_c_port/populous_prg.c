@@ -2380,22 +2380,25 @@ static void _move_peeps(void)
         int flags = peeps[person*22];
         int position = peep_word(person,8);
         /* Entry flag, before water mutation or land recovery (asm:3481-3543).
-         * Keep host battle exemption and already-wet damage/recovery unchanged. */
+         * Keep the war-only predicate and host battle exemption/recovery. */
         if ((flags&16) && !(flags&8) && !(game_mode&GAME_MODE_WATER_FATAL))
             core_queue_war_raise(peep_owner(person),position);
         if (!map_blk[position] && !(flags&8)) {
+            if (flags&16) {
+                /* asm:3484-3490,3544-3559,4308-4315: fatal removal sees
+                 * original flags; otherwise store the word before signed death.
+                 * Still wet skips framing and all lower-priority consumers. */
+                if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
+                uint16_t loss = (uint16_t)(2u*(uint16_t)A4_WORD(0x2fb0));
+                set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)-loss));
+                if (peep_word(person,4)<=0) core_remove(person);
+                continue;
+            }
             if (flags&1) core_set_town(person,1);
             peeps[person*22] = 18;
             /* asm:3562-3580: new water entry only reframes; exact 18 then
              * reaches the common positive-population check without other work. */
-            if (!(flags&16)) {
-                if (peep_word(person,12) >= 8) set_peep_word(person,12,0);
-                continue;
-            }
-            if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
-            int population = peep_word(person,4)-2*A4_WORD(0x2fb0);
-            set_peep_word(person,4,population > 0 ? population : 0);
-            if (population <= 0) core_remove(person);
+            if (peep_word(person,12) >= 8) set_peep_word(person,12,0);
             continue;
         }
         if (flags&16) { peeps[person*22] = 2; set_peep_word(person,12,0); flags = 2; }
