@@ -49,8 +49,11 @@ when the **old** counter is zero, so 40 lasts 41 updates. It does not walk, lose
 walking population, draw RNG or change animation frames. Ordinary encounters
 ignore bit-7 residents without deleting them; the immediate-movement occupancy
 model and hidden-town safeguards remain in force. Removal uses normal leader/view
-cleanup and population accounting. This is a tested consumer, not knight creation
-or the heading-bearing battle-winner producer. Existing water precedence and mixed
+cleanup and population accounting. Heading-bearing winners now create this remnant
+when they defeat a town, preserving population 1 and timer 40 while burning its
+footprint. City burning follows the original 25 offsets, including in-range row
+crossings; out-of-array accesses are safely skipped. Ordinary town burning uses
+17 movement-validated offsets. Existing water precedence and mixed
 state dispatch remain bounded host behavior, not original drowning/phase parity.
 `--remnant` and the default suite cover both resident iteration orders, word
 boundaries, occupancy, cleanup and stopped ticks. Normal/ASan/UBSan suites, all
@@ -67,9 +70,8 @@ uses the same celebration frames, but completion clears `0x04` and recalculates
 its town frame from current capacity instead of switching to a walker frame.
 It does not repaint the footprint or run growth, mana, splitting or evacuation
 in that update; ordinary town processing resumes on the following update.
-Broader mixed flags, the town-destruction producer and visible celebration art
-remain separate work; heading-involved wins against non-town residents now produce
-these celebration states.
+Broader mixed flags and visible celebration art remain separate work;
+heading-involved victories now produce these celebration states.
 The focused `--celebration` tests cover signed frame boundaries, full-A4 state
 preservation, later-resident progress, pause/result/quit gates and water precedence.
 Normal and sanitized full suites, original-data matches and all 495 starts passed.
@@ -138,16 +140,28 @@ tendency, prevents settlement and releases an existing leader before war recente
 Opaque out-of-range metadata stays intact and uses bounded magnet fallback without
 leader acquisition; unsafe map coordinates never become map accesses. The exact
 selector remains position-word based rather than silently filtering its candidates.
-Knight creation and heading-specific town destruction remain deferred.
-A heading-involved fight with one survivor and a non-town loser now enters the
+Knight creation remains deferred.
+A heading-involved fight with one survivor now enters the
 original completion tail: walker/town celebration, headed-loser reward precedence,
 owner bookkeeping, conditional occupancy and loser-view transfer. Raw heading
 presence selects this path, even when the reference is opaque; it is not dereferenced.
 Rewards sign-extend their original word and wrap 32-bit mana, flooring only the
 loser's result against the active minimum. This path does not use the ordinary
-mana clamp. Town losers, metadata-zero pairs and mutual death keep their existing
-paths. Host casualty timing and `core_remove` semantics remain unchanged; original
-previous-cell cleanup and complete combat parity are still separate work.
+mana clamp. Metadata-zero pairs and mutual death keep their existing paths.
+For town losers, an exactly zero post-loss population retains the entry frame
+for the reward; a negative pre-clamp population recomputes the town frame before
+terrain changes.
+A headed winner burns the town and leaves a timed remnant. An ordinary winner
+against a headed town may occupy it, setting the original conquest timer and
+protecting the newly drawn town from loser cleanup. Higher-slot new states can
+already advance later in the same resident pass; no global deferral was added.
+Host casualty arithmetic/timing and `core_remove` semantics remain unchanged.
+In particular, extreme weapon/population combinations can differ from original
+wrapping `SUB.W` outcomes; this is not full combat parity. Original previous-cell
+cleanup remains separate work. The focused `--heading-town` suite covers town
+reward boundaries, independent burn-footprint expectations, conquest, same-pass
+state consumption and remnant expiry. Normal/sanitized full suites, original-data
+matches and all 495 starts passed for this extension.
 `--heading-battle` verifies full-A4 outcomes, raw presence, reward precedence,
 word counters, signed mana boundaries, third-party occupancy and ordered
 producer/consumer ticks. Full normal/sanitized suites, original-data matches and

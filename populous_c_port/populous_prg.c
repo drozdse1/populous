@@ -55,6 +55,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <limits.h>
 
@@ -971,13 +972,13 @@ static int core_magnet_direction(int person)
     peeps[person*22+21] = (uint8_t)directions[direction == 8 ? 0 : opposite[direction]];
     return 999;
 }
-/* _battle_over asm:6220-6225,6424-6564, bounded to a non-town loser
- * with raw heading metadata on either participant. Casualties stay in core_battle. */
-static int core_heading_battle_over(int winner, int loser)
+/* _battle_over asm:6220-6564, bounded to raw heading metadata on either
+ * participant. Casualties and winner selection stay in core_battle. */
+static int core_heading_battle_over(int winner, int loser, bool raw_loser_nonzero)
 {
     if (no_peeps < 0 || no_peeps > 208 || winner < 0 || winner >= no_peeps ||
         loser < 0 || loser >= no_peeps || winner == loser ||
-        peep_word(winner,4) <= 0 || peep_word(loser,4) > 0 || (peeps[loser*22]&1)) return 0;
+        peep_word(winner,4) <= 0 || peep_word(loser,4) > 0) return 0;
     int owner=peep_owner(winner), enemy=peep_owner(loser);
     int position=peep_word(winner,8), loser_position=peep_word(loser,8);
     if (owner > 1 || enemy > 1 || owner == enemy || position < 0 || position >= 4096 ||
@@ -988,6 +989,40 @@ static int core_heading_battle_over(int winner, int loser)
     if (!winner_heading && !loser_heading) return 0;
     int32_t reward=A4_WORD(loser_heading ? 0x3012 : core_leader(enemy)==loser+1 ? 0x3014 : 0x3010);
     A4_WORD(0xae7a+owner*2)=(uint16_t)((uint16_t)A4_WORD(0xae7a+owner*2)+1u);
+    if (peeps[loser*22]&1) {
+        peeps[loser*22]=1;
+        /* _do_battle's preliminary combat frames are overwritten here and by
+         * winner frame 85. Exact-zero losers skip both frames and life scratch;
+         * negative host casualties must still reframe before any terrain edit. */
+        if (raw_loser_nonzero) core_frame_town(loser,core_check_life(enemy,loser_position));
+        int level=(int16_t)(peep_word(loser,12)-32);
+        reward=level>=0 && level<=10 ? A4_WORD(0x2ffa+level*2) : 100;
+        if (winner_heading) {
+            peeps[loser*22]=0x80; set_peep_word(loser,4,1); set_peep_word(loser,6,40);
+            peeps[winner*22]=2;
+            int city=map_bk2[loser_position]==42;
+            for (int index=0; index<(city ? 25 : 17); ++index) {
+                int cell=loser_position+core_offsets[index];
+                /* Source city loop has no valid_move gate: retain row wrap,
+                 * guarding only accesses outside the host's flat map array. */
+                if (city ? (cell<0 || cell>=4096) : core_valid_move(loser_position,core_offsets[index])!=0) continue;
+                if (city && index>0 && index<9 && map_bk2[cell]>=41 && map_bk2[cell]<=44)
+                    map_bk2[cell]+=21;
+                if (map_blk[cell]==31+enemy) map_blk[cell]=66;
+            }
+            if (map_bk2[loser_position]>=32 && map_bk2[loser_position]<=42) map_bk2[loser_position]+=21;
+            if (map_who[loser_position]==loser+1) map_who[loser_position]=0;
+        } else {
+            core_set_town(loser,1);
+            int capacity=core_check_life(owner,position);
+            if (capacity>0) {
+                /* Prevent later loser cleanup from erasing the new town. */
+                peeps[loser*22]=8; peeps[winner*22]=1;
+                set_peep_word(winner,6,game_turn);
+                core_frame_town(winner,capacity); core_set_town(winner,0);
+            }
+        }
+    }
     /* Normalize before core_remove so reciprocal host cleanup cannot undo it. */
     peeps[winner*22]=((peeps[winner*22]&1) ? 1 : 2)|4;
     set_peep_word(winner,10,0); set_peep_word(winner,12,85);
@@ -1004,7 +1039,7 @@ static int core_heading_battle_over(int winner, int loser)
     if ((A4_LONG(0x9a02+enemy*16)^0x80000000u) < (A4_LONG(0x8486)^0x80000000u))
         A4_LONG(0x9a02+enemy*16)=A4_LONG(0x8486);
     if (view_who==loser+1) view_who=winner+1;
-    core_remove(loser);
+    if (peep_word(loser,4)<=0) core_remove(loser);
     return 1;
 }
 static void core_battle(int first, int second)
@@ -1020,7 +1055,11 @@ static void core_battle(int first, int second)
     if (first_pop > 0 && second_pop > 0) return;
     if (first_pop <= 0 && second_pop <= 0) { core_remove(first); core_remove(second); return; }
     int winner = first_pop > 0 ? first : second, loser = winner == first ? second : first;
-    if (core_heading_battle_over(winner,loser)) return;
+    /* Keep host casualty overflow semantics: pop 32000/weapon 255/seed 123
+     * dies here although the source SUB.W wraps back to a surviving population.
+     * Only pre-clamp nonzero crosses into completion, never a wrapped decision. */
+    bool raw_loser_nonzero=(loser==first ? first_pop : second_pop)!=0;
+    if (core_heading_battle_over(winner,loser,raw_loser_nonzero)) return;
     int owner = peep_owner(winner), enemy = peep_owner(loser), reward = A4_WORD(0x3010);
     if (peeps[loser*22]&1) {
         int capacity = core_check_life(enemy,peep_word(loser,8));
@@ -2280,7 +2319,7 @@ static void _move_peeps(void)
         core_target(0) = core_target(1) = 0x820;
         A4_WORD(0xae78) = A4_WORD(0xae76) = 0x820;
     }
-    /* Existing walker/town/battle/remnant consumption; knight/swamp and nonwar AI producers disabled. */
+    /* Existing walker/town/battle/remnant consumption; knight creation and nonwar AI remain disabled. */
     for (int person = 0; person < no_peeps; ++person) {
         if (peep_word(person,4) <= 0) continue;
         int flags = peeps[person*22];
@@ -2331,7 +2370,7 @@ static void _move_peeps(void)
         } else if (flags == 1) core_settle_tick(person);
         else if (flags == 0x80) {
             /* asm:4283-4315: ordinary remnant, not a knight flag. Water and
-             * waiting/battle dispatch stay ahead; no heading-winner producer. */
+             * waiting/battle dispatch stay ahead of the heading-winner remnant. */
             if (!map_who[position]) map_who[position] = person+1;
             unsigned previous = (uint16_t)peep_word(person,6);
             set_peep_word(person,6,(uint16_t)(previous-1u));
