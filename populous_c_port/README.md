@@ -171,12 +171,28 @@ normal walker processing and its second frame call. Zero population skips that
 first frame update; a negative result still advances it before cleanup. Thus a
 survivor at frame 6 can move in this update, whereas frame 7 or 93 ends at frame 1
 without moving. Rescue terrain does not guarantee survival of the following
-recovery update. Mixed-water states retain the previous host recovery behavior;
-this change does not establish full drowning, movement or cleanup parity.
+recovery update. Other mixed-water states retain the previous host recovery
+behavior, except for the bounded victory states described below; this change does
+not establish full drowning, movement or cleanup parity.
 `--water-recovery` covers literal full-A4 frame/loss outcomes, negative-population
 encounter prevention, swamp ordering, stopped ticks and rescue-to-death sequences.
 Full normal/sanitized suites, original-data matches and all 495 starts passed;
 the original-data match and war-fixture outcomes remain unchanged.
+
+Dry water-victory states `0x15` and `0x16` retain town/walker celebration after
+clearing water. They pay the same wrapped loss, receive the ignored first frame
+call and then the celebration consumer's second call. Only that second return
+can end celebration and trigger a third town/walker reframe; no movement or town
+maintenance follows in the same update. Unlike ordinary walker recovery, negative
+remaining population still runs the celebration/reframe sequence before cleanup;
+zero population skips framing. Town capacity scratch values are computed before
+removing a dying town's existing footprint. Fatal mode removes the original state
+without any of these frame calls. Other mixed flags and water-combat timing remain
+outside this bounded migration. `--water-celebration` checks signed frame/loss
+boundaries, zero versus negative cleanup, capacity scratch values, clipped town
+footprints, unrelated resident progress and deferred rescue without state injection.
+Focused/full normal and sanitized suites, original-data matches and all 495
+original starts passed; original-data outcomes remain unchanged.
 
 Heading target selection (`_get_heading`) now has a bounded implementation:
 self when no enemy qualifies, otherwise the first nearest living different-owner
