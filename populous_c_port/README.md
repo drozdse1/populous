@@ -41,6 +41,19 @@ synthetic plots; `--level` instead uses the assembly-derived original generator.
 Rule-word overflow is bounded at 32000
 population and mana at -250..1999999 for host safety.
 
+The exact `0x80` peep remnant now consumes its original unsigned 16-bit timer
+(`src/populous_prg.asm:4283-4315`): it claims only empty occupancy and is removed
+when the **old** counter is zero, so 40 lasts 41 updates. It does not walk, lose
+walking population, draw RNG or change animation frames. Ordinary encounters
+ignore bit-7 residents without deleting them; the immediate-movement occupancy
+model and hidden-town safeguards remain in force. Removal uses normal leader/view
+cleanup and population accounting. This is a tested consumer, not knight creation
+or the heading-bearing battle-winner producer. Existing water precedence and mixed
+state dispatch remain bounded host behavior, not original drowning/phase parity.
+`--remnant` and the default suite cover both resident iteration orders, word
+boundaries, occupancy, cleanup and stopped ticks. Normal/ASan/UBSan suites, all
+495 original starts and original-data match regressions passed for this milestone.
+
 The original `_load_ground` reads gameplay tables from `landN` files, including
 `population_add`, `mana_add`, `weapons_add`, `battle_add1` and `battle_add2`
 (`src/populous_prg.asm:16468-16514`). Reset validates the selected file before

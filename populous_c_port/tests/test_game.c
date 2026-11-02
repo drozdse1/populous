@@ -977,6 +977,178 @@ static void test_wait_water_and_death(void)
     assert(peep_word(0,4)==89 && peep_word(16,4)==89);
 }
 
+/* Synthetic consumer fixtures only: heading-winner production is not enabled. */
+static void setup_remnant(int owner, int counter)
+{
+    setup_blocked_walker();
+    peeps[0]=0x80; peeps[1]=owner;
+    set_peep_word(0,4,1); set_peep_word(0,6,counter);
+    set_peep_word(0,10,-64); set_peep_word(0,12,42);
+    for (int byte=14; byte<22; ++byte) peeps[byte]=byte;
+    seed=123; core_result=0; prg_quit=0;
+}
+
+static void test_remnant_timer(void)
+{
+    const unsigned counters[] = {40,0,1,0x7fff,0x8000,0xffff};
+    for (int owner=0; owner<2; ++owner)
+        for (unsigned sample=0; sample<sizeof counters/sizeof counters[0]; ++sample) {
+            unsigned counter=counters[sample];
+            setup_remnant(owner,counter);
+            core_leader(owner)=1; core_leader(1-owner)=2; view_who=1;
+            core_target(owner)=1234; core_target(1-owner)=2345;
+            /* Exercise all 65536 ticks for 0xffff, not a signed expiry shortcut. */
+            for (unsigned tick=0; tick<counter; ++tick) {
+                _move_peeps();
+                assert(peeps[0]==0x80 && peep_word(0,4)==1);
+                assert((uint16_t)peep_word(0,6)==counter-tick-1);
+                assert(core_population(owner)==1 && map_who[650]==1);
+                assert(core_leader(owner)==1 && view_who==1 && core_target(owner)==1234);
+            }
+            _move_peeps();
+            assert(!peeps[0] && !peep_word(0,4) && !core_population(owner));
+            assert((uint16_t)peep_word(0,6)==0xffff && !map_who[650]);
+            assert(!core_leader(owner) && !view_who && core_target(owner)==650);
+            assert(A4_WORD(owner ? 0xae76 : 0xae78)==650);
+            assert(core_leader(1-owner)==2 && core_target(1-owner)==2345);
+            assert(seed==123 && peep_word(0,8)==650 && peep_word(0,10)==-64);
+            assert(peep_word(0,12)==42 && !core_battles && !core_settlements);
+            for (int byte=14; byte<22; ++byte) assert(peeps[byte]==byte);
+        }
+}
+
+static void test_remnant_occupancy_and_state(void)
+{
+    for (int representative=0; representative<=2; ++representative) {
+        setup_remnant(0,1); map_who[650]=representative;
+        for (int cell=0; cell<4096; ++cell) A4_WORD(0xff88+cell*2)=cell;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        _move_peeps();
+        assert(map_who[650]==(representative ? representative : 1));
+        assert(peep_word(0,6)==0);
+        /* Apart from timer and empty-slot claim, consumption is inert. */
+        set_peep_word(0,6,1); map_who[650]=representative;
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        set_peep_word(0,6,0); _move_peeps();
+        assert(!peep_word(0,4) && map_who[650]==(representative==2 ? 2 : 0));
+    }
+}
+
+static void test_remnant_tick_and_water(void)
+{
+    for (int owner=0; owner<2; ++owner) {
+        setup_remnant(owner,40);
+        no_peeps=2; peeps[22]=0x80; peeps[23]=1-owner;
+        set_peep_word(1,4,1); set_peep_word(1,6,100); set_peep_word(1,8,651);
+        map_blk[651]=1; map_who[651]=2;
+        for (int gate=0; gate<4; ++gate) {
+            pause=gate==0; core_result=gate;
+            uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+            game_tick();
+            assert(!memcmp(before,prg_a4_area,sizeof before));
+        }
+        pause=0; core_result=0;
+        for (int tick=1; tick<=40; ++tick) {
+            game_tick();
+            assert(game_turn==tick && peep_word(0,6)==40-tick && !core_result);
+            assert(A4_LONG(0x99fe)==1 && A4_LONG(0x9a0e)==1);
+        }
+        game_tick();
+        assert(game_turn==41 && !peep_word(0,4) && !map_who[650]);
+        assert(A4_LONG(owner ? 0x9a0e : 0x99fe)==0);
+        assert(A4_LONG(owner ? 0x99fe : 0x9a0e)==1 && core_result==(owner ? 1 : 2));
+    }
+    /* Keep the port's existing immediate water loss/fatal priority, not the
+     * original's delayed newly-submerged loss/frame behavior (asm:3562-3580). */
+    for (int fatal=0; fatal<=1; ++fatal)
+        for (int population=1; population<=3; population+=2) {
+            setup_remnant(0,40); set_peep_word(0,4,population);
+            map_blk[650]=0; game_mode=fatal;
+            _move_peeps();
+            int survives=!fatal && population==3;
+            assert(peeps[0]==(survives ? 0x12 : 0) && peep_word(0,4)==survives);
+            assert(peep_word(0,6)==40 && map_who[650]==survives && peep_word(0,12)==42);
+        }
+    /* Mixed states retain existing dispatch; only exact 0x80 gains a timer. */
+    setup_remnant(0,5); peeps[0]=0xa0; set_peep_word(0,4,100);
+    _move_peeps();
+    assert(peeps[0]==0xa0 && peep_word(0,6)==6 && peep_word(0,4)==99);
+    setup_remnant(0,5); peeps[0]=0x88;
+    _move_peeps();
+    assert(peeps[0]==0x88 && peep_word(0,6)==5 && peep_word(0,4)==1);
+    setup_remnant(0,5); peeps[0]=0x82;
+    _move_peeps();
+    assert(peeps[0]==0x82 && peep_word(0,6)==5 && peep_word(0,4)==1);
+}
+
+static void test_remnant_collision(void)
+{
+    const int remnant_flags[] = {0x80,0x88,0xa0};
+    for (int owner=0; owner<2; ++owner)
+        for (int friendly=0; friendly<2; ++friendly)
+            for (int destination=0; destination<2; ++destination)
+                for (unsigned state=0; state<sizeof remnant_flags/sizeof remnant_flags[0]; ++state) {
+                    setup_blocked_walker(); peeps[1]=owner; no_peeps=2;
+                    int position=destination ? 651 : 650;
+                    peeps[22]=remnant_flags[state]; peeps[23]=friendly ? owner : 1-owner;
+                    set_peep_word(1,4,1); set_peep_word(1,6,40);
+                    set_peep_word(1,8,position); set_peep_word(1,12,42);
+                    map_blk[651]=1; map_who[position]=2;
+                    core_tendency(owner)=0; core_leader(owner)=1; core_target(owner)=651;
+                    uint8_t resident[22]; memcpy(resident,peeps+22,sizeof resident);
+                    core_move(0);
+                    assert(peeps[0]==2 && peep_word(0,4)==100 && peep_word(0,8)==651);
+                    assert(!core_battles && !core_settlements && !memcmp(resident,peeps+22,sizeof resident));
+                    assert(map_who[650]==(destination ? 0 : 2) && map_who[651]==1);
+                    assert(A4_WORD(0xff88+651*2)==1);
+                    /* Exact consumer preserves the last writer, including at death. */
+                    if (remnant_flags[state]==0x80) {
+                        _move_peeps();
+                        assert(peep_word(1,6)==39 && peep_word(1,4)==1 && map_who[651]==1);
+                        set_peep_word(1,6,0); _move_peeps();
+                        assert(!peep_word(1,4) && !map_who[650] && map_who[651]==1);
+                    }
+                }
+    /* Reverse slot order: consume/claim the resident before the walker moves. */
+    for (int counter=0; counter<=1; ++counter)
+        for (int destination=0; destination<=1; ++destination)
+            for (int friendly=0; friendly<=1; ++friendly) {
+                setup_remnant(friendly ? 0 : 1,counter); no_peeps=2;
+                int position=destination ? 651 : 650;
+                set_peep_word(0,8,position);
+                peeps[22]=2; peeps[23]=0;
+                set_peep_word(1,4,100); set_peep_word(1,8,650); set_peep_word(1,12,7);
+                map_blk[651]=1; map_who[650]=destination ? 2 : 0; map_who[651]=0;
+                core_tendency(0)=0; core_leader(0)=2; core_target(0)=651;
+                A4_WORD(0x2fb0)=0; /* Isolate collision loss from walking attrition. */
+                _move_peeps();
+                assert(peeps[0]==(counter ? 0x80 : 0) && peep_word(0,4)==counter);
+                assert((uint16_t)peep_word(0,6)==(counter ? 0 : 0xffff));
+                assert(peeps[22]==2 && peep_word(1,4)==100 && peep_word(1,8)==651);
+                assert(peep_word(1,12)==0 && map_who[651]==2);
+                assert(map_who[650]==(!destination && counter ? 1 : 0));
+                assert(core_population(0)==100+(friendly ? counter : 0));
+                assert(core_population(1)==(friendly ? 0 : counter));
+                assert(!core_battles && !core_settlements && A4_WORD(0xff88+651*2)==1);
+                _move_peeps();
+                assert(!peeps[0] && !peep_word(0,4) && !map_who[650] && map_who[651]==2);
+                assert(peeps[22]==2 && peep_word(1,4)==100 && peep_word(1,8)==651);
+                assert(core_population(0)==100 && !core_population(1));
+                assert(!core_battles && !core_settlements);
+            }
+    /* Ignoring combat must not bypass occupancy and hide a new town. */
+    for (int friendly=0; friendly<2; ++friendly) {
+        setup_blocked_walker(); memset(map_blk,15,4096); no_peeps=2;
+        peeps[22]=0x80; peeps[23]=friendly ? 0 : 1;
+        set_peep_word(1,4,1); set_peep_word(1,6,40); set_peep_word(1,8,650);
+        map_who[650]=2;
+        assert(core_explore(0)==0 && core_check_life(0,650)>0);
+        core_move(0);
+        assert(peeps[0]==2 && peeps[22]==0x80 && peep_word(1,4)==1);
+        assert(map_who[650]==2 && !map_bk2[650] && !core_battles && !core_settlements);
+    }
+}
+
 static void test_near_town_sculpt(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
@@ -2651,7 +2823,18 @@ int main(int argc, char **argv)
         puts("focused waiting regression: PASS");
         return 0;
     }
+    if (argc==2 && !strcmp(argv[1],"--remnant")) {
+        test_remnant_timer(); test_remnant_occupancy_and_state();
+        test_remnant_tick_and_water(); test_remnant_collision();
+        puts("focused remnant regression: PASS");
+        return 0;
+    }
+    if (argc==3 && !strcmp(argv[1],"--remnant")) {
+        assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
+    }
     assert(argc == 1);
+    test_remnant_timer(); test_remnant_occupancy_and_state();
+    test_remnant_tick_and_water(); test_remnant_collision();
     test_flood_input_smoke(); test_flood_cast(); test_flood_delayed_hazards();
     test_original_lower();
     test_quake_cast();

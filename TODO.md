@@ -120,6 +120,8 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 - [ ] **Teilweise:** Gesamten Bewohner-Zustandsautomaten abgleichen: Erzeugung der Kollisions-Warteflags 0x20, weitere Flagkombinationen, phasenweise Bewegung, Anfuehrer-/Folgerzustand und Uebergaenge zwischen Bewegung, Stadt und Kampf.
 - [ ] **Teilweise:** Originale Magnetnavigation, Zielwahl und Ausweich-/Fehlversuchspfade vervollstaendigen; direkte Zielrichtung plus Ausweichsuche reicht als Paritaetsnachweis nicht aus.
 - [x] Gewoehnlichen Beitritt zu laufenden Kaempfen migrieren: richtige Partei verstaerken, Population bis 32000, Waffen/Anfuehrer/Ansicht/Metadaten uebertragen, bestehende Kampfpartner und Frames erhalten. Ungueltige Paare sicher ablehnen; originale phasenweise Begegnungszeitpunkte und Sonderfiguren bleiben offen.
+- [x] Zeitverbrauch des exakten Restzustands 0x80: leere Belegung beanspruchen, 16-Bit-Zaehler senken und erst bei vorherigem Nullwert entfernen (40 -> 41 Updates). Normale Begegnungen ignorieren Bit-7-Bewohner, ohne deren Datensatz zu loeschen; belegte Stadtgruendung bleibt gesperrt.
+- [ ] **Teilweise:** Restzustand durch den originalen Kampfgewinner erzeugen; gemischte Sonderflags, Ertrinkensphasen und Darstellung migrieren. Der getestete 0x80-Verbrauch allein aktiviert weder Ritter noch Armageddon.
 - [ ] **Fehlt:** Ritter, Sonderfiguren und `_do_funny`-/`_do_place_funny`-Ereignisse, auch bei erschoepften 208 normalen Bewohnerplaetzen.
 - [x] Sumpf-Folgen fuer normale Bewohner am abgeschlossenen Gehframe: gesamte Population entfernen, Effekt 66, flachen Sumpf zu Block 15 zuruecksetzen; bodenlosen Sumpf erhalten.
 - [ ] **Teilweise:** Kriegs-/Armageddonzustand, Aufloesung von Siedlungen und Sonderziele mit den neuen Kraeften verbinden.

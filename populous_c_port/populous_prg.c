@@ -975,7 +975,7 @@ static void core_move(int person)
      * settlement/departure. Keep the port's immediate destination path below. */
     int occupant = map_who[position]-1;
     if (occupant >= 0 && occupant < no_peeps && occupant != person &&
-        peep_word(occupant,4) > 0) {
+        peep_word(occupant,4) > 0 && !(peeps[occupant*22]&0x80)) {
         if (peeps[occupant*22]&8) { core_join_battle(person,occupant); return; }
         if (peep_owner(occupant) != owner) {
             peeps[person*22] = 8;
@@ -1002,7 +1002,9 @@ static void core_move(int person)
     }
     if (core_valid_move(position,delta)) return;
     int destination = position+delta, other = map_who[destination]-1;
-    if (other >= 0 && other < no_peeps && other != person) {
+    /* asm:4530-4534 ignores bit-7 residents without removing them. Preserve
+     * immediate movement: a destination write may replace their representative. */
+    if (other >= 0 && other < no_peeps && other != person && !(peeps[other*22]&0x80)) {
         if (peeps[other*22]&8) { core_join_battle(person,other); return; }
         if (peep_owner(other) == owner) { core_join_forces(person,other); return; }
         if (map_who[position] == person+1) map_who[position] = 0;
@@ -2012,7 +2014,7 @@ static int core_frame_walker(int person)
 }
 static void _move_peeps(void)
 {
-    /* Ordinary walker/town/battle closure of _move_peeps. Specials are disabled. */
+    /* Ordinary walker/town/battle/remnant consumption; special producers disabled. */
     for (int person = 0; person < no_peeps; ++person) {
         if (peep_word(person,4) <= 0) continue;
         int flags = peeps[person*22];
@@ -2044,7 +2046,14 @@ static void _move_peeps(void)
             /* A retry can create a reciprocal battle before attrition kills us. */
             if (peep_word(person,4)<=0) core_remove(person);
         } else if (flags&1) core_settle_tick(person);
-        else {
+        else if (flags == 0x80) {
+            /* asm:4283-4315: ordinary remnant, not a knight flag. Water and
+             * waiting/battle dispatch stay ahead; no heading-winner producer. */
+            if (!map_who[position]) map_who[position] = person+1;
+            unsigned previous = (uint16_t)peep_word(person,6);
+            set_peep_word(person,6,(uint16_t)(previous-1u));
+            if (!previous) core_remove(person);
+        } else {
             if (!core_frame_walker(person)) continue;
             int position = peep_word(person,8);
             /* asm:4061-4081: ordinary frame completion, before move/loss. */
