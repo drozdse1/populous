@@ -851,25 +851,47 @@ static int core_explore(int person)
     for (int index = 0; index < 5; ++index) if (distance[index] != 5) return choices[index];
     return 999;
 }
-/* _move_magnet_peeps ordinary leader/follower path, no knight/auto-sculpt paths. */
+/* _move_magnet_peeps asm:4982-5465, ordinary metadata-zero navigation.
+ * Nonzero Amiga metadata remains opaque: use this bounded magnet path, not
+ * an invented heading/knight target or a native pointer. Queue producers wait. */
 static int core_magnet_direction(int person)
 {
     int owner = peep_owner(person), position = peep_word(person,8), leader = core_leader(owner)-1;
-    if (leader < 0 && position == core_target(owner)) core_leader(owner) = person+1;
-    int target = leader >= 0 && leader != person ? peep_word(leader,8) : core_target(owner);
+    int target = core_target(owner);
+    if (!core_leader(owner) && position == target) {
+        core_leader(owner) = person+1;
+        if (!view_who) view_who = person+1;
+    }
+    /* Host safety fallback: invalid/dead/foreign leaders use the magnet without
+     * repairing the reference, changing view_who, or touching another record. */
+    if (leader >= 0 && leader < no_peeps && leader < 208 && leader != person &&
+        peep_word(leader,4) > 0 && peep_owner(leader) == owner &&
+        peep_word(leader,8) >= 0 && peep_word(leader,8) < 4096)
+        target = peep_word(leader,8);
     int dx = (target%64 > position%64)-(target%64 < position%64);
     int dy = (target/64 > position/64)-(target/64 < position/64);
-    if (!dx && !dy) return core_explore(person);
+    static const int to_delta[9] = {7,6,5,0,0,4,1,2,3};
     static const int directions[8] = {-64,-63,1,65,64,63,-1,-65};
-    int delta = dy*64+dx, primary = 0;
-    while (primary < 8 && directions[primary] != delta) ++primary;
-    if (!core_valid_move(position,delta)) { peeps[person*22+21] = (uint8_t)delta; return delta; }
-    for (int attempt = 0; attempt < 8; ++attempt) {
-        int candidate = directions[(primary+7+attempt)%8];
+    static const int opposite[8] = {4,5,6,7,0,1,2,3};
+    int primary = to_delta[(dx+1)*3+dy+1], delta = directions[primary];
+    int valid = core_valid_move(position,delta);
+    if (!valid || (valid == 2 && A4_WORD(0xae80))) {
+        peeps[person*22+21] = (uint8_t)delta;
+        return delta;
+    }
+    int direction = primary-1;
+    for (int attempt = 0; attempt < 8; ++attempt, ++direction) {
+        if (direction < 0) direction = 7;
+        if (direction > 7) direction = 0;
+        int candidate = directions[direction];
         if (!core_valid_move(position,candidate) && candidate != (int8_t)peeps[person*22+21]) {
-            peeps[person*22+21] = (uint8_t)candidate; return candidate;
+            peeps[person*22+21] = (uint8_t)directions[opposite[direction]];
+            return candidate;
         }
     }
+    /* asm:5445-5461 increments AFTER rejection, without a final wrap. Index 8
+     * reads adjacent _palette[0] == 0; reproduce that north choice safely. */
+    peeps[person*22+21] = (uint8_t)directions[direction == 8 ? 0 : opposite[direction]];
     return 999;
 }
 static void core_battle(int first, int second)
@@ -963,7 +985,8 @@ static void core_join_forces(int source, int target)
 static void core_move(int person)
 {
     int owner = peep_owner(person), position = peep_word(person,8);
-    int delta = core_tendency(owner) ? core_explore(person) : core_magnet_direction(person);
+    int use_magnet = A4_WORD(0xae80) || !core_tendency(owner);
+    int delta = use_magnet ? core_magnet_direction(person) : core_explore(person);
     /* _move_explorer asm:4425-4437: entry does not change the frame. */
     if (delta == 999) {
         peeps[person*22] |= 0x40;
@@ -1000,7 +1023,10 @@ static void core_move(int person)
         core_frame_town(person,core_check_life(owner,position)); core_set_town(person,0); ++core_settlements;
         return;
     }
-    if (core_valid_move(position,delta)) return;
+    int valid = core_valid_move(position,delta);
+    /* Only the magnet's direct war step can return a valid-2 destination;
+     * its fallback accepts valid-0 only. Keep all other rejection intact. */
+    if (valid && !(use_magnet && A4_WORD(0xae80) && valid == 2)) return;
     int destination = position+delta, other = map_who[destination]-1;
     /* asm:4530-4534 ignores bit-7 residents without removing them. Preserve
      * immediate movement: a destination write may replace their representative. */

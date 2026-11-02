@@ -61,8 +61,21 @@ land has no capacity, their four-byte heading metadata is nonzero, or war is set
 frame and movement delta, removes its existing town footprint and skips growth,
 splitting and movement for that update. Population, occupancy, metadata and
 leader/view references are retained. Water, battle and waiting dispatch retain
-their existing precedence. This does not enable Armageddon casting: original
-war navigation and queued terrain actions are still required for convergence.
+their existing precedence. This does not enable Armageddon casting: queued terrain
+actions are still required alongside the ordinary war navigation below.
+
+Ordinary magnet navigation uses the original nine-entry direction table: arriving
+at the target attempts north rather than switching to exploration. A new leader
+claims the view only if it is empty; followers use their leader's current cell.
+The clockwise fallback records the opposite direction, and complete failure
+updates avoidance history before the existing blocked-navigation wait. Direct
+block-47 steps are allowed during war, never as fallback steps. Invalid leader
+references safely fall back to the magnet without repairing unrelated records.
+War overrides ordinary tendency selection. Heading-pointer targets and deferred
+terrain assistance remain unsupported; this is not complete Armageddon behavior.
+An independent assembly-table harness matched 10,616,832 direction/terrain/history
+cases. Focused/default tests, ASan/UBSan, all 495 original starts and original-data
+matches passed. This comparison is not a trace of execution on an Amiga.
 
 The original `_load_ground` reads gameplay tables from `landN` files, including
 `population_add`, `mana_add`, `weapons_add`, `battle_add1` and `battle_add2`

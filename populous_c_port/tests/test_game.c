@@ -401,10 +401,11 @@ static void test_no_hidden_town(void)
             peeps[23]=owner; peeps[22]=1; set_peep_word(1,12,35);
             core_set_town(1,0);
             map_who[position]=representative;
-            core_tendency(owner)=0; core_leader(owner)=1; core_target(owner)=position;
-            /* Flat center offers settlement without the surrounding town exclusion. */
+            core_tendency(owner)=1; core_leader(owner)=1; core_target(owner)=position;
+            /* Exercise settlement explicitly; magnet center now departs north. */
             map_blk[position]=15;
             assert(core_check_life(owner,position)>0);
+            assert(core_explore(0)==0);
             core_move(0);
             assert(!(peeps[0]&1) && peeps[22]==1 && !core_settlements);
             assert(map_bk2[position]==35 && map_who[position]==representative);
@@ -843,6 +844,191 @@ static void setup_blocked_walker(void)
     set_peep_word(0,4,100); set_peep_word(0,8,650);
     map_blk[650]=1; map_who[650]=1;
     core_tendency(0)=1; A4_WORD(0x2fb0)=1;
+}
+
+static void setup_magnet_walker(int owner)
+{
+    setup_blocked_walker();
+    memset(map_blk,15,4096);
+    peeps[1]=owner; core_tendency(owner)=0; core_target(owner)=651;
+    core_result=0; seed=123; view_who=0;
+}
+
+static void test_magnet_signs_and_center(void)
+{
+    /* Literal x-major sign table catches center exploration and transposition. */
+    const int targets[] = {585,649,713,586,650,714,587,651,715};
+    const int deltas[] = {-65,-1,63,-64,-64,64,-63,1,65};
+    for (int owner=0; owner<2; ++owner) for (int sign=0; sign<9; ++sign) {
+        setup_magnet_walker(owner); core_target(owner)=targets[sign];
+        peeps[21]=0x80;
+        assert(core_magnet_direction(0)==deltas[sign]);
+        assert((int8_t)peeps[21]==deltas[sign] && seed==123);
+        assert(core_leader(owner)==(sign==4) && view_who==(sign==4));
+        assert(peep_word(0,8)==650 && peeps[0]==2 && !core_settlements);
+    }
+    /* Center uses the same north move even on a settleable flat plot. */
+    setup_magnet_walker(0); core_target(0)=650;
+    core_move(0);
+    assert(peep_word(0,8)==586 && peep_word(0,10)==-64 && peeps[0]==2);
+    assert(!map_who[650] && map_who[586]==1 && !core_settlements && seed==123);
+    assert(core_leader(0)==1 && view_who==1);
+}
+
+static void test_magnet_leaders(void)
+{
+    for (int owner=0; owner<2; ++owner) for (int person=0; person<2; ++person)
+        for (int tracked=0; tracked<3; ++tracked) for (int claimed=0; claimed<2; ++claimed) {
+            setup_magnet_walker(owner); no_peeps=2;
+            memcpy(peeps+22,peeps,22); set_peep_word(1-person,8,651);
+            set_peep_word(person,8,650); core_target(owner)=650;
+            core_leader(owner)=claimed ? person+1 : 0;
+            core_leader(1-owner)=77; view_who=tracked;
+            uint8_t other[22]; memcpy(other,peeps+(1-person)*22,sizeof other);
+            assert(core_magnet_direction(person)==-64);
+            assert(core_leader(owner)==person+1 && core_leader(1-owner)==77);
+            assert(view_who==(!claimed && !tracked ? person+1 : tracked));
+            assert(!memcmp(other,peeps+(1-person)*22,sizeof other));
+            assert(peep_owner(person)==owner && seed==123);
+        }
+    for (int owner=0; owner<2; ++owner) {
+        setup_magnet_walker(owner); no_peeps=2;
+        memcpy(peeps+22,peeps,22); core_leader(owner)=2; view_who=19;
+        set_peep_word(1,8,714); core_target(owner)=649;
+        assert(core_magnet_direction(0)==64);
+        set_peep_word(1,8,586);
+        assert(core_magnet_direction(0)==-64); /* Follow current, not cached position. */
+        assert(core_leader(owner)==2 && view_who==19);
+    }
+    /* Invalid references use the magnet, without repairing refs or records. */
+    const int refs[] = {-1,3,209,32767,2,2,2,2};
+    for (int owner=0; owner<2; ++owner) for (int sample=0; sample<8; ++sample) {
+        setup_magnet_walker(owner); no_peeps=2;
+        memcpy(peeps+22,peeps,22); set_peep_word(1,8,649);
+        if (sample==4) set_peep_word(1,4,0);
+        if (sample==5) peeps[23]=1-owner;
+        if (sample==6) set_peep_word(1,8,-1);
+        if (sample==7) set_peep_word(1,8,4096);
+        core_leader(owner)=refs[sample]; core_target(owner)=650; view_who=17;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(core_magnet_direction(0)==-64);
+        assert((int8_t)peeps[21]==-64);
+        peeps[21]=0;
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+}
+
+static void test_magnet_fallback(void)
+{
+    const int deltas[] = {-64,-63,1,65,64,63,-1,-65};
+    const int opposites[] = {64,63,-1,-65,-64,-63,1,65};
+    const int failed_avoidance[] = {65,-64,63,-1,-65,-64,-63,1};
+    /* Each sole opening must be found, including the eighth attempt. */
+    for (int direction=0; direction<8; ++direction) {
+        setup_magnet_walker(0); memset(map_blk,47,4096); map_blk[650]=15;
+        int primary=(direction+1)%8;
+        core_target(0)=650+deltas[primary]; map_blk[650+deltas[direction]]=15;
+        assert(core_magnet_direction(0)==deltas[direction]);
+        assert((int8_t)peeps[21]==opposites[direction]);
+        /* Signed old avoidance rejects the only opening, including negatives. */
+        peeps[21]=(uint8_t)deltas[direction];
+        assert(core_magnet_direction(0)==999);
+        assert((int8_t)peeps[21]==failed_avoidance[primary]);
+    }
+    for (int primary=0; primary<8; ++primary) {
+        setup_magnet_walker(0); memset(map_blk,47,4096); map_blk[650]=15;
+        core_target(0)=650+deltas[primary]; peeps[21]=0x80;
+        assert(core_magnet_direction(0)==999);
+        assert((int8_t)peeps[21]==failed_avoidance[primary]);
+    }
+    setup_magnet_walker(0); map_blk[651]=47;
+    assert(core_magnet_direction(0)==-63); /* East primary starts northeast. */
+    assert((int8_t)peeps[21]==63);
+    setup_magnet_walker(0); map_blk[651]=47; peeps[21]=(uint8_t)-63;
+    assert(core_magnet_direction(0)==65); /* Skip NE then blocked E, choose SE. */
+    assert((int8_t)peeps[21]==-65);
+    setup_magnet_walker(0); memset(map_blk,47,4096); map_blk[650]=15;
+    core_target(0)=651; map_blk[586]=15; /* N is the eighth candidate for E. */
+    assert(core_magnet_direction(0)==-64 && (int8_t)peeps[21]==64);
+}
+
+static void test_magnet_war_water_and_bounds(void)
+{
+    const int wars[] = {0,1,0x8000,0xffff};
+    for (int sample=0; sample<4; ++sample) {
+        setup_magnet_walker(0); A4_WORD(0xae80)=wars[sample]; map_blk[651]=47;
+        assert(core_valid_move(650,1)==2);
+        assert(core_magnet_direction(0)==(wars[sample] ? 1 : -63));
+        assert((int8_t)peeps[21]==(wars[sample] ? 1 : 63));
+        core_move(0);
+        assert(peep_word(0,8)==(wars[sample] ? 651 : 587));
+        assert(map_who[peep_word(0,8)]==1 && !map_who[650]);
+        assert(core_valid_move(650,1)==2); /* Never weaken generic validity. */
+    }
+    for (int active=0; active<2; ++active) {
+        setup_magnet_walker(0); A4_WORD(0xae80)=active;
+        map_blk[651]=0; map_blk[587]=47;
+        A4_WORD(0x82bc)=1; A4_WORD(0x82c4)=0xffff; /* Queue producer conditions. */
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(core_magnet_direction(0)==65); /* Water and fallback 47 rejected. */
+        assert((int8_t)peeps[21]==-65 && peep_word(0,8)==650);
+        peeps[21]=0;
+        assert(!memcmp(before,prg_a4_area,sizeof before)); /* No queue/sculpt/mana/RNG. */
+        memset(map_blk,47,4096); map_blk[650]=15; map_blk[651]=0;
+        assert(core_magnet_direction(0)==999); /* War does not admit fallback 47. */
+    }
+    const int positions[] = {0,63,4032,4095};
+    const int targets[] = {0,63,4032,4095};
+    const int expected[] = {1,64,-64,-64};
+    for (int corner=0; corner<4; ++corner) {
+        setup_magnet_walker(0); memset(map_who,0,4096);
+        set_peep_word(0,8,positions[corner]); core_target(0)=targets[corner];
+        if (corner==1) map_blk[positions[corner]-65+64]=47; /* Block west at top right. */
+        core_move(0);
+        assert(peep_word(0,8)==positions[corner]+expected[corner]);
+        assert(map_who[positions[corner]+expected[corner]]==1);
+    }
+    /* Opaque metadata cannot be a host pointer: bounded magnet fallback only. */
+    for (int byte=14; byte<18; ++byte) {
+        setup_magnet_walker(0); peeps[byte]=0xff; A4_WORD(0xae80)=1;
+        uint8_t record[22]; memcpy(record,peeps,sizeof record);
+        assert(core_magnet_direction(0)==1 && peeps[byte]==0xff);
+        peeps[21]=0; assert(!memcmp(record,peeps,sizeof record));
+    }
+}
+
+static void test_magnet_dispatch_and_wait(void)
+{
+    for (int owner=0; owner<2; ++owner) for (int tendency=0; tendency<4; ++tendency) {
+        setup_magnet_walker(owner); core_tendency(owner)=tendency; A4_WORD(0xae80)=1;
+        core_target(owner)=586;
+        core_move(0);
+        assert(peep_word(0,8)==586 && peep_word(0,10)==-64 && (int8_t)peeps[21]==-64);
+        assert(!map_who[650] && map_who[586]==1 && peeps[0]==2 && seed==123);
+        assert(!core_settlements && A4_WORD(0xff88+586*2)==1);
+    }
+    setup_magnet_walker(0); memset(map_blk,47,4096); map_blk[650]=15;
+    set_peep_word(0,12,7);
+    _move_peeps();
+    assert(peeps[0]==0x42 && peep_word(0,6)==7 && peep_word(0,12)==0);
+    assert(peep_word(0,4)==99 && (int8_t)peeps[21]==63);
+    map_blk[651]=15;
+    for (int tick=1; tick<=8; ++tick) {
+        _move_peeps();
+        assert(peeps[0]==0x42 && peep_word(0,6)==7+tick && peep_word(0,8)==650);
+        assert(peep_word(0,4)==99-tick && peep_word(0,12)==(tick%2 ? 101 : 102));
+    }
+    _move_peeps();
+    assert(peeps[0]==2 && peep_word(0,6)==16 && peep_word(0,8)==651);
+    assert(peep_word(0,10)==1 && peep_word(0,12)==0 && peep_word(0,4)==90);
+    assert(!map_who[650] && map_who[651]==1 && (int8_t)peeps[21]==1);
+    assert(!core_battles && !core_settlements);
+}
+
+static void test_magnet(void)
+{
+    test_magnet_signs_and_center(); test_magnet_leaders(); test_magnet_fallback();
+    test_magnet_war_water_and_bounds(); test_magnet_dispatch_and_wait();
 }
 
 static void test_blocked_entry(void)
@@ -2957,6 +3143,11 @@ static void test_volcano_input_smoke(void)
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--magnet")) {
+        test_magnet();
+        puts("focused magnet regression: PASS");
+        return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--war-state")) {
         test_war_state();
         puts("focused war-state regression: PASS");
@@ -3034,6 +3225,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_magnet();
     test_war_state();
     test_remnant_timer(); test_remnant_occupancy_and_state();
     test_remnant_tick_and_water(); test_remnant_collision();
