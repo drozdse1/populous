@@ -609,7 +609,7 @@ static void test_reinforcement_tick_and_death(void)
         set_peep_word(opponent,4,10);
         core_battle(first,first+1);
         assert(peep_word(recipient,4)==125 && !peep_word(opponent,4));
-        assert(peeps[recipient*22]==2 && map_who[650]==recipient+1);
+        assert(peeps[recipient*22]==6 && peep_word(recipient,12)==85 && map_who[650]==recipient+1);
         assert(core_leader(owner)==recipient+1 && view_who==recipient+1);
         assert(core_mana(0)==1234 && core_mana(1)==5678); /* Fixture reward is zero. */
         assert(A4_WORD(0xae7a+owner*2)==(owner ? 6 : 5));
@@ -1170,8 +1170,8 @@ static void test_wait_water_and_death(void)
     assert(peep_word(0,4)==89 && peep_word(16,4)==89);
 }
 
-/* Seed only the simulation consumer: battle production and visible sprite-art
- * parity remain deferred. Nonzero metadata must not trigger a leader prepass. */
+/* Seed only the simulation consumer; visible sprite-art parity remains deferred.
+ * Nonzero metadata must not trigger a leader prepass. */
 static void setup_celebration(int owner)
 {
     setup_blocked_walker();
@@ -4710,6 +4710,286 @@ static void test_heading_seeded_encounter(void)
     _closeall(); SDL_Quit();
 }
 
+static void setup_heading_battle(int winner, int owner)
+{
+    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(map_blk,15,4096); memset(map_bk2,37,4096);
+    no_peeps=4; core_result=core_settlements=0; core_battles=17; prg_quit=0;
+    int loser=3-winner;
+    for (int person=1; person<=3; ++person) {
+        peeps[person*22]=8; peeps[person*22+1]=person==winner ? owner : 1-owner;
+        peeps[person*22+2]=3;
+        set_peep_word(person,4,person==winner ? 100 : 10);
+        set_peep_word(person,6,3-person); set_peep_word(person,8,650);
+        set_peep_word(person,10,-64); set_peep_word(person,12,102);
+        for (int byte=18; byte<22; ++byte) peeps[person*22+byte]=byte;
+    }
+    peeps[66]=0x80; set_peep_word(3,8,900); set_peep_word(3,6,100);
+    map_who[650]=loser+1; map_who[900]=4;
+    /* Host cleanup does not clear the previous cell; keep that distinction. */
+    map_who[714]=loser+1;
+    peeps[winner*22+14]=0x80;
+    core_leader(owner)=winner+1; core_leader(1-owner)=0;
+    core_target(0)=1234; core_target(1)=2345;
+    A4_WORD(0xae78)=345; A4_WORD(0xae76)=456;
+    view_who=loser+1;
+    A4_WORD(0x3010)=23; A4_WORD(0x3012)=24; A4_WORD(0x3014)=25;
+    A4_LONG(0x8486)=(uint32_t)-250;
+    A4_LONG(0x9a02+owner*16)=1000; A4_LONG(0x9a02+(1-owner)*16)=2000;
+    A4_WORD(0xae7a)=7; A4_WORD(0xae7c)=7;
+    A4_WORD(0x2ff8)=1234; A4_WORD(0x2fb2)=2345;
+    for (int side=0; side<2; ++side) {
+        A4_WORD(0x82d2+side*46)=71+side;
+        A4_WORD(0x82d4+side*46)=801+side;
+    }
+    seed=123;
+}
+
+static void check_heading_battle(int winner, int32_t winner_mana, int32_t loser_mana)
+{
+    /* Explicit full-state oracle: missing normalization, over-wide heading reads,
+     * capped mana, map clobber, or global removal changes must all fail here. */
+    int loser=3-winner, owner=peep_owner(winner), enemy=peep_owner(loser);
+    uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+    memcpy(before,prg_a4_area,sizeof before);
+    peeps[winner*22]=(peeps[winner*22]&1) ? 5 : 6;
+    set_peep_word(winner,4,90); set_peep_word(winner,10,0); set_peep_word(winner,12,85);
+    int position=peep_word(winner,8);
+    if (!map_who[position] || map_who[position]==loser+1) map_who[position]=winner+1;
+    if (peeps[winner*22+20]) {
+        A4_WORD(0x82d4+owner*46)=position; A4_WORD(0x82d2+owner*46)=2;
+        --peeps[winner*22+20];
+    }
+    if (peeps[loser*22+20]) A4_WORD(0x82d2+enemy*46)=0;
+    A4_LONG(0x9a02+owner*16)=(uint32_t)winner_mana;
+    A4_LONG(0x9a02+enemy*16)=(uint32_t)loser_mana;
+    A4_WORD(0xae7a+owner*2)=(uint16_t)((uint16_t)A4_WORD(0xae7a+owner*2)+1u);
+    if (view_who==loser+1) view_who=winner+1;
+    position=peep_word(loser,8);
+    if (map_who[position]==loser+1) map_who[position]=0;
+    if (core_leader(enemy)==loser+1) {
+        core_leader(enemy)=0;
+        if (!pause) { core_target(enemy)=position; A4_WORD(enemy ? 0xae76 : 0xae78)=position; }
+    }
+    peeps[loser*22]=0; set_peep_word(loser,4,0); set_peep_word(loser,6,0);
+    seed=28505;
+    memcpy(expected,prg_a4_area,sizeof expected);
+    memcpy(prg_a4_area,before,sizeof before);
+    core_battle(1,2);
+    assert(peeps[winner*22]==expected[peeps-prg_a4_area+winner*22]);
+    assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    assert(core_battles==17 && !core_settlements && !core_result);
+}
+
+static void test_heading_battle_presence(void)
+{
+    for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
+    for (int side=1; side<=3; ++side) for (int byte=14; byte<18; ++byte)
+    for (int high=0; high<2; ++high) {
+        setup_heading_battle(winner,owner);
+        int loser=3-winner;
+        memset(peeps+winner*22+14,0,4);
+        if (side&1) peeps[winner*22+byte]=high ? 0x80 : 1;
+        if (side&2) peeps[loser*22+byte]=high ? 0x80 : 1;
+        check_heading_battle(winner,side&2 ? 1024 : 1023,side&2 ? 1976 : 1977);
+    }
+    for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
+    for (int side=1; side<=3; ++side) for (int kind=0; kind<3; ++kind)
+    for (int leader=0; leader<2; ++leader) {
+        setup_heading_battle(winner,owner);
+        int loser=3-winner;
+        memset(peeps+winner*22+14,0,4);
+        for (int person=1; person<=2; ++person) {
+            if (!(side&(person==winner ? 1 : 2))) continue;
+            if (kind==2) memset(peeps+person*22+14,0xff,4);
+            else assert(set_peep_reference(person,kind ? person : 3));
+        }
+        if (leader) core_leader(1-owner)=loser+1;
+        int reward=(side&2) ? 24 : leader ? 25 : 23;
+        check_heading_battle(winner,1000+reward,2000-reward);
+    }
+}
+
+static void test_heading_battle_state(void)
+{
+    const uint8_t flags[]={8,9,0x68,0x69}, markers[]={0,1,255};
+    const uint16_t counters[]={7,0x7fff,0xffff};
+    for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
+    for (unsigned state=0; state<4; ++state) for (int occupancy=0; occupancy<4; ++occupancy)
+    for (int distinct=0; distinct<2; ++distinct) for (int view=0; view<4; ++view) {
+        setup_heading_battle(winner,owner);
+        int loser=3-winner;
+        peeps[winner*22]=flags[state];
+        map_who[650]=occupancy==0 ? 0 : occupancy==1 ? winner+1 : occupancy==2 ? loser+1 : 4;
+        if (distinct) { set_peep_word(loser,8,750); map_who[750]=loser+1; }
+        view_who=view==0 ? 0 : view==1 ? winner+1 : view==2 ? loser+1 : 4;
+        check_heading_battle(winner,1023,1977);
+    }
+    for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
+    for (int mark=0; mark<3; ++mark) for (int enemy_mark=0; enemy_mark<3; ++enemy_mark)
+    for (int count=0; count<3; ++count) for (int paused=0; paused<2; ++paused) {
+        setup_heading_battle(winner,owner);
+        int loser=3-winner;
+        peeps[winner*22+20]=markers[mark]; peeps[loser*22+20]=markers[enemy_mark];
+        A4_WORD(0xae7a+owner*2)=counters[count];
+        core_leader(1-owner)=loser+1; pause=paused;
+        check_heading_battle(winner,1025,1975);
+    }
+}
+
+static void test_heading_battle_mana(void)
+{
+    const struct { int16_t reward; int32_t winner,loser,floor,want_winner,want_loser; } cases[]={
+        {23,1999990,2000,-250,2000013,1977},
+        {0,-251,-300,-250,-251,-250},
+        {-7,-249,2000,-250,-256,2007},
+        {-32768,1000,2000,-250,-31768,34768},
+        {23,2147483640,2000,-250,INT32_MIN+15,1977},
+        {23,1000,INT32_MIN+8,-250,1023,2147483633},
+        {-7,1000,2147483644,-250,993,-250},
+        {23,1000,-10,-17,1023,-17},
+        {-7,-249,2147483644,-17,-256,-17},
+        {-32768,1000,2147483644,-17,-31768,-17}
+    };
+    for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
+    for (int kind=0; kind<3; ++kind)
+    for (unsigned sample=0; sample<sizeof cases/sizeof cases[0]; ++sample) {
+        setup_heading_battle(winner,owner);
+        int loser=3-winner;
+        if (kind==1) { peeps[loser*22+17]=0x80; core_leader(1-owner)=loser+1; }
+        if (kind==2) core_leader(1-owner)=loser+1;
+        A4_WORD(kind==0 ? 0x3010 : kind==1 ? 0x3012 : 0x3014)=cases[sample].reward;
+        A4_LONG(0x8486)=(uint32_t)cases[sample].floor;
+        A4_LONG(0x9a02+owner*16)=(uint32_t)cases[sample].winner;
+        A4_LONG(0x9a02+(1-owner)*16)=(uint32_t)cases[sample].loser;
+        check_heading_battle(winner,cases[sample].want_winner,cases[sample].want_loser);
+    }
+}
+
+static void test_heading_battle_controls(void)
+{
+    /* Heading bytes cannot change the existing town-loss, both-live or both-dead routes. */
+    for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
+    for (int route=0; route<3; ++route) {
+        setup_heading_battle(winner,owner);
+        int loser=3-winner;
+        memset(peeps+winner*22+14,0,4);
+        if (route==0) peeps[loser*22]=9;
+        if (route==1) {
+            set_peep_word(1,4,1000); set_peep_word(2,4,400);
+            peeps[25]=2; peeps[47]=3;
+        }
+        if (route==2) set_peep_word(winner,4,10);
+        uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+        memcpy(before,prg_a4_area,sizeof before);
+        core_battle(1,2);
+        assert(seed==28505);
+        if (route==1) assert(peep_word(1,4)==978 && peep_word(2,4)==382);
+        if (route==2) assert(!peep_word(1,4) && !peep_word(2,4));
+        peeps[winner*22+17]=peeps[loser*22+14]=0x80;
+        memcpy(expected,prg_a4_area,sizeof expected);
+        memcpy(prg_a4_area,before,sizeof before);
+        peeps[winner*22+17]=peeps[loser*22+14]=0x80;
+        core_battle(1,2);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(core_battles==17 && !core_settlements);
+    }
+    /* Nonzero trailing bytes 18..21 are not a heading (including byte 20). */
+    for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner) {
+        setup_heading_battle(winner,owner); memset(peeps+winner*22+14,0,4);
+        uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+        memcpy(before,prg_a4_area,sizeof before);
+        int loser=3-winner;
+        set_peep_word(winner,4,90); set_peep_word(winner,10,0); set_peep_word(winner,12,0);
+        peeps[winner*22]=2; peeps[loser*22]=0;
+        set_peep_word(loser,4,0); set_peep_word(loser,6,0);
+        map_who[650]=winner+1; view_who=0;
+        A4_LONG(0x9a02+owner*16)=1023; A4_LONG(0x9a02+(1-owner)*16)=1977;
+        A4_WORD(0xae7a+owner*2)=8; seed=28505;
+        memcpy(expected,prg_a4_area,sizeof expected); memcpy(prg_a4_area,before,sizeof before);
+        core_battle(1,2);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+}
+
+static void test_heading_battle_ticks(void)
+{
+    for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
+    for (int town=0; town<2; ++town) {
+        setup_heading_battle(winner,owner);
+        int loser=3-winner;
+        peeps[winner*22]=town ? 9 : 8;
+        core_leader(owner)=0; set_peep_word(3,4,0);
+        /* No elimination gate: exercise the actual ordered resident pass. */
+        _move_peeps();
+        assert(peeps[winner*22]==(town ? 5 : 6));
+        assert(peep_word(winner,12)==(winner==1 ? 85 : 86));
+        assert(peep_word(winner,4)==90 && !peep_word(loser,4));
+        assert(peep_word(winner,6)==loser && seed==28505);
+        /* Start a fresh completion at frame 85, then consume exactly three times. */
+        setup_heading_battle(winner,owner); peeps[winner*22]=town ? 9 : 8;
+        core_leader(owner)=0; set_peep_word(3,4,0);
+        core_battle(1,2);
+        uint8_t terrain[4096], buildings[4096], metadata[8];
+        memcpy(terrain,map_blk,sizeof terrain); memcpy(buildings,map_bk2,sizeof buildings);
+        memcpy(metadata,peeps+winner*22+14,sizeof metadata);
+        for (int tick=0; tick<3; ++tick) {
+            _move_peeps();
+            assert(peeps[winner*22]==(tick==2 ? (town ? 1 : 2) : (town ? 5 : 6)));
+            /* Walker wraps 88 to 0; neighbouring buildings exclude town life. */
+            assert(peep_word(winner,12)==(tick==2 ? (town ? 32 : 0) : 86+tick));
+            assert(peep_word(winner,4)==90 && peep_word(winner,6)==loser);
+            assert(peep_word(winner,8)==650 && !peep_word(winner,10));
+            assert(!memcmp(metadata,peeps+winner*22+14,sizeof metadata));
+            assert(!memcmp(terrain,map_blk,sizeof terrain) && !memcmp(buildings,map_bk2,sizeof buildings));
+            assert(seed==28505 && core_battles==17 && !core_settlements);
+        }
+    }
+}
+
+static void test_heading_battle_guards(void)
+{
+    const int invalid[]={-1,4,208,32767};
+    for (unsigned sample=0; sample<sizeof invalid/sizeof invalid[0]; ++sample) {
+        setup_heading_battle(1,0); set_peep_word(2,4,0);
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(!core_heading_battle_over(invalid[sample],2));
+        assert(!core_heading_battle_over(1,invalid[sample]));
+        assert(!core_heading_battle_over(1,1));
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    for (int variant=0; variant<14; ++variant) {
+        setup_heading_battle(1,0); set_peep_word(2,4,0);
+        switch (variant) {
+        case 0: no_peeps=-1; break;
+        case 1: no_peeps=209; break;
+        case 2: set_peep_word(1,4,0); break;
+        case 3: set_peep_word(1,4,-1); break;
+        case 4: set_peep_word(2,4,1); break;
+        case 5: peeps[44]=9; break;
+        case 6: peeps[23]=2; break;
+        case 7: peeps[45]=2; break;
+        case 8: peeps[45]=0; break;
+        case 9: set_peep_word(1,8,-1); break;
+        case 10: set_peep_word(1,8,4096); break;
+        case 11: set_peep_word(2,8,-1); break;
+        case 12: set_peep_word(2,8,4096); break;
+        case 13: memset(peeps+22+14,0,4); break;
+        }
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(!core_heading_battle_over(1,2));
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(core_battles==17 && !core_settlements && !core_result);
+    }
+}
+
+static void test_heading_battle(void)
+{
+    test_heading_battle_controls(); test_heading_battle_presence();
+    test_heading_battle_state(); test_heading_battle_mana(); test_heading_battle_ticks();
+    test_heading_battle_guards();
+}
+
 static void test_heading_navigation(void)
 {
     test_heading_navigation_targets(); test_heading_navigation_bounds();
@@ -4720,6 +5000,9 @@ static void test_heading_navigation(void)
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--heading-battle")) {
+        test_heading_battle(); puts("focused heading battle completion: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--celebration")) {
         test_celebration(); puts("focused celebration consumer: PASS"); return 0;
     }
@@ -4835,7 +5118,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
-    test_celebration();
+    test_heading_battle(); test_celebration();
     test_heading(); test_heading_navigation();
     test_armageddon_input_smoke(); test_armageddon_cast(); test_armageddon_delayed(); test_armageddon_islands();
     test_war_terrain();

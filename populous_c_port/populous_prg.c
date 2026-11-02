@@ -971,6 +971,42 @@ static int core_magnet_direction(int person)
     peeps[person*22+21] = (uint8_t)directions[direction == 8 ? 0 : opposite[direction]];
     return 999;
 }
+/* _battle_over asm:6220-6225,6424-6564, bounded to a non-town loser
+ * with raw heading metadata on either participant. Casualties stay in core_battle. */
+static int core_heading_battle_over(int winner, int loser)
+{
+    if (no_peeps < 0 || no_peeps > 208 || winner < 0 || winner >= no_peeps ||
+        loser < 0 || loser >= no_peeps || winner == loser ||
+        peep_word(winner,4) <= 0 || peep_word(loser,4) > 0 || (peeps[loser*22]&1)) return 0;
+    int owner=peep_owner(winner), enemy=peep_owner(loser);
+    int position=peep_word(winner,8), loser_position=peep_word(loser,8);
+    if (owner > 1 || enemy > 1 || owner == enemy || position < 0 || position >= 4096 ||
+        loser_position < 0 || loser_position >= 4096) return 0;
+    uint32_t winner_heading, loser_heading;
+    memcpy(&winner_heading,peeps+winner*22+14,sizeof winner_heading);
+    memcpy(&loser_heading,peeps+loser*22+14,sizeof loser_heading);
+    if (!winner_heading && !loser_heading) return 0;
+    int32_t reward=A4_WORD(loser_heading ? 0x3012 : core_leader(enemy)==loser+1 ? 0x3014 : 0x3010);
+    A4_WORD(0xae7a+owner*2)=(uint16_t)((uint16_t)A4_WORD(0xae7a+owner*2)+1u);
+    /* Normalize before core_remove so reciprocal host cleanup cannot undo it. */
+    peeps[winner*22]=((peeps[winner*22]&1) ? 1 : 2)|4;
+    set_peep_word(winner,10,0); set_peep_word(winner,12,85);
+    if (!map_who[position] || map_who[position]==loser+1) map_who[position]=winner+1;
+    if (peeps[winner*22+20]) {
+        A4_WORD(0x82d4+owner*46)=position;
+        A4_WORD(0x82d2+owner*46)=2;
+        --peeps[winner*22+20];
+    }
+    if (peeps[loser*22+20]) A4_WORD(0x82d2+enemy*46)=0;
+    /* ADD.L/SUB.L wrap before the signed loser-only comparison, not core_add_mana. */
+    A4_LONG(0x9a02+owner*16)+=(uint32_t)reward;
+    A4_LONG(0x9a02+enemy*16)-=(uint32_t)reward;
+    if ((A4_LONG(0x9a02+enemy*16)^0x80000000u) < (A4_LONG(0x8486)^0x80000000u))
+        A4_LONG(0x9a02+enemy*16)=A4_LONG(0x8486);
+    if (view_who==loser+1) view_who=winner+1;
+    core_remove(loser);
+    return 1;
+}
 static void core_battle(int first, int second)
 {
     /* _do_battle:6082-6158: both casualties use the lesser rolled strength. */
@@ -984,6 +1020,7 @@ static void core_battle(int first, int second)
     if (first_pop > 0 && second_pop > 0) return;
     if (first_pop <= 0 && second_pop <= 0) { core_remove(first); core_remove(second); return; }
     int winner = first_pop > 0 ? first : second, loser = winner == first ? second : first;
+    if (core_heading_battle_over(winner,loser)) return;
     int owner = peep_owner(winner), enemy = peep_owner(loser), reward = A4_WORD(0x3010);
     if (peeps[loser*22]&1) {
         int capacity = core_check_life(enemy,peep_word(loser,8));
@@ -2209,7 +2246,7 @@ static int core_frame_walker(int person)
     }
     /* asm:5833-5845: exact-5/6 simulation consumers, not general mask 0x04.
      * Keep the signed incremented word even on completion; no sprite-art
-     * parity is claimed and the battle celebration producer remains deferred. */
+     * parity is claimed. */
     if (flags == 5 || flags == 6) {
         int frame = (int16_t)(previous+1);
         set_peep_word(person,12,frame);

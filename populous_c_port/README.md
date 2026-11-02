@@ -39,8 +39,9 @@ power/auto-level logic, celebration animations and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
 Population is bounded at 32000; ordinary mana helpers clamp to -250..1999999.
-Raw terrain commands instead preserve source word-cost/32-bit subtraction rules,
-using defined unsigned arithmetic rather than a C signed-overflow operation.
+Raw terrain commands and the bounded heading-battle completion path instead
+preserve their source word/32-bit arithmetic, using defined unsigned operations
+rather than C signed overflow.
 
 The exact `0x80` peep remnant now consumes its original unsigned 16-bit timer
 (`src/populous_prg.asm:4283-4315`): it claims only empty occupancy and is removed
@@ -66,8 +67,9 @@ uses the same celebration frames, but completion clears `0x04` and recalculates
 its town frame from current capacity instead of switching to a walker frame.
 It does not repaint the footprint or run growth, mana, splitting or evacuation
 in that update; ordinary town processing resumes on the following update.
-Broader mixed flags, the battle producer and visible celebration art remain
-separate work.
+Broader mixed flags, the town-destruction producer and visible celebration art
+remain separate work; heading-involved wins against non-town residents now produce
+these celebration states.
 The focused `--celebration` tests cover signed frame boundaries, full-A4 state
 preservation, later-resident progress, pause/result/quit gates and water precedence.
 Normal and sanitized full suites, original-data matches and all 495 starts passed.
@@ -136,7 +138,20 @@ tendency, prevents settlement and releases an existing leader before war recente
 Opaque out-of-range metadata stays intact and uses bounded magnet fallback without
 leader acquisition; unsafe map coordinates never become map accesses. The exact
 selector remains position-word based rather than silently filtering its candidates.
-Knight creation and heading-specific battle completion remain deferred.
+Knight creation and heading-specific town destruction remain deferred.
+A heading-involved fight with one survivor and a non-town loser now enters the
+original completion tail: walker/town celebration, headed-loser reward precedence,
+owner bookkeeping, conditional occupancy and loser-view transfer. Raw heading
+presence selects this path, even when the reference is opaque; it is not dereferenced.
+Rewards sign-extend their original word and wrap 32-bit mana, flooring only the
+loser's result against the active minimum. This path does not use the ordinary
+mana clamp. Town losers, metadata-zero pairs and mutual death keep their existing
+paths. Host casualty timing and `core_remove` semantics remain unchanged; original
+previous-cell cleanup and complete combat parity are still separate work.
+`--heading-battle` verifies full-A4 outcomes, raw presence, reward precedence,
+word counters, signed mana boundaries, third-party occupancy and ordered
+producer/consumer ticks. Full normal/sanitized suites, original-data matches and
+all 495 starts passed without changing the existing winner assertions.
 All slot roundtrips, signed positions, ties, relocation and transfer cases pass
 normally and under sanitizers. An independent selector matched 10,000 generated
 record sets; full suites, original-data matches and all 495 starts also passed.
