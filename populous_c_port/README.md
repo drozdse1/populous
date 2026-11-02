@@ -34,7 +34,7 @@ ordinary `_where_do_i_go`/magnet navigation, settlement growth/mana/splitting,
 ordinary `_do_battle`/`_battle_over`, joining, water loss and vertex sculpting.
 Source labels and assembly ranges appear beside each implementation. The
 opponent uses the same settlement/exploration rules, not timer-created units.
-Knight creation, Armageddon, original computer
+Knight creation, original computer
 power/auto-level logic, celebration animations and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
@@ -62,8 +62,8 @@ land has no capacity, their four-byte heading metadata is nonzero, or war is set
 frame and movement delta, removes its existing town footprint and skips growth,
 splitting and movement for that update. Population, occupancy, metadata and
 leader/view references are retained. Water, battle and waiting dispatch retain
-their existing precedence. Armageddon casting is still disabled; its ordinary
-war navigation and deferred water-assistance prerequisites are described below.
+their existing precedence. Gameplay Armageddon connects these ordinary war
+navigation and deferred water-assistance paths; special-figure parity is separate.
 
 Ordinary magnet navigation uses the original nine-entry direction table: arriving
 at the target attempts north rather than switching to exploration. A new leader
@@ -444,6 +444,30 @@ clamped bounds rectangle is rebuilt rather than unconditionally rebuilding the
 whole footprint. No residents or occupancy are changed directly by casting.
 Original toolbar, audio, editor mode and exact queued-command timing remain open.
 
+## Armageddon power
+
+`A` is the port's immediate Armageddon binding, not the original debug-A instant
+win. It requires active permission `0x0100`, at least 80000 mana and an active,
+unpaused match. It charges the casting owner, adds 5000 score only for the player
+caster, clears exactly the four heading bytes of every allocated normal peep
+record (including inactive records), sets effect 73 and activates war. Recasting
+while war is active is allowed and pays again. Keyboard repeats are ignored.
+
+Casting does not instantly move people, alter terrain, evacuate towns or recenter
+magnets. Subsequent ticks perform the migrated war targets, town evacuation,
+ordinary navigation, deferred water assistance and combat. Manual terrain and
+magnet mouse actions are locked during war; camera, pause, reset and quit remain
+available. Armed swamp/tool selection is retained. There is no editor bypass.
+
+This is gameplay integration, not complete original-game parity: original toolbar,
+audio, editor/AI activation, knights, phased water behavior and original end-game
+accounting remain open. C still recomputes surviving population immediately and
+reports simultaneous extinction as a draw. In the controlled cast-through-SDL
+island test, either caster activates war, a route is raised, combat starts at
+tick 41 and the stronger blue party wins at tick 43 (2963/0 population), identically
+in normal and sanitized runs. Funding and unequal armies are test fixtures;
+there is no terrain/population injection after the cast.
+
 ## Controls
 
 - Blue is your population; red is the opponent. Original houses/castles show
@@ -457,6 +481,7 @@ Original toolbar, audio, editor mode and exact queued-command timing remain open
 - `0`: gather walkers at the initial magnet (32,32). After a leader reaches it,
   `m` selects magnet placement; left-click moves the target for 200 mana. `m`
   again returns to terrain. Settlements release walkers when over capacity.
+- `a`: Armageddon, if allowed, for 80000 mana; terrain/magnet clicks lock during war.
 - `v`: volcano on the current viewport, if allowed, for 10000 mana.
 - `f`: global flood, if allowed, for 40000 mana.
 - `q`: earthquake on the current viewport, if allowed, for 2500 mana.
@@ -472,8 +497,8 @@ Original toolbar, audio, editor mode and exact queued-command timing remain open
 The opponent independently settles, grows, explores, merges and fights. Flatten
 plots to encourage settlement, wait for population/mana, and lower the four
 corners of hostile plots to deny land. The goal is to remove the opposing living
-population, including settlements. `a` and unported special powers are
-inactive. No timer or population target declares a winner.
+population, including settlements. Unported special powers remain inactive.
+No timer or population target declares a winner.
 
 ## Verification
 

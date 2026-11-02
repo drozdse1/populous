@@ -14,9 +14,17 @@ The original work provides a clean IRA disassembly of the 1993 Hit Squad budget 
 
 The port now has a **bounded original-rule game loop**: movement, settlement, growth, mana, ordinary combat, legal sculpting and population-based outcomes use external original `landN` rules. Automated SDL-input matches reach victory/defeat. Independent X11/WSLg checks also observed growth, combat, a stable defeat, reset and clean exit through agent-driven inputs at human rates. This is a playable intermediate port, not a complete Amiga conversion: several rule branches, powers and strategic AI are unported, and a human-tested winning strategy has not been demonstrated. Original world initialization is available separately through `--level N`; see the port guide for bounded overlapping-start support and remaining campaign/state-machine limitations.
 
+Gameplay powers include swamp (`S`), earthquake (`Q`), flood (`F`), volcano (`V`) and Armageddon (`A`), each subject to the original active permissions and mana costs. Armageddon connects ordinary war movement and deferred water assistance, not instant victory; original toolbar, audio, special figures and full timing parity remain incomplete.
+
 See [the current port guide](./populous_c_port/README.md) for tested commands, controls and limitations. [grok.md](./grok.md) is historical development context, not the current feature contract.
 
 `./populous_c_port/populous_init_port N` selects one of eight synthetic scenarios using `N % 8`; no argument selects slot 0. `./populous_c_port/populous_init_port --level N` selects an original world numbered 0..494 without wrapping. Invalid or negative arguments fail. Both initial populations and terrain are generated before the first game frame.
+
+## Screenshot
+
+![Populous C/SDL2 port with original isometric graphics and settlements](docs/images/Screenshot%202026-11-02%20131410.png)
+
+User-captured gameplay screenshot, November 2, 2026, showing the defeat screen of the intermediate port.
 
 ## Directory Structure
 

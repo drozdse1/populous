@@ -1097,7 +1097,7 @@ static void core_settle_tick(int person)
 /* _raise_point/_lower_point: the same 8-neighbour slope constraint, bounded work. */
 static int core_sculpt(int owner, int column, int row, int direction)
 {
-    if (owner < 0 || owner > 1 || pause || core_result || column < 0 || column > 64 || row < 0 || row > 64 ||
+    if (owner < 0 || owner > 1 || pause || core_result || A4_WORD(0xae80) || column < 0 || column > 64 || row < 0 || row > 64 ||
         (direction != 1 && direction != -1) || (game_mode&GAME_MODE_NO_BUILD) ||
         (direction < 0 && (game_mode&GAME_MODE_BUILD_ONLY_UP)) || core_mana(owner) < 10 ||
         !(A4_WORD(0x82c4+owner*46)&1)) return 0;
@@ -1275,6 +1275,25 @@ static int core_flood(int owner)
     for (int index = 0; index < 4225; ++index)
         if (A4_WORD(0xae86+index*2) > 0) --A4_WORD(0xae86+index*2);
     _make_map();
+    return 1;
+}
+
+/* _do_war asm:8482-8530, gameplay only: diagnostic P is not editor mode. */
+static int core_war(int owner)
+{
+    if (owner < 0 || owner > 1 || no_peeps < 0 || no_peeps > 208 ||
+        pause || core_result || prg_quit) return 0;
+    uint32_t mana = A4_LONG(0x9a02+owner*16), cost = A4_LONG(0x84a6);
+    /* Signed CMP.L without an out-of-range signed conversion. BTST targets
+     * the high byte of the original big-endian permission word. */
+    if ((mana ^ 0x80000000u) < (cost ^ 0x80000000u) ||
+        !(A4_WORD(0x82c4+owner*46)&0x100)) return 0;
+    A4_LONG(0x9a02+owner*16) = mana-cost;
+    if (owner == player) A4_LONG(0xae72) += 5000;
+    for (int person = 0; person < no_peeps; ++person)
+        memset(peeps+person*22+14,0,4);
+    A4_WORD(0x2fac) = 73;
+    A4_WORD(0xae80) = 1;
     return 1;
 }
 
@@ -2032,14 +2051,15 @@ static void draw_original(int view_x, int view_y)
     for (size_t pixel=0; pixel<sizeof game_pixels; ++pixel)
         prg_screen->chunky_buffer[pixel]=prg_screen->palette[game_pixels[pixel]];
     char status[80];
-    snprintf(status,sizeof status,"%s  BLUE %d RED %d MANA %d",core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : "PLAY",core_population(0),core_population(1),core_mana(0));
+    snprintf(status,sizeof status,"%s  BLUE %d RED %d MANA %d",core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : A4_WORD(0xae80) ? "WAR" : "PLAY",core_population(0),core_population(1),core_mana(0));
     hud_text(4,204,status);
-    hud_text(4,213,core_swamp_selected ?
+    hud_text(4,213,A4_WORD(0xae80) ?
+        "WAR - TERRAIN AND MAGNET INPUT LOCKED / ARROWS SCROLL / MAP CLICK" : core_swamp_selected ?
         "S SWAMP ARMED 5000 / LMB TARGET / RMB INERT" :
         "LMB RAISE / RMB LOWER / ARROWS SCROLL / MAP CLICK");
     hud_text(4,222,"0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET / S SWAMP 5000");
-    hud_text(4,231,"Q QUAKE 2500 / F FLOOD 40000 / V VOLCANO 10000 / SPACE PAUSE / R RESET");
-    hud_text(4,249,"ESC QUIT / D VIEW");
+    hud_text(4,231,"Q QUAKE 2500 / F FLOOD 40000 / V VOLCANO 10000 / A ARMAGEDDON 80000");
+    hud_text(4,249,"SPACE PAUSE / R RESET / ESC QUIT / D VIEW");
     hud_text(4,240,core_swamp_selected ?
         (core_tool ? "AFTER TARGET: MAGNET / ORIGINAL TOOLBAR DECORATIVE" :
                      "AFTER TARGET: TERRAIN / ORIGINAL TOOLBAR DECORATIVE") :
@@ -2099,15 +2119,17 @@ static void _draw_it(int16_t y, int16_t x)
     }
     } else draw_original(x,y);
     char title[512];
-    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; Q quake 2500; F flood 40000; V volcano 10000; mouse raise/lower; Space pause R reset Esc quit",
-        core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : "RUNNING",
-        core_population(0),core_population(1),core_mana(0),core_swamp_selected ?
+    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; Q quake 2500; F flood 40000; V volcano 10000; A Armageddon 80000; Space pause R reset Esc quit",
+        core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : A4_WORD(0xae80) ? "WAR" : "RUNNING",
+        core_population(0),core_population(1),core_mana(0),A4_WORD(0xae80) ?
+        "TERRAIN AND MAGNET INPUT LOCKED / ARROWS SCROLL / MAP CLICK" : core_swamp_selected ?
         (core_tool ? "SWAMP ARMED (5000) LMB target then MAGNET / RMB inert" :
                      "SWAMP ARMED (5000) LMB target then TERRAIN / RMB inert") :
         (core_tool ? "MAGNET (200)" : "TERRAIN (10+4/point)"));
     SDL_SetWindowTitle(prg_screen->window,title);
 }
 
+static void _do_war(void) { core_war(player); }
 static void _do_flood(void) { core_flood(player); }
 static void _do_quake(void) { core_quake(player,xoff,yoff,___newrand); }
 static void _do_volcano(void) { core_volcano(player,xoff,yoff,___newrand); }
@@ -2273,6 +2295,8 @@ static void game_handle_event(const SDL_Event *event)
             if (key == SDLK_q) _do_quake();
             if (key == SDLK_f) _do_flood();
             if (key == SDLK_v) _do_volcano();
+            /* Host binding, not original A (which was a debug win). */
+            if (key == SDLK_a) _do_war();
             /* Host S mapping for source selection asm:2021-2042 (> cost). */
             if (key == SDLK_s && player >= 0 && player <= 1 &&
                 core_mana(player) > (int32_t)A4_LONG(0x8496) &&
@@ -2315,14 +2339,15 @@ static void game_handle_event(const SDL_Event *event)
                 return;
             }
         }
-        if (pause || core_result) return;
+        /* _sculpt asm:7295 / _do_magnet asm:6784: keep camera usable,
+         * but reject world input before consuming an armed target. */
+        if (pause || core_result || A4_WORD(0xae80)) return;
         if (diagnostic_view) {
             if (sy>=240) return;
             column=(sx+xoff)/4; row=(sy+yoff)/4;
             if (column>=64 || row>=64) return;
         } else if (!game_pick(sx,sy,&column,&row)) return;
         if (core_swamp_selected) {
-            if (A4_WORD(0xae80)) return; /* _sculpt asm:7295, before clearing. */
             if (event->button.button == SDL_BUTTON_LEFT) {
                 /* asm:7451-7489 clears selection before command execution.
                  * Diagnostic picks use this same vertex-to-byte mapping. */

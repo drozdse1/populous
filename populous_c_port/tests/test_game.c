@@ -3681,8 +3681,274 @@ static void test_war_terrain(void)
     test_war_terrain_order_and_death(); test_war_terrain_obstacle();
 }
 
+static void armageddon_fixture(void)
+{
+    flood_fixture(1); prg_quit=0;
+    A4_LONG(0x84a6)=80000;
+    A4_LONG(0x9a02)=A4_LONG(0x9a12)=80000;
+    A4_WORD(0x82c4)=A4_WORD(0x82c4+46)=0x100;
+    core_tool=core_swamp_selected=1; xoff=12; yoff=19;
+    core_leader(0)=3; core_leader(1)=7; core_target(0)=650; core_target(1)=3000;
+    A4_WORD(0xae78)=789; A4_WORD(0xae76)=987;
+    for (int owner=0;owner<2;++owner) {
+        memset(A4_DISP(0x82b6+owner*46),0x5a,3);
+        A4_WORD(0x82be + owner*46)=1;
+    }
+}
+
+static void test_armageddon_locks(void)
+{
+    const int wars[]={1,2,0x7fff,0x8000,0xffff};
+    for (unsigned sample=0;sample<sizeof wars/sizeof wars[0];++sample)
+    for (int owner=0;owner<2;++owner) for (int direction=-1;direction<=1;direction+=2) {
+        armageddon_fixture(); A4_WORD(0xae80)=wars[sample];
+        A4_WORD(0x82c4+owner*46)=0xffff;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(!core_sculpt(owner,20,20,direction));
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(core_raw_raise(owner,20,20));
+        assert(core_vertex(20,20)==2 && core_mana(owner)==80000);
+    }
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    for (int diagnostic=0;diagnostic<2;++diagnostic)
+    for (int tool=0;tool<2;++tool) for (int armed=0;armed<2;++armed)
+    for (int button=SDL_BUTTON_LEFT;button<=SDL_BUTTON_RIGHT;button+=2) {
+        diagnostic_view=diagnostic; xoff=yoff=6;
+        core_tool=tool; core_swamp_selected=armed;
+        A4_WORD(0xae80)=-1; A4_LONG(0x9a02)=160000;
+        A4_WORD(0x82c4)=0xffff; core_leader(0)=1;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        if (!diagnostic) iso_click_vertex(10,10,button);
+        else {
+            int width,height; SDL_GetWindowSize(prg_screen->window,&width,&height);
+            SDL_Event click={.type=SDL_MOUSEBUTTONDOWN}; click.button.button=button;
+            click.button.x=80*width/320; click.button.y=80*height/256;
+            game_handle_event(&click);
+        }
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(core_tool==tool && core_swamp_selected==armed);
+    }
+    diagnostic_view=0; xoff=yoff=6;
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_RIGHT;
+    game_handle_event(&key); assert(xoff==7);
+    int width,height; SDL_GetWindowSize(prg_screen->window,&width,&height);
+    SDL_Event click={.type=SDL_MOUSEBUTTONDOWN}; click.button.button=SDL_BUTTON_LEFT;
+    click.button.x=64*width/320; click.button.y=32*height/256;
+    game_handle_event(&click); assert(xoff==28 && yoff==28 && core_swamp_selected==1);
+    key.key.keysym.sym=SDLK_SPACE; game_handle_event(&key); assert(pause);
+    game_handle_event(&key); assert(!pause);
+    key.key.keysym.sym=SDLK_r; game_handle_event(&key); assert(!A4_WORD(0xae80));
+    key.key.keysym.sym=SDLK_ESCAPE; game_handle_event(&key); assert(prg_quit);
+    _closeall(); SDL_Quit();
+}
+
+static void test_armageddon_cast(void)
+{
+    /* Catch payment before validation, signed admission, editor bypass, and
+     * confusing the low byte build permission with the high byte war bit. */
+    for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint)
+    for (int gate=0;gate<13;++gate) {
+        armageddon_fixture(); paint_map=paint; int side=owner;
+        if (gate==0) side=-1;
+        if (gate==1) side=2;
+        if (gate==2) A4_LONG(0x9a02+owner*16)=79999;
+        if (gate==3) A4_LONG(0x9a02+owner*16)=0xffffffffu;
+        if (gate==4) A4_WORD(0x82c4+owner*46)=1;
+        if (gate==5) A4_WORD(0x82c4+owner*46)=0xfeff;
+        if (gate==6) pause=1;
+        if (gate==7) prg_quit=1;
+        if (gate>=8 && gate<=10) core_result=gate-7;
+        if (gate==11) no_peeps=-1;
+        if (gate==12) no_peeps=209;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(!core_war(side)); assert(!memcmp(before,prg_a4_area,sizeof before));
+        SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_a;
+        player=side; memcpy(before,prg_a4_area,sizeof before);
+        game_handle_event(&key); assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(core_tool==1 && core_swamp_selected==1 && !core_battles && !core_settlements);
+    }
+    const int counts[]={0,1,7,207,208};
+    const int wars[]={0,1,2,0x7fff,0x8000,0xffff};
+    const int flags[]={2,1,8,0x22,0x42,0x80,18};
+    for (int owner=0;owner<2;++owner) for (int local=0;local<2;++local)
+    for (int paint=0;paint<2;++paint) for (unsigned count=0;count<5;++count)
+    for (unsigned active=0;active<6;++active) {
+        armageddon_fixture(); player=local; paint_map=paint;
+        no_peeps=counts[count]; A4_WORD(0xae80)=wars[active];
+        game_mode=0xffff; A4_LONG(0xae72)=17;
+        for (int index=0;index<208*22;++index) peeps[index]=(uint8_t)(index%255+1);
+        memset(peeps+208*22,0xa5,22); /* Canary beyond the last allocated record. */
+        for (int person=0;person<208;++person) {
+            peeps[person*22]=flags[person%7]; peeps[person*22+1]=person%2;
+            set_peep_word(person,4,person%3==0 ? 0 : person%3==1 ? -1 : 100);
+        }
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(core_war(owner));
+        assert(core_mana(owner)==0 && core_mana(1-owner)==80000);
+        assert(A4_LONG(0xae72)==(owner==local ? 5017u : 17u));
+        assert(A4_WORD(0x2fac)==73 && A4_WORD(0xae80)==1);
+        for (int person=0;person<no_peeps;++person)
+            for (int byte=14;byte<18;++byte) assert(!peeps[person*22+byte]);
+        /* Restore ONLY the documented cast writes, then compare every A4 byte:
+         * no target reset, town teardown, RNG, map/history/leader/mailbox change,
+         * no record filtering or overclear at either count or allocation limit. */
+        A4_LONG(0x9a02+owner*16)=80000; A4_LONG(0xae72)=17;
+        A4_WORD(0x2fac)=0; A4_WORD(0xae80)=wars[active];
+        for (int person=0;person<no_peeps;++person)
+            memcpy(peeps+person*22+14,before+(peeps-prg_a4_area)+person*22+14,4);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(core_tool==1 && core_swamp_selected==1 && !core_result && !core_battles && !core_settlements);
+    }
+    /* Active cost, signed equality, and defined SUB.L/ADD.L wrap, not caps. */
+    armageddon_fixture(); A4_LONG(0x84a6)=0xffffffffu; A4_LONG(0x9a02)=0x7fffffffu;
+    A4_LONG(0xae72)=0xfffffff0u;
+    assert(core_war(0)); assert(A4_LONG(0x9a02)==0x80000000u && A4_LONG(0xae72)==4984);
+    armageddon_fixture(); A4_LONG(0x84a6)=0x80000000u; A4_LONG(0x9a02)=0x80000000u;
+    assert(core_war(0) && A4_LONG(0x9a02)==0);
+}
+
+static void test_armageddon_render(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    A4_WORD(0xae80)=1; core_tool=core_swamp_selected=1;
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    game_render(); assert(!memcmp(before,prg_a4_area,sizeof before));
+    const char *title=SDL_GetWindowTitle(prg_screen->window);
+    assert(strstr(title,"WAR") && strstr(title,"A Armageddon 80000") && strstr(title,"Esc quit"));
+    uint32_t hud[320*56]; memcpy(hud,prg_screen->chunky_buffer+320*200,sizeof hud);
+    /* Check glyph presence using the existing renderer; separately prove the
+     * literal strings fit its four-pixel advance rather than trusting clipping. */
+    const char *lines[]={
+        "Q QUAKE 2500 / F FLOOD 40000 / V VOLCANO 10000 / A ARMAGEDDON 80000",
+        "WAR - TERRAIN AND MAGNET INPUT LOCKED / ARROWS SCROLL / MAP CLICK",
+        "SPACE PAUSE / R RESET / ESC QUIT / D VIEW"
+    };
+    const int rows[]={231,213,249};
+    for (unsigned line=0;line<sizeof lines/sizeof lines[0];++line) {
+        assert(4+4*strlen(lines[line])<=320 && rows[line]+5<=256);
+        hud_text(4,rows[line],lines[line]);
+    }
+    assert(!memcmp(hud,prg_screen->chunky_buffer+320*200,sizeof hud));
+    game_render(); assert(!memcmp(before,prg_a4_area,sizeof before));
+    assert(!memcmp(hud,prg_screen->chunky_buffer+320*200,sizeof hud));
+    pause=1; game_render(); assert(strstr(SDL_GetWindowTitle(prg_screen->window),"PAUSED"));
+    core_result=1; game_render(); assert(strstr(SDL_GetWindowTitle(prg_screen->window),"VICTORY"));
+    _closeall(); SDL_Quit();
+}
+
+static void test_armageddon_delayed(void)
+{
+    setup_war_town(0,650,1); A4_WORD(0xae80)=0;
+    A4_LONG(0x84a6)=80000; A4_LONG(0x9a02)=80000; A4_WORD(0x82c4)=0x100;
+    player=0; peeps[14]=0x80; core_target(0)=123; core_target(1)=456;
+    A4_WORD(0xae78)=789; A4_WORD(0xae76)=987;
+    uint8_t town[22]; memcpy(town,peeps,22); memset(town+14,0,4);
+    assert(core_war(0)); assert(!memcmp(town,peeps,22));
+    assert(core_target(0)==123 && core_target(1)==456 && map_bk2[650]);
+    game_tick();
+    assert(core_target(0)==0x820 && core_target(1)==0x820);
+    assert(A4_WORD(0xae78)==0x820 && A4_WORD(0xae76)==0x820);
+    assert(peeps[0]==2 && peep_word(0,8)==650 && peep_word(0,4)==3100);
+    assert(!map_bk2[650]);
+}
+
+static void test_armageddon_islands(void)
+{
+    for (int local=0;local<2;++local) {
+        /* Controlled legal-height setup only. Funding is a fixture, not a
+         * claim that a human earned mana. No world injection after SDL A. */
+        war_terrain_fixture(); A4_WORD(0xae80)=0; player=local;
+        memset(map_who,0,4096); memset(map_blk,0,4096);
+        for (int row=30;row<=34;++row) for (int column=26;column<=37;++column)
+            if (column<=29 || column>=34) core_set_vertex(column,row,1);
+        _make_map(); no_peeps=2; memset(peeps,0,208*22);
+        for (int person=0;person<2;++person) {
+            int position=32*64+(person ? 35 : 28);
+            peeps[person*22]=2; peeps[person*22+1]=person;
+            peeps[person*22+2]=1; peeps[person*22+3]=person ? 1 : 100;
+            set_peep_word(person,4,person ? 1000 : 3000);
+            set_peep_word(person,8,position); set_peep_word(person,12,7);
+            peeps[person*22+14]=0x80; map_who[position]=person+1;
+            A4_WORD(0x82c4+person*46)=0xffff;
+        }
+        A4_LONG(0x84a6)=80000; A4_LONG(0x9a02+local*16)=80000;
+        SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_a;
+        game_handle_event(&key); assert(A4_WORD(0xae80)==1 && core_mana(local)==0);
+        int raised=0,first_battle=0;
+        for (int tick=1;tick<=2000 && !core_result;++tick) {
+            game_tick();
+            if (core_vertex(31,32)>0) raised=1;
+            if (core_battles && !first_battle) first_battle=tick;
+            if (!core_battles) assert(seed==123);
+            assert_mailbox_empty();
+            for (int vertex=0;vertex<4225;++vertex)
+                assert(core_vertex(vertex%65,vertex/65)>=0 && core_vertex(vertex%65,vertex/65)<=8);
+        }
+        printf("Armageddon cast islands: caster=%d raised=%d battle=%d outcome=%d tick=%d populations=%d/%d\n",
+               local,raised,first_battle,core_result,game_turn,core_population(0),core_population(1));
+        assert(raised && first_battle && core_result==1 && core_population(0)>0 && !core_population(1));
+    }
+}
+
+static void test_armageddon_input_smoke(void)
+{
+    armageddon_fixture();
+    A4_WORD(0x82c4)=0x100; A4_LONG(0x9a02)=160000;
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_a;
+    key.key.repeat=1; game_handle_event(&key);
+    assert(!A4_WORD(0xae80) && core_mana(0)==160000);
+    key.key.repeat=0; game_handle_event(&key);
+    assert(A4_WORD(0xae80)==1 && core_mana(0)==80000);
+    assert(A4_LONG(0xae72)==5000 && A4_WORD(0x2fac)==73);
+    game_handle_event(&key);
+    assert(core_mana(0)==0 && A4_LONG(0xae72)==10000);
+}
+
+static void test_armageddon_original(const char *directory)
+{
+    assert(!setenv("POPULOUS_DATA_DIR",directory,1));
+    char assets[4096]; snprintf(assets,sizeof assets,"%s/..",directory);
+    assert(!setenv("POPULOUS_ASSET_DIR",assets,1));
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    /* An ordinary original-data start, with only fixture funding/permission.
+     * No terrain/population edits; this is not human-playability evidence. */
+    assert(game_reset_start((StartSelection){START_ORIGINAL,0}));
+    assert_original_world(); assert(A4_LONG(0x84a6)==80000);
+    A4_LONG(0x9a02)=80000; A4_WORD(0x82c4)|=0x100;
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_a;
+    assert(SDL_PushEvent(&key)==1); ___keyboard();
+    assert(A4_WORD(0xae80)==1 && core_mana(0)==0 && A4_WORD(0x2fac)==73);
+    /* Compare the immediate world independently of its delayed consumers. */
+    uint8_t after[sizeof prg_a4_area]; memcpy(after,prg_a4_area,sizeof after);
+    const int writes[]={0x9a02,0xae72,0x2fac,0xae80};
+    for (unsigned field=0;field<4;++field) {
+        size_t offset=A4_DISP(writes[field])-prg_a4_area;
+        memcpy(before+offset,after+offset,field<2 ? 4 : 2);
+    }
+    for (int person=0;person<no_peeps;++person) {
+        for (int byte=14;byte<18;++byte) assert(!peeps[person*22+byte]);
+        memset(before+(peeps-prg_a4_area)+person*22+14,0,4);
+    }
+    assert(!memcmp(before,prg_a4_area,sizeof before));
+    game_render(); assert(!memcmp(after,prg_a4_area,sizeof after));
+    assert(strstr(SDL_GetWindowTitle(prg_screen->window),"A Armageddon 80000"));
+    for (int tick=0;tick<100 && !core_result;++tick) { game_tick(); assert_live_occupancy(); }
+    printf("Original-data funded SDL A smoke: tick=%d outcome=%d populations=%d/%d (no parity/playability claim)\n",
+           game_turn,core_result,core_population(0),core_population(1));
+    _closeall(); SDL_Quit();
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==3 && !strcmp(argv[1],"--armageddon")) {
+        test_armageddon_original(argv[2]); return 0;
+    }
+    if (argc==2 && !strcmp(argv[1],"--armageddon")) {
+        test_armageddon_input_smoke(); test_armageddon_cast(); test_armageddon_delayed(); test_armageddon_islands();
+        prepare_rule_data(); test_armageddon_locks(); test_armageddon_render(); cleanup_rule_data();
+        puts("focused Armageddon: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--war-terrain")) {
         test_war_terrain(); puts("focused war terrain producers: PASS"); return 0;
     }
@@ -3779,6 +4045,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_armageddon_input_smoke(); test_armageddon_cast(); test_armageddon_delayed(); test_armageddon_islands();
     test_war_terrain();
     test_terrain_mailbox();
     test_magnet();
@@ -3799,6 +4066,7 @@ int main(int argc, char **argv)
     test_original_generator();
     test_original_placement();
     prepare_rule_data();
+    test_armageddon_locks(); test_armageddon_render();
     test_terrain_defaults();
     test_volcano_input(); test_volcano_render();
     test_flood_input();
