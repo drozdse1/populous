@@ -895,6 +895,36 @@ static void core_battle(int first, int second)
     map_who[peep_word(winner,8)] = winner+1; set_peep_word(winner,10,0);
     if (!(peeps[winner*22]&1)) set_peep_word(winner,12,0);
 }
+/* _join_battle asm:6663-6765. Keep the pair's combat state intact. */
+static void core_join_battle(int newcomer, int encountered)
+{
+    if (newcomer < 0 || newcomer >= no_peeps || newcomer >= 208 ||
+        encountered < 0 || encountered >= no_peeps || encountered >= 208 ||
+        newcomer == encountered || peep_word(newcomer,4) <= 0 ||
+        peeps[newcomer*22] != 2 || peep_owner(newcomer) > 1 ||
+        peep_word(encountered,4) <= 0 || !(peeps[encountered*22]&8) ||
+        peep_owner(encountered) > 1) return;
+    int partner = peep_word(encountered,6);
+    if (partner < 0 || partner >= no_peeps || partner >= 208 ||
+        partner == encountered || partner == newcomer ||
+        peep_word(partner,4) <= 0 || !(peeps[partner*22]&8) ||
+        peep_word(partner,6) != encountered ||
+        peep_owner(partner) != 1-peep_owner(encountered)) return;
+    int owner = peep_owner(newcomer);
+    int recipient = peep_owner(encountered) == owner ? encountered : partner;
+    int population = peep_word(recipient,4)+peep_word(newcomer,4);
+    set_peep_word(recipient,4,population > 32000 ? 32000 : population);
+    if (core_leader(owner) == newcomer+1) core_leader(owner) = recipient+1;
+    if (view_who == newcomer+1) view_who = recipient+1;
+    /* This is an opaque four-byte Amiga field, not a native host pointer. */
+    uint32_t metadata;
+    memcpy(&metadata,peeps+newcomer*22+14,sizeof metadata);
+    if (metadata) memcpy(peeps+recipient*22+14,&metadata,sizeof metadata);
+    if (peeps[newcomer*22+3] > peeps[recipient*22+3])
+        peeps[recipient*22+3] = peeps[newcomer*22+3];
+    /* game_tick recomputes totals, so no original running-index correction. */
+    core_remove(newcomer);
+}
 static void core_move(int person)
 {
     int owner = peep_owner(person), position = peep_word(person,8);
@@ -911,7 +941,7 @@ static void core_move(int person)
     int occupant = map_who[position]-1;
     if (occupant >= 0 && occupant < no_peeps && occupant != person &&
         peep_word(occupant,4) > 0) {
-        if (peeps[occupant*22]&8) return; /* Multi-party join is not ported. */
+        if (peeps[occupant*22]&8) { core_join_battle(person,occupant); return; }
         if (peep_owner(occupant) != owner) {
             peeps[person*22] = 8;
             peeps[occupant*22] = (peeps[occupant*22]&7)|8;
@@ -938,7 +968,7 @@ static void core_move(int person)
     if (core_valid_move(position,delta)) return;
     int destination = position+delta, other = map_who[destination]-1;
     if (other >= 0 && other < no_peeps && other != person) {
-        if (peeps[other*22]&8) return; /* Multi-party battle join is not ported. */
+        if (peeps[other*22]&8) { core_join_battle(person,other); return; }
         if (peep_owner(other) == owner) {
             int sum = peep_word(other,4)+peep_word(person,4);
             set_peep_word(other,4,sum > 32000 ? 32000 : sum);

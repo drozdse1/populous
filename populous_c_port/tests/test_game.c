@@ -453,25 +453,202 @@ static void test_colocated_battle_death(void)
     _closeall(); SDL_Quit();
 }
 
-static void test_ongoing_battle_blocks_third_party(void)
+static void setup_reinforcement(int newcomer, int owner, int colocated, int representative)
 {
-    assert(SDL_Init(SDL_INIT_VIDEO)==0);
-    for (int owner=0; owner<2; ++owner) for (int colocated=0; colocated<2; ++colocated) {
-        setup_colocated_walkers(0); core_move(0);
-        assert((peeps[0]&8) && (peeps[22]&8));
-        no_peeps=3; peeps[44]=2; peeps[45]=owner; peeps[46]=peeps[47]=1;
-        int position=50*64+50, origin=colocated ? position : position-1;
-        set_peep_word(2,4,45); set_peep_word(2,8,origin);
-        if (!colocated) map_who[origin]=3;
-        core_tendency(owner)=0; core_leader(owner)=3; core_target(owner)=position+1;
-        uint8_t battle[44]; memcpy(battle,peeps,sizeof battle);
-        core_move(2);
-        assert(!memcmp(battle,peeps,sizeof battle));
-        assert(peeps[44]==2 && peep_word(2,8)==origin && peep_word(2,4)==45);
-        assert(map_who[position]==1 && core_battles==1 && !core_settlements);
-        assert(peep_word(0,6)==1 && peep_word(1,6)==0);
+    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(map_blk,1,4096);
+    no_peeps=4; core_result=core_settlements=0; core_battles=17; prg_quit=0;
+    int first=newcomer==0 ? 1 : 0, second=first+1;
+    for (int side=0; side<2; ++side) {
+        int person=first+side;
+        peeps[person*22]=side ? 9 : 10; peeps[person*22+1]=side;
+        peeps[person*22+2]=3; peeps[person*22+3]=7;
+        set_peep_word(person,4,100); set_peep_word(person,6,side ? first : second);
+        set_peep_word(person,8,650); set_peep_word(person,10,side ? -64 : 1);
+        set_peep_word(person,12,side ? 35 : 102);
+        for (int byte=14; byte<22; ++byte) peeps[person*22+byte]=byte+side;
     }
-    _closeall(); SDL_Quit();
+    peeps[newcomer*22]=2; peeps[newcomer*22+1]=owner;
+    peeps[newcomer*22+2]=1; peeps[newcomer*22+3]=1;
+    set_peep_word(newcomer,4,45); set_peep_word(newcomer,8,colocated ? 650 : 649);
+    set_peep_word(newcomer,6,23); set_peep_word(newcomer,12,7);
+    map_who[650]=first+representative+1;
+    if (!colocated) map_who[649]=newcomer+1;
+    core_leader(owner)=newcomer+1; core_leader(1-owner)=first+(1-owner)+1;
+    core_target(owner)=651; view_who=newcomer+1;
+    A4_LONG(0x9a02)=1234; A4_LONG(0x9a12)=5678;
+    A4_WORD(0xae7a)=4; A4_WORD(0xae7c)=5; seed=123;
+}
+
+static void test_battle_reinforcement(void)
+{
+    /* Catch wrong-side joins, friendly-merge frame resets, signed weapons,
+     * wide host-pointer copies, lost references and over-eager map cleanup. */
+    for (int newcomer=0; newcomer<=2; newcomer+=2)
+    for (int owner=0; owner<2; ++owner)
+    for (int colocated=0; colocated<2; ++colocated)
+    for (int representative=0; representative<2; ++representative)
+    for (int variant=0; variant<3; ++variant) {
+        setup_reinforcement(newcomer,owner,colocated,representative);
+        int first=newcomer==0 ? 1 : 0, recipient=first+owner, opponent=first+1-owner;
+        if (variant==1) {
+            set_peep_word(recipient,4,31990); peeps[newcomer*22+3]=200;
+            const uint8_t metadata[4]={0x81,0,0xff,0x37};
+            memcpy(peeps+newcomer*22+14,metadata,sizeof metadata);
+        } else if (variant==2) {
+            peeps[recipient*22+3]=200;
+            /* No leader keeps magnet navigation deterministic even when colocated. */
+            core_leader(owner)=0; view_who=opponent+1;
+            if (!colocated) {
+                peeps[66]=2; peeps[67]=owner; set_peep_word(3,4,12);
+                set_peep_word(3,8,649); map_who[649]=4;
+            }
+        }
+        uint8_t expected[22], enemy[22], third[22], occupancy[4096];
+        memcpy(expected,peeps+recipient*22,sizeof expected);
+        memcpy(enemy,peeps+opponent*22,sizeof enemy); memcpy(third,peeps+66,sizeof third);
+        memcpy(occupancy,map_who,sizeof occupancy);
+        int16_t population=variant==1 ? 32000 : 145;
+        memcpy(expected+4,&population,sizeof population);
+        if (variant==1) {
+            expected[3]=200; memcpy(expected+14,peeps+newcomer*22+14,4);
+        }
+        if (!colocated && variant!=2) occupancy[649]=0;
+        core_move(newcomer);
+        assert(!memcmp(expected,peeps+recipient*22,sizeof expected));
+        assert(!memcmp(enemy,peeps+opponent*22,sizeof enemy));
+        assert(!memcmp(third,peeps+66,sizeof third));
+        assert(!memcmp(occupancy,map_who,sizeof occupancy));
+        assert(!peeps[newcomer*22] && !peep_word(newcomer,4));
+        assert(peep_word(newcomer,8)==(colocated ? 650 : 649));
+        assert(core_leader(owner)==(variant==2 ? 0 : recipient+1));
+        assert(core_leader(1-owner)==opponent+1);
+        assert(view_who==(variant==2 ? opponent+1 : recipient+1));
+        assert(seed==123 && core_mana(0)==1234 && core_mana(1)==5678);
+        assert(A4_WORD(0xae7a)==4 && A4_WORD(0xae7c)==5);
+        assert(core_battles==17 && !core_settlements && !A4_WORD(0xff88+651*2));
+    }
+}
+
+static void test_invalid_battle_blocks_reinforcement(void)
+{
+    for (int owner=0; owner<2; ++owner) for (int colocated=0; colocated<2; ++colocated)
+    for (int invalid=0; invalid<7; ++invalid) {
+        setup_reinforcement(2,owner,colocated,0);
+        switch (invalid) {
+        case 0: set_peep_word(0,6,-1); break;
+        case 1: set_peep_word(0,6,no_peeps); break;
+        case 2: set_peep_word(0,6,0); break;
+        case 3: set_peep_word(1,6,2); break;
+        case 4: set_peep_word(1,4,0); break;
+        case 5: peeps[22]=2; break;
+        case 6: peeps[23]=0; break;
+        }
+        peeps[2*22+21]=1; /* Navigation writes the already selected direction. */
+        uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
+        core_move(2);
+        assert(!memcmp(saved,prg_a4_area,sizeof saved));
+        assert(core_battles==17 && !core_settlements);
+    }
+}
+
+static void test_reinforcement_helper_guards(void)
+{
+    /* Direct calls cover invalid arguments that movement itself filters out. */
+    const int invalid_indices[]={-1,4,208,32767};
+    for (unsigned index=0; index<sizeof invalid_indices/sizeof invalid_indices[0]; ++index) {
+        setup_reinforcement(2,0,1,0);
+        uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
+        core_join_battle(invalid_indices[index],0);
+        core_join_battle(2,invalid_indices[index]);
+        assert(!memcmp(saved,prg_a4_area,sizeof saved));
+    }
+    for (int invalid=0; invalid<10; ++invalid) {
+        setup_reinforcement(2,0,1,0);
+        switch (invalid) {
+        case 0: set_peep_word(2,4,-1); break;
+        case 1: set_peep_word(2,4,0); break;
+        case 2: peeps[44]=8; set_peep_word(2,6,0); set_peep_word(0,6,2); break;
+        case 3: peeps[44]=1; break;
+        case 4: peeps[44]=0x42; break;
+        case 5: peeps[45]=2; break;
+        case 6: set_peep_word(0,4,0); break;
+        case 7: peeps[0]=2; break;
+        case 8: peeps[1]=2; break;
+        case 9: peeps[23]=2; break;
+        }
+        uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
+        core_join_battle(2,0);
+        core_join_battle(0,0);
+        assert(!memcmp(saved,prg_a4_area,sizeof saved));
+        assert(core_battles==17 && !core_settlements);
+    }
+    /* A retained leader reference need not point at the source, even colocated. */
+    setup_reinforcement(2,0,1,0); core_leader(0)=1; view_who=2;
+    core_join_battle(2,0);
+    assert(core_leader(0)==1 && view_who==2 && seed==123);
+    assert(peep_word(0,4)==145 && peep_word(1,4)==100 && !peep_word(2,4));
+}
+
+static void test_reinforcement_tick_and_death(void)
+{
+    for (int newcomer=0; newcomer<=2; newcomer+=2) for (int owner=0; owner<2; ++owner) {
+        setup_reinforcement(newcomer,owner,1,0);
+        int first=newcomer==0 ? 1 : 0, recipient=first+owner, opponent=first+1-owner;
+        peeps[first*22]=peeps[(first+1)*22]=8;
+        peeps[first*22+3]=peeps[(first+1)*22+3]=peeps[newcomer*22+3]=0;
+        A4_WORD(0x2fb0)=1;
+        game_tick();
+        assert(!peeps[newcomer*22] && !peep_word(newcomer,4));
+        assert(peep_word(recipient,4)==135 && peep_word(opponent,4)==90);
+        assert(A4_LONG(0x99fe + owner*16)==135 && A4_LONG(0x99fe + (1-owner)*16)==90);
+        assert(core_battles==17 && !core_result);
+        set_peep_word(opponent,4,10);
+        core_battle(first,first+1);
+        assert(peep_word(recipient,4)==125 && !peep_word(opponent,4));
+        assert(peeps[recipient*22]==2 && map_who[650]==recipient+1);
+        assert(core_leader(owner)==recipient+1 && view_who==recipient+1);
+        assert(core_mana(0)==1234 && core_mana(1)==5678); /* Fixture reward is zero. */
+        assert(A4_WORD(0xae7a+owner*2)==(owner ? 6 : 5));
+    }
+    /* Expired waiting attrition may go negative before a current-cell encounter. */
+    for (int colocated=0; colocated<2; ++colocated) for (int population=1; population<=3; ++population) {
+        setup_reinforcement(2,0,colocated,0);
+        peeps[0]=peeps[22]=8; peeps[3]=peeps[25]=peeps[47]=0;
+        peeps[44]=0x42; set_peep_word(2,6,15); set_peep_word(2,12,101);
+        set_peep_word(2,4,population); A4_WORD(0x2fb0)=2;
+        _move_peeps();
+        assert(peep_word(0,4)==(population==3 ? 91 : 90) && peep_word(1,4)==90);
+        assert(!peeps[44] && !peep_word(2,4));
+        assert(peeps[0]==8 && peeps[22]==8 && peep_word(0,6)==1 && peep_word(1,6)==0);
+        assert(map_who[650]==1 && !map_who[649] && core_battles==17);
+        assert(core_leader(0)==(population==3 ? 1 : 0));
+    }
+}
+
+static void test_blocked_reinforcement_retry(void)
+{
+    setup_reinforcement(0,0,1,0);
+    peeps[22]=peeps[44]=8; peeps[3]=peeps[25]=peeps[47]=0;
+    set_peep_word(1,4,1000); set_peep_word(2,4,1000);
+    memset(map_blk,47,4096); map_blk[650]=1;
+    uint8_t pair[44]; memcpy(pair,peeps+22,sizeof pair);
+    core_move(0);
+    assert(peeps[0]==0x42 && peep_word(0,6)==7 && peep_word(0,4)==45);
+    assert(!memcmp(pair,peeps+22,sizeof pair) && map_who[650]==2 && seed==123);
+    map_blk[651]=1; A4_WORD(0x2fb0)=1;
+    for (int tick=1; tick<=8; ++tick) {
+        _move_peeps();
+        assert(peeps[0]==0x42 && peep_word(0,6)==7+tick && peep_word(0,4)==45-tick);
+        assert(peep_word(1,4)==1000-10*tick && peep_word(2,4)==1000-10*tick);
+        assert(map_who[650]==2 && core_leader(0)==1);
+    }
+    _move_peeps();
+    assert(!peeps[0] && !peep_word(0,4));
+    assert(peep_word(1,4)==946 && peep_word(2,4)==910);
+    assert(peeps[22]==8 && peeps[44]==8 && peep_word(1,6)==2 && peep_word(2,6)==1);
+    assert(map_who[650]==2 && !map_who[651] && core_leader(0)==2 && view_who==2);
+    assert(core_battles==17 && !core_settlements);
 }
 
 static void setup_blocked_walker(void)
@@ -1289,7 +1466,11 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[2], "encounter")) test_colocated_hostile_encounter();
         else if (!strcmp(argv[2], "town")) test_no_hidden_town();
         else if (!strcmp(argv[2], "death")) test_colocated_battle_death();
-        else if (!strcmp(argv[2], "third-party")) test_ongoing_battle_blocks_third_party();
+        else if (!strcmp(argv[2], "reinforcement")) test_battle_reinforcement();
+        else if (!strcmp(argv[2], "invalid-battle")) test_invalid_battle_blocks_reinforcement();
+        else if (!strcmp(argv[2], "reinforcement-guards")) test_reinforcement_helper_guards();
+        else if (!strcmp(argv[2], "reinforcement-tick")) test_reinforcement_tick_and_death();
+        else if (!strcmp(argv[2], "reinforcement-retry")) test_blocked_reinforcement_retry();
         else assert(0);
         cleanup_rule_data();
         puts("focused overlap regression: PASS");
@@ -1319,7 +1500,11 @@ int main(int argc, char **argv)
     test_colocated_hostile_encounter();
     test_no_hidden_town();
     test_colocated_battle_death();
-    test_ongoing_battle_blocks_third_party();
+    test_battle_reinforcement();
+    test_invalid_battle_blocks_reinforcement();
+    test_reinforcement_helper_guards();
+    test_reinforcement_tick_and_death();
+    test_blocked_reinforcement_retry();
     test_battle_casualties_and_rewards();
     test_near_town_sculpt();
     test_split_leader_and_occupancy();

@@ -34,7 +34,7 @@ ordinary `_where_do_i_go`/magnet navigation, settlement growth/mana/splitting,
 ordinary `_do_battle`/`_battle_over`, joining, water loss and vertex sculpting.
 Source labels and assembly ranges appear beside each implementation. The
 opponent uses the same settlement/exploration rules, not timer-created units.
-Special powers, knights, multi-party battle joining, original computer
+Special powers, knights, original computer
 power/auto-level logic, celebration animations and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
@@ -203,8 +203,8 @@ terrain/overlay/occupant pixels, transactional load failure, scaled isometric
 sculpt/magnet input, minimap navigation, pause, and reset. Its original top-down
 match regression remains available through an explicit diagnostic toggle. A
 second end-to-end match uses actual isometric clicks and minimap navigation only.
-With supplied real data the isometric sequence reaches victory at tick 8353
-(288 battles, 287 settlement formations, population 111498/0), and legal
+With battle reinforcement and supplied real data the isometric sequence reaches
+victory at tick 7537 (279 battles, 190 settlement formations, population 39278/0), and legal
 self-sculpt reaches defeat at tick 694. Normal and sanitizer suites cover these
 paths; no outcome, population or camera patches are used in the match sequence.
 
@@ -267,7 +267,8 @@ original leader-order quirk is preserved.
 The previously rejected starts `70, 74, 93, 94, 160, 201, 204, 472, 477, 478, 479`
 now retain their original placement rather than being relocated. Hostile current-cell
 encounters are handled before settlement/departure at the existing C movement gate;
-ongoing battles cannot have their partner links overwritten by a third walker.
+ongoing battles absorb reinforcements into the newcomer's existing party without
+replacing either combatant's partner link.
 Settlement guards prevent hidden/duplicate towns while retaining town/split-walker
 sharing. Blocked navigation now sets `0x40` and counter 7. Waiting consumes one
 LAND walking loss per tick, advances frames 101/102, and retries when the previous
@@ -278,7 +279,12 @@ consumer, but the original collision-handshake producer (setting another peep's
 This is bounded state support, not complete original movement timing. The C loop
 retains battle precedence over unsupported mixed battle/wait flags so a partner
 index cannot become a retry counter. Waiting artwork is not yet original-faithful.
-Multi-party battle joining remains migration work.
+Ordinary `_join_battle` adds the newcomer's population (capped at 32000), stronger
+weapon byte, leader/view references and nonzero four-byte metadata to its party,
+then consumes the newcomer. Battle frames and partner links are preserved; joining
+itself rolls no casualties and pays no reward. Invalid battle pairs are rejected.
+Metadata remains opaque original bytes, not a dereferenceable host pointer.
+This does not restore original phased encounter timing or special-knight behavior.
 
 This is world initialization, not 495 completed campaign levels. Independent
 assembly-derived comparisons are cross-implementation evidence, **not** an
@@ -364,8 +370,10 @@ The fixed scenario-0 sequence selects fight tendency, simulates settlement and
 combat, then after tick 6000 sends legal right-clicks to the four corners of
 visible hostile plots every eight ticks. Budget: 12000 ticks, no teleportation
 or population/result edits. With the supplied original grass LAND it reached
-victory at tick 8353 after 288 engagements and 287 settlement formations, with
-111498 friendly population remaining. Normal and ASan/UBSan runs agreed. A
+victory at tick 7537 after 279 engagements and 190 settlement formations, with
+39278 friendly population remaining. Normal and ASan/UBSan runs agreed. Battle
+reinforcement changes this from the earlier 8353-tick observation; no test script
+or winning-state assertion was weakened to recover the old timing. A
 separate legal self-sculpt sequence verifies defeat and reset/quit. The synthetic
 rule fixture may reach defeat sooner; it is not a balance/authenticity fixture.
 At 20 simulation ticks/sec this represents minutes of gameplay, not a claim

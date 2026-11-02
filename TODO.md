@@ -101,8 +101,11 @@ Der exhaustive Originalstart-Test `test-level-local` hat wegen Assetladen/Simula
 ein separates 120s-Zeitlimit. Testdatenisolation und transaktionaler Reset bleiben
 abgesichert. Verifikation der Ueberlappungsetappe: Build, `test`, `test-sanitize`
 und alle 495 Originalstarts (Laden, Rendern, 100 Ticks mit Belegungs-/Kampfinvarianten,
-Reset) normal und unter ASan/UBSan bestanden. Originaldaten-Matchregressionen
-bleiben bei Sieg Tick 8353 und Niederlage Tick 694. Unabhaengiges Review ohne
+Reset) normal und unter ASan/UBSan bestanden. Originaldaten-Matchregressionen dieser historischen Ueberlappungsetappe
+lagen bei Sieg Tick 8353 und Niederlage Tick 694. Mit Kampfverstaerkung liegt der
+erneut gepruefte Sieg bei Tick 7537 (279 Kaempfe, 190 Stadtgruendungen, 39278/0),
+Niederlage weiter Tick 694; Normal-/Sanitizerlaeufe und alle 495 Starts bestanden.
+Unabhaengiges Review ohne
 blockierende Befunde; kurze Integrationstests sind kein Kampagnen-Paritaetsnachweis.
 
 Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319-1325`;
@@ -114,7 +117,7 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 - [x] Blockierte Navigation (`999` -> Flag 0x40, Zaehler 7), Warteframes 101/102, Verlust pro Wartetick und Retry bei vorherigem Zaehler >14 migrieren; keine doppelte Bewegungsverlustbuchung beim Retry.
 - [ ] **Teilweise:** Gesamten Bewohner-Zustandsautomaten abgleichen: Erzeugung der Kollisions-Warteflags 0x20, weitere Flagkombinationen, phasenweise Bewegung, Anfuehrer-/Folgerzustand und Uebergaenge zwischen Bewegung, Stadt und Kampf.
 - [ ] **Teilweise:** Originale Magnetnavigation, Zielwahl und Ausweich-/Fehlversuchspfade vervollstaendigen; direkte Zielrichtung plus Ausweichsuche reicht als Paritaetsnachweis nicht aus.
-- [ ] **Fehlt:** Beitritt zu laufenden Kaempfen einschliesslich richtiger Partei, Verstaerkung, Belegung und Zustandsuebernahme.
+- [x] Gewoehnlichen Beitritt zu laufenden Kaempfen migrieren: richtige Partei verstaerken, Population bis 32000, Waffen/Anfuehrer/Ansicht/Metadaten uebertragen, bestehende Kampfpartner und Frames erhalten. Ungueltige Paare sicher ablehnen; originale phasenweise Begegnungszeitpunkte und Sonderfiguren bleiben offen.
 - [ ] **Fehlt:** Ritter, Sonderfiguren und `_do_funny`-/`_do_place_funny`-Ereignisse, auch bei erschoepften 208 normalen Bewohnerplaetzen.
 - [ ] **Fehlt:** Sumpf-Folgen fuer Bewohner und Entfernung benutzten flachen Sumpfs.
 - [ ] **Teilweise:** Kriegs-/Armageddonzustand, Aufloesung von Siedlungen und Sonderziele mit den neuen Kraeften verbinden.
