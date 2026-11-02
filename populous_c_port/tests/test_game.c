@@ -5919,7 +5919,138 @@ static void test_battle_frame_deaths(void)
     assert(peep_word(1,12)==102 && peep_word(2,12)==130);
 }
 
-static void test_battle_frame_render(void)
+static void setup_battle_entry(int attacker, int owner, int destination)
+{
+    setup_heading_battle(attacker,owner);
+    int defender=3-attacker;
+    memset(map_blk,1,4096); memset(map_bk2,0,4096);
+    memset(map_who,0,4096);
+    for (int person=1; person<=2; ++person) {
+        peeps[person*22]=2;
+        memset(peeps+person*22+14,0,4);
+        set_peep_word(person,4,100);
+        set_peep_word(person,6,123);
+        set_peep_word(person,12,35);
+    }
+    set_peep_word(attacker,8,destination ? 649 : 650);
+    map_who[650]=defender+1;
+    if (destination) map_who[649]=attacker+1;
+    core_target(owner)=651; core_tendency(owner)=0;
+}
+
+static void test_battle_entry_state(void)
+{
+    /* Missing either call, wrong partner/owner, always resetting, or changing
+     * host movement/occupancy must fail the full-A4 oracle. Raw byte headings
+     * deliberately cannot resolve to a host target and must stay untouched. */
+    const int bases[2][2][2]={{{70,134},{130,138}},{{70,130},{134,138}}};
+    const int flags[]={0,1,2,0x12,0x61};
+    const int offsets[]={-1,0,1,2,-32768,32767,-1};
+    const int successors[]={0,1,2,0,0,0,0};
+    for (int destination=0; destination<2; ++destination)
+    for (int attacker=1; attacker<=2; ++attacker) for (int owner=0; owner<2; ++owner)
+    for (int first=0; first<=4; ++first) for (int second=0; second<=4; ++second)
+    for (unsigned state=0; state<sizeof flags/sizeof flags[0]; ++state)
+    for (int frame=0; frame<7; ++frame) {
+        setup_battle_entry(attacker,owner,destination);
+        int defender=3-attacker, base=bases[owner][first!=0][second!=0];
+        if (first) peeps[attacker*22+13+first]=0x80;
+        if (second) peeps[defender*22+13+second]=0x80;
+        peeps[defender*22]=flags[state];
+        int old_first=frame<4 ? base+offsets[frame] : offsets[frame];
+        int reverse=6-frame;
+        int old_second=reverse<4 ? base+offsets[reverse] : offsets[reverse];
+        set_peep_word(attacker,12,old_first); set_peep_word(defender,12,old_second);
+        uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+        memcpy(before,prg_a4_area,sizeof before);
+        peeps[attacker*22]=8;
+        peeps[defender*22]=destination ? flags[state]|8 : (flags[state]&7)|8;
+        set_peep_word(attacker,6,defender); set_peep_word(defender,6,attacker);
+        peeps[attacker*22+21]=1;
+        if (destination) { map_who[649]=0; set_peep_word(attacker,8,650); }
+        else map_who[650]=attacker+1;
+        set_peep_word(attacker,12,base+successors[frame]);
+        int defender_frame=destination && flags[state]==0x12 ? old_second : base+successors[reverse];
+        set_peep_word(defender,12,defender_frame);
+        memcpy(expected,prg_a4_area,sizeof expected); memcpy(prg_a4_area,before,sizeof before);
+        core_move(attacker);
+        assert(peep_word(attacker,12)==base+successors[frame]);
+        assert(peep_word(defender,12)==defender_frame);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(core_battles==18 && !core_settlements && !core_result);
+    }
+    /* Current-cell admission precedes the nonpositive-attacker guard; destination
+     * admission still follows it. Destination defenders retain the host's lack
+     * of a population gate, but zero alone must skip frame initialization. */
+    for (int destination=0; destination<2; ++destination)
+    for (int population=-1; population<=0; ++population) {
+        setup_battle_entry(1,0,destination); set_peep_word(1,4,population);
+        core_move(1);
+        assert(peep_word(1,12)==(!destination && population ? 70 : 35));
+        assert(peep_word(2,12)==(destination ? 35 : 70));
+        assert(peep_word(1,4)==population && peep_word(2,4)==100 && seed==123);
+        assert(core_battles==(destination ? 17 : 18));
+        setup_battle_entry(1,0,1); set_peep_word(2,4,population);
+        core_move(1);
+        assert(peep_word(1,12)==70 && peep_word(2,12)==(population ? 70 : 35));
+        assert(peep_word(2,4)==population && core_battles==18 && seed==123);
+    }
+}
+
+static void test_battle_entry_wait_retry(void)
+{
+    for (int owner=0; owner<2; ++owner) {
+        setup_battle_entry(1,owner,0);
+        peeps[22]=0x42; set_peep_word(1,6,15); set_peep_word(1,12,101);
+        set_peep_word(1,4,1); A4_WORD(0x2fb0)=2;
+        uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+        memcpy(before,prg_a4_area,sizeof before);
+        /* Retry population is -1 at entry: its retained dead frame proves raw
+         * nonzero (not positive) was passed, despite subsequent host cleanup. */
+        peeps[22]=0; set_peep_word(1,4,0); set_peep_word(1,6,0); set_peep_word(1,12,70);
+        peeps[22+21]=1;
+        set_peep_word(2,6,0); set_peep_word(2,10,0); set_peep_word(2,12,1);
+        core_leader(owner)=0; core_target(owner)=650;
+        A4_WORD(owner ? 0xae76 : 0xae78)=650;
+        set_peep_word(3,6,99); map_who[900]=4;
+        memcpy(expected,prg_a4_area,sizeof expected); memcpy(prg_a4_area,before,sizeof before);
+        _move_peeps();
+        assert(peep_word(1,12)==70 && !peep_word(1,4));
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(core_battles==18 && !core_settlements && !core_result);
+    }
+}
+
+static void test_battle_entry_town_reward(void)
+{
+    for (int destination=0; destination<2; ++destination)
+    for (int attacker=1; attacker<=2; ++attacker) for (int owner=0; owner<2; ++owner)
+    for (int negative=0; negative<2; ++negative) {
+        setup_heading_town(attacker,owner,negative ? 9 : 10);
+        int defender=3-attacker, base=owner ? 134 : 130;
+        peeps[attacker*22]=2; peeps[defender*22]=1;
+        set_peep_word(attacker,8,destination ? 649 : 650);
+        if (destination) map_who[649]=attacker+1;
+        core_target(owner)=650+!destination; core_tendency(owner)=0;
+        core_move(attacker);
+        assert(peep_word(attacker,12)==base && peep_word(defender,12)==base);
+        assert(peeps[attacker*22]==8 && peeps[defender*22]==9);
+        assert(seed==123 && core_mana(owner)==1000 && core_mana(1-owner)==2000);
+        assert(peep_word(attacker,4)==100 && peep_word(defender,4)==(negative ? 9 : 10));
+        core_battle(1,2);
+        assert(peeps[attacker*22]==6 && peep_word(attacker,12)==85 && peep_word(attacker,4)==90);
+        assert(peeps[defender*22]==0x80 && peep_word(defender,4)==1 && peep_word(defender,6)==40);
+        assert(peep_word(defender,12)==(negative ? 34 : base));
+        assert(core_mana(owner)==(negative ? 1103 : 1100));
+        assert(core_mana(1-owner)==(negative ? 1897 : 1900));
+        assert(A4_WORD(0xae7a+owner*2)==8 && seed==28505 && core_battles==18);
+        assert(map_who[650]==attacker+1 && map_blk[650]==66 && map_bk2[650]==56);
+        assert(A4_WORD(0x2ff8)==(negative ? 0 : 1234));
+        assert(A4_WORD(0x2fb2)==(negative ? 0 : 2345));
+    }
+}
+
+static void test_battle_frame_render_and_entry(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
     const int frames[]={70,71,72,130,131,132,134,135,136,138,139,140};
@@ -5935,29 +6066,33 @@ static void test_battle_frame_render(void)
             sprite_case(8,owner,invalid[frame],headings[raw],turn,1,15,0,0,0,
                         turn<4 ? 138 : 139,192,56);
     }
-    /* Actual current-cell and immediate destination encounters leave frames
-     * untouched. Both must remain visible before the first casualty pass. */
-    for (int destination=0; destination<2; ++destination) for (int phase=0; phase<2; ++phase) {
+    /* Canonical new battles render their initialized base, not the legacy
+     * phase fallback, before any casualty/RNG pass in either encounter path. */
+    const int bases[2][4]={{70,130,134,138},{70,134,130,138}};
+    for (int destination=0; destination<2; ++destination) for (int phase=0; phase<2; ++phase)
+    for (int owner=0; owner<2; ++owner) for (int heads=0; heads<4; ++heads) {
         assert(game_reset(0)); sprite_scene(); game_turn=phase*4;
         int cell=16*64+16;
         for (int person=0; person<2; ++person) {
-            peeps[person*22]=2; peeps[person*22+1]=person;
+            peeps[person*22]=2; peeps[person*22+1]=owner^person;
             set_peep_word(person,4,100);
             set_peep_word(person,8,cell+(person && destination));
             set_peep_word(person,12,person ? 35 : 0);
+            if (heads&(1<<person)) peeps[person*22+17]=0x80;
         }
-        assert(set_peep_reference(0,1));
+        core_target(owner)=cell+1; core_tendency(owner)=0; core_leader(owner)=1;
         map_who[cell+destination]=2;
         seed=123; core_move(0);
         assert((peeps[0]&8) && (peeps[22]&8) && seed==123);
-        assert(peep_word(0,12)==0 && peep_word(1,12)==35);
+        assert(peep_word(0,12)==bases[owner][heads] && peep_word(1,12)==bases[owner][heads]);
+        assert(peep_word(0,4)==100 && peep_word(1,4)==100);
         assert(peep_word(0,8)==cell+destination);
         assert(map_who[cell+destination]==(destination ? 2 : 1));
         uint8_t expected[64000], before[sizeof prg_a4_area];
         int occupant=map_who[cell+destination];
         map_who[cell+destination]=0;
         draw_original(16,16); memcpy(expected,game_pixels,sizeof expected);
-        sprite_mask_oracle(expected,phase ? 139 : 138,destination ? 208 : 192,destination ? 64 : 56);
+        sprite_mask_oracle(expected,bases[owner][heads],destination ? 208 : 192,destination ? 64 : 56);
         map_who[cell+destination]=occupant;
         memcpy(before,prg_a4_area,sizeof before); draw_original(16,16);
         assert(!memcmp(before,prg_a4_area,sizeof before)); assert_sprite_pixels(expected);
@@ -5967,10 +6102,16 @@ static void test_battle_frame_render(void)
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--battle-entry")) {
+        test_battle_entry_state(); test_battle_entry_wait_retry(); test_battle_entry_town_reward();
+        test_heading_town(); test_battle_reinforcement(); test_blocked_reinforcement_retry();
+        prepare_rule_data(); test_battle_frame_render_and_entry(); cleanup_rule_data();
+        puts("focused battle entry: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--battle-frames")) {
         test_battle_frame_helper(); test_battle_frame_integration(); test_battle_frame_deaths();
         test_heading_battle();
-        prepare_rule_data(); test_battle_frame_render(); cleanup_rule_data();
+        prepare_rule_data(); test_battle_frame_render_and_entry(); cleanup_rule_data();
         puts("focused battle frames: PASS"); return 0;
     }
     if (argc==3 && !strcmp(argv[1],"--knight")) { test_knight_original(argv[2]); return 0; }
@@ -6104,6 +6245,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_battle_entry_state(); test_battle_entry_wait_retry(); test_battle_entry_town_reward();
     test_battle_frame_helper(); test_battle_frame_integration(); test_battle_frame_deaths();
     test_knight_input(); test_knight_guards(); test_knight_cast();
     test_heading_battle(); test_celebration();
@@ -6140,7 +6282,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_swamp_render();
     test_original_reset();
     test_original_graphics_output();
-    test_special_sprites(); test_battle_frame_render();
+    test_special_sprites(); test_battle_frame_render_and_entry();
     test_isometric_match();
     test_colocated_hostile_encounter();
     test_no_hidden_town();

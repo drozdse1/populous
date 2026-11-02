@@ -1177,6 +1177,8 @@ static void core_move(int person)
             peeps[person*22] = 8;
             peeps[occupant*22] = (peeps[occupant*22]&7)|8;
             set_peep_word(person,6,occupant); set_peep_word(occupant,6,person);
+            core_frame_battle(person,occupant,peep_word(person,4)!=0);
+            core_frame_battle(occupant,person,peep_word(occupant,4)!=0);
             map_who[position] = person+1; /* _set_battle asm:6636-6656 */
             ++core_battles;
             return;
@@ -1209,6 +1211,8 @@ static void core_move(int person)
         if (map_who[position] == person+1) map_who[position] = 0;
         set_peep_word(person,8,destination); peeps[person*22] = 8; peeps[other*22] |= 8;
         set_peep_word(person,6,other); set_peep_word(other,6,person); ++core_battles;
+        core_frame_battle(person,other,peep_word(person,4)!=0);
+        core_frame_battle(other,person,peep_word(other,4)!=0);
         return;
     }
     if (map_who[position] == person+1) map_who[position] = 0;
@@ -2231,7 +2235,7 @@ static void draw_original(int view_x, int view_y)
         } else if (flags==1) { frame=64+phase+owner*2; sx=left+16; sy=top-8; }
         else if (flags&8) {
             int stored=peep_word(person,12);
-            /* Fresh encounters retain the host fallback until their first combat. */
+            /* Preserve a render-only fallback for malformed or legacy frames. */
             frame=((stored>=70 && stored<=72) || (stored>=130 && stored<=132) ||
                    (stored>=134 && stored<=136) || (stored>=138 && stored<=140)) ? stored : 138+phase;
             sx=left+16; sy=top-8;
