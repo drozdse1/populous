@@ -973,7 +973,14 @@ static void test_magnet_war_water_and_bounds(void)
         assert(core_magnet_direction(0)==65); /* Water and fallback 47 rejected. */
         assert((int8_t)peeps[21]==-65 && peep_word(0,8)==650);
         peeps[21]=0;
-        assert(!memcmp(before,prg_a4_area,sizeof before)); /* No queue/sculpt/mana/RNG. */
+        if (active) {
+            /* Newly admitted war/metadata-zero source producer, and nothing
+             * else: retain the complete no-terrain/mana/RNG snapshot check. */
+            assert(A4_DISP(0x82b6)[0]==1 && A4_DISP(0x82b7)[0]==10 && A4_DISP(0x82b8)[0]==10);
+            assert(A4_WORD(0x82be)==1);
+            memset(A4_DISP(0x82b6),0,3); A4_WORD(0x82be)=0;
+        }
+        assert(!memcmp(before,prg_a4_area,sizeof before)); /* Nonwar still has no queue. */
         memset(map_blk,47,4096); map_blk[650]=15; map_blk[651]=0;
         assert(core_magnet_direction(0)==999); /* War does not admit fallback 47. */
     }
@@ -3473,8 +3480,218 @@ static void test_terrain_mailbox(void)
     test_terrain_mailbox_raise(); test_terrain_mailbox_isolation();
 }
 
+/* Bounded source producers only: no Armageddon activation, controller-1 AI,
+ * heading-pointer interpretation or swamp command production is admitted. */
+static void war_terrain_fixture(void)
+{
+    setup_magnet_walker(0);
+    memset(map_blk,47,4096); map_blk[650]=15; map_blk[715]=0;
+    memset(map_bk2,0,4096);
+    A4_WORD(0xae80)=1; prg_quit=0;
+    set_peep_word(0,12,7);
+    for (int owner=0;owner<2;++owner) {
+        A4_WORD(0x82c6+owner*46)=1;
+        A4_LONG(0x9a02+owner*16)=100;
+    }
+}
+static void assert_war_command(int owner, int position)
+{
+    assert(A4_DISP(0x82b6+owner*46)[0]==1);
+    assert(A4_DISP(0x82b7+owner*46)[0]==(position&63));
+    assert(A4_DISP(0x82b8+owner*46)[0]==position/64);
+    assert(A4_WORD(0x82be + owner*46)==1);
+}
+static void test_war_terrain_bounds(void)
+{
+    /* Cell producer cannot accept vertex-only coordinate 64 or unsafe owners. */
+    const int invalid[][2]={{-1,650},{2,650},{255,650},{0,-1},{1,4096},{0,32767}};
+    for (unsigned sample=0;sample<sizeof invalid/sizeof invalid[0];++sample) {
+        war_terrain_fixture();
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        core_queue_war_raise(invalid[sample][0],invalid[sample][1]);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    const int corners[]={0,63,4032,4095};
+    for (int owner=0;owner<2;++owner) for (int corner=0;corner<4;++corner) {
+        war_terrain_fixture(); core_queue_war_raise(owner,corners[corner]);
+        assert_war_command(owner,corners[corner]); assert(seed==123);
+    }
+    war_terrain_fixture(); A4_WORD(0xae80)=0;
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    core_queue_war_raise(0,650); assert(!memcmp(before,prg_a4_area,sizeof before));
+}
+static void test_war_terrain_magnet(void)
+{
+    for (int fallback=0;fallback<2;++fallback) {
+        war_terrain_fixture(); core_target(0)=715;
+        if (fallback) map_blk[651]=15;
+        terrain_mailbox_write(0,255,50,51); A4_WORD(0x82be)=77;
+        uint8_t terrain[65*65*2],blocks[4096];
+        memcpy(terrain,A4_DISP(0xae86),sizeof terrain); memcpy(blocks,map_blk,sizeof blocks);
+        core_move(0);
+        assert_war_command(0,650); /* Before move, never destination 651 or 715. */
+        assert(peep_word(0,8)==(fallback ? 651 : 650));
+        assert(peeps[0]==(fallback ? 2 : 0x42));
+        if (!fallback) assert(peep_word(0,6)==7);
+        assert(!memcmp(terrain,A4_DISP(0xae86),sizeof terrain));
+        assert(!memcmp(blocks,map_blk,sizeof blocks));
+        assert(seed==123 && core_mana(0)==100 && !core_battles && !core_settlements);
+    }
+    /* War bypasses controller, all mode bits (including fatal water), UI/tool,
+     * tendency, mana and power permission. Nonwar controller 1 stays inert. */
+    const int wars[]={0,1,0x8000,0xffff};
+    for (int owner=0;owner<2;++owner) for (int war=0;war<4;++war)
+    for (int controller=0;controller<3;++controller) for (int bits=0;bits<32;++bits) {
+        war_terrain_fixture(); peeps[1]=owner; core_target(owner)=715;
+        A4_WORD(0xae80)=wars[war]; A4_WORD(0x82bc+owner*46)=controller;
+        game_mode=bits; mode=3; core_tool=core_swamp_selected=1;
+        core_tendency(owner)=3; A4_LONG(0x9a02+owner*16)=0x80000000u;
+        A4_WORD(0x82c4+owner*46)=0;
+        assert(core_magnet_direction(0)==999);
+        if (war) assert_war_command(owner,650); else assert_mailbox_empty();
+        assert(seed==123 && A4_LONG(0x9a02+owner*16)==0x80000000u);
+    }
+    for (int byte=14;byte<18;++byte) {
+        war_terrain_fixture(); core_target(0)=715; peeps[byte]=0xff;
+        assert(core_magnet_direction(0)==999); assert_mailbox_empty();
+        assert(peeps[byte]==0xff && seed==123); /* Opaque, not heading pointers. */
+    }
+    war_terrain_fixture(); core_target(0)=715; map_blk[715]=47;
+    assert(core_magnet_direction(0)==65); assert_mailbox_empty(); /* Direct rock returns first. */
+    war_terrain_fixture(); core_target(0)=715; map_blk[651]=47;
+    assert(core_magnet_direction(0)==999); assert_war_command(0,650); /* Fallback rock rejects. */
+    /* Source-valid 1 (off-map), not water 3: no mailbox at the top edge. */
+    war_terrain_fixture(); set_peep_word(0,8,0); core_target(0)=0;
+    assert(core_magnet_direction(0)==999); assert_mailbox_empty();
+}
+static void test_war_terrain_old_water(void)
+{
+    war_terrain_fixture(); map_blk[650]=0;
+    _move_peeps();
+    assert(peep_word(0,4)==98 && peeps[0]==18); assert_mailbox_empty();
+    _move_peeps();
+    assert(peep_word(0,4)==96 && peeps[0]==18); assert_war_command(0,650);
+    assert(core_vertex(10,10)==0 && seed==123 && core_mana(0)==100);
+    for (int owner=0;owner<2;++owner) for (int war=0;war<2;++war)
+    for (int fatal=0;fatal<2;++fatal) for (int land=0;land<2;++land)
+    for (int no_build=0;no_build<2;++no_build) for (int controller=0;controller<3;++controller) {
+        war_terrain_fixture(); peeps[1]=owner; peeps[0]=18;
+        A4_WORD(0xae80)=war; game_mode=26|(no_build ? 4 : 0)|fatal;
+        A4_WORD(0x82bc+owner*46)=controller; A4_WORD(0x82c4+owner*46)=0;
+        A4_LONG(0x9a02+owner*16)=UINT32_MAX;
+        map_blk[650]=land ? 15 : 0;
+        /* Metadata guard belongs ONLY to magnet, not this entry flag producer. */
+        peeps[14]=0xff;
+        _move_peeps();
+        if (war && !fatal) assert_war_command(owner,650); else assert_mailbox_empty();
+        assert(peep_word(0,4)==(land ? 100 : fatal ? 0 : 98));
+        if (land) assert(peeps[0]==2 && peep_word(0,12)==1);
+        assert(core_vertex(10,10)==0 && seed==123 && core_mana(owner)==-1);
+    }
+    /* Existing host battle exemption and recovery stay unchanged, even with
+     * flag16: no new source fatal-on-land or return-to-land attrition imported. */
+    war_terrain_fixture(); peeps[0]=24; map_blk[650]=0;
+    _move_peeps(); assert_mailbox_empty(); assert(peep_word(0,4)==100);
+    /* Land primary-water queues despite fatal mode; old wet fatal never queues. */
+    war_terrain_fixture(); game_mode=1;
+    _move_peeps(); assert_war_command(0,650); assert(peep_word(0,4)==99);
+    war_terrain_fixture(); game_mode=1; peeps[0]=18; map_blk[650]=0;
+    _move_peeps(); assert_mailbox_empty(); assert(!peep_word(0,4));
+}
+static void test_war_terrain_order_and_death(void)
+{
+    for (int reverse=0;reverse<2;++reverse) for (int separate=0;separate<2;++separate) {
+        war_terrain_fixture(); no_peeps=2;
+        memcpy(peeps+22,peeps,22); peeps[23]=separate;
+        memset(map_who,0,4096);
+        int first=reverse ? 780 : 650, last=reverse ? 650 : 780;
+        set_peep_word(0,8,first); set_peep_word(1,8,last);
+        map_who[first]=1; map_who[last]=2;
+        map_blk[780]=15; map_blk[845]=0;
+        map_blk[651]=map_blk[781]=15;
+        _move_peeps();
+        assert_war_command(0,separate ? first : last);
+        if (separate) assert_war_command(1,last);
+        else assert(!A4_DISP(0x82b6+46)[0]);
+        assert(peep_word(0,8)==first+1 && peep_word(1,8)==last+1);
+        for (int row=0;row<=64;++row) for (int column=0;column<=64;++column)
+            assert(core_vertex(column,row)==0); /* Full movement finishes before execution. */
+        assert(seed==123 && core_mana(0)==100 && core_mana(1)==100);
+        core_consume_terrain_mailboxes();
+        assert(core_vertex(last%64,last/64)==1);
+        assert(core_vertex(first%64,first/64)==separate);
+        /* Source consumer executes owner 0 then 1, regardless of walker cells. */
+        assert(A4_WORD(0x2f8a)==last%64 && A4_WORD(0x2f8e)==last/64);
+        assert_mailbox_empty(); assert(seed==123);
+    }
+    /* Earlier producer is discarded if the last enemy dies later in the pass. */
+    war_terrain_fixture(); no_peeps=2;
+    peeps[22]=18; peeps[23]=1; set_peep_word(1,4,1); set_peep_word(1,8,900);
+    map_blk[900]=0; map_who[900]=2;
+    game_tick();
+    assert(core_result==1 && !peep_word(1,4) && peep_word(0,4)==99);
+    assert(core_vertex(10,10)==0 && core_vertex(4,14)==0 && seed==123);
+    assert_mailbox_empty();
+    /* A dying old-water producer belongs to the owner, not the person. */
+    war_terrain_fixture(); no_peeps=3; peeps[0]=18; map_blk[650]=0; set_peep_word(0,4,1);
+    for (int person=1;person<3;++person) {
+        peeps[person*22]=0x80; peeps[person*22+1]=person-1;
+        set_peep_word(person,4,100); set_peep_word(person,6,100);
+        set_peep_word(person,8,900+person); map_who[900+person]=person+1;
+    }
+    game_tick();
+    assert(!peep_word(0,4) && !core_result && core_population(0)==100 && core_population(1)==100);
+    assert(core_vertex(10,10)==1 && map_blk[650]==17 && core_mana(0)==100 && seed==123);
+    assert_mailbox_empty();
+}
+static void test_war_terrain_obstacle(void)
+{
+    /* Start-only fixture: two height-1 islands separated by a four-vertex sea
+     * gap. No terrain/population/command injection after this setup. This is a
+     * movement prerequisite for later usercast, NOT full original-match parity. */
+    war_terrain_fixture(); memset(map_who,0,4096); memset(map_blk,0,4096);
+    for (int row=30;row<=34;++row) for (int column=26;column<=37;++column)
+        if (column<=29 || column>=34) core_set_vertex(column,row,1);
+    _make_map(); no_peeps=2; memset(peeps,0,208*22);
+    for (int person=0;person<2;++person) {
+        int position=32*64+(person ? 35 : 28);
+        peeps[person*22]=2; peeps[person*22+1]=person;
+        peeps[person*22+2]=1; peeps[person*22+3]=100;
+        set_peep_word(person,4,1000); set_peep_word(person,8,position);
+        set_peep_word(person,12,7); map_who[position]=person+1;
+    }
+    assert(map_blk[32*64+31]==0 && core_vertex(31,32)==0);
+    int raised=0,first_battle=0;
+    for (int tick=1;tick<=2000 && !core_result;++tick) {
+        game_tick();
+        if (core_vertex(31,32)>0) raised=1;
+        if (core_battles && !first_battle) first_battle=tick;
+        if (!core_battles) assert(seed==123);
+        assert_mailbox_empty();
+        for (int row=0;row<=64;++row) for (int column=0;column<=64;++column)
+            assert(core_vertex(column,row)>=0 && core_vertex(column,row)<=8);
+    }
+    printf("war obstacle: raised=%d battle_tick=%d outcome=%d tick=%d populations=%d/%d\n",
+           raised,first_battle,core_result,game_turn,core_population(0),core_population(1));
+    assert(raised && first_battle==41 && core_result==3 && game_turn==45);
+}
+static void test_war_terrain(void)
+{
+    test_war_terrain_bounds(); test_war_terrain_magnet(); test_war_terrain_old_water();
+    test_war_terrain_order_and_death(); test_war_terrain_obstacle();
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--war-terrain")) {
+        test_war_terrain(); puts("focused war terrain producers: PASS"); return 0;
+    }
+    if (argc==2 && !strcmp(argv[1],"--war-water")) {
+        test_war_terrain_old_water(); return 0;
+    }
+    if (argc==2 && !strcmp(argv[1],"--war-obstacle")) {
+        test_war_terrain_obstacle(); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--terrain-mailbox")) {
         test_terrain_mailbox();
         prepare_rule_data(); test_terrain_defaults(); cleanup_rule_data();
@@ -3562,6 +3779,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_war_terrain();
     test_terrain_mailbox();
     test_magnet();
     test_war_state();

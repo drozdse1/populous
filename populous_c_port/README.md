@@ -62,8 +62,8 @@ land has no capacity, their four-byte heading metadata is nonzero, or war is set
 frame and movement delta, removes its existing town footprint and skips growth,
 splitting and movement for that update. Population, occupancy, metadata and
 leader/view references are retained. Water, battle and waiting dispatch retain
-their existing precedence. This does not enable Armageddon casting: queued terrain
-actions are still required alongside the ordinary war navigation below.
+their existing precedence. Armageddon casting is still disabled; its ordinary
+war navigation and deferred water-assistance prerequisites are described below.
 
 Ordinary magnet navigation uses the original nine-entry direction table: arriving
 at the target attempts north rather than switching to exploration. A new leader
@@ -72,8 +72,8 @@ The clockwise fallback records the opposite direction, and complete failure
 updates avoidance history before the existing blocked-navigation wait. Direct
 block-47 steps are allowed during war, never as fallback steps. Invalid leader
 references safely fall back to the magnet without repairing unrelated records.
-War overrides ordinary tendency selection. Heading-pointer targets and automatic
-terrain-command production remain unsupported; this is not complete Armageddon behavior.
+War overrides ordinary tendency selection. Heading-pointer targets remain
+unsupported; this is not complete Armageddon behavior.
 An independent assembly-table harness matched 10,616,832 direction/terrain/history
 cases. Focused/default tests, ASan/UBSan, all 495 original starts and original-data
 matches passed. This comparison is not a trace of execution on an Amiga.
@@ -85,12 +85,25 @@ controller/divisor latch does not gate command execution. Raw raises use origina
 recursive bounds and local map rebuilding, not the UI sculpt helper; war makes
 them free, while normal execution charges the original word-sized build cost,
 including 10 mana for a saturated vertex. Diagnostic `P` is not editor permission.
-Navigation/drowning producers and other command opcodes remain separate work.
+Nonwar producers and other command opcodes remain separate work.
 Starts restore controllers 0/1, divisors 1/selected speed and latches 1/0.
 Runtime initialization rejects zero speed transactionally; the disk parser still
 retains that byte. For controller 1, a corrupt zero divisor discards that owner's
 command and logs an error without dividing or clearing its latch. Controller 0
 does not use that divisor. No replacement cadence is guessed.
+
+War-only water assistance now produces those deferred raises. Ordinary
+metadata-zero magnet navigation queues the walker's current cell when its primary
+step is water, then continues fallback navigation. Residents already carrying
+bit `0x10` queue before the port's water loss or land recovery, unless fatal-water
+mode or the existing battle exemption applies. Newly assigned water flags do not
+produce in that same pass. Later residents overwrite earlier same-owner commands;
+no terrain changes until the consumer runs. Nonwar AI and heading producers remain
+disabled. Existing immediate drowning/recovery differences are unchanged.
+A controlled two-island fixture raises a route solely through movement-produced
+commands, enters combat at tick 41 and reaches mutual extinction at tick 45 in
+normal and sanitized builds. This is a prerequisite integration test, not an
+original campaign trace or a human-playability claim.
 
 The original `_load_ground` reads gameplay tables from `landN` files, including
 `population_add`, `mana_add`, `weapons_add`, `battle_add1` and `battle_add2`

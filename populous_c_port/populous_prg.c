@@ -851,9 +851,20 @@ static int core_explore(int person)
     for (int index = 0; index < 5; ++index) if (distance[index] != 5) return choices[index];
     return 999;
 }
+/* _move_magnet_peeps asm:5293-5327 / _move_peeps asm:3505-3543.
+ * Owner mailboxes overwrite unconditionally; the tick consumer owns execution. */
+static void core_queue_war_raise(int owner, int position)
+{
+    if (!A4_WORD(0xae80) || owner < 0 || owner > 1 || position < 0 || position >= 4096) return;
+    int displacement = owner * 46;
+    A4_DISP(0x82b6 + displacement)[0] = 1;
+    A4_DISP(0x82b7 + displacement)[0] = position & 63;
+    A4_DISP(0x82b8 + displacement)[0] = position / 64;
+    A4_WORD(0x82be + displacement) = 1;
+}
 /* _move_magnet_peeps asm:4982-5465, ordinary metadata-zero navigation.
  * Nonzero Amiga metadata remains opaque: use this bounded magnet path, not
- * an invented heading/knight target or a native pointer. Queue producers wait. */
+ * an invented heading/knight target or a native pointer. */
 static int core_magnet_direction(int person)
 {
     int owner = peep_owner(person), position = peep_word(person,8), leader = core_leader(owner)-1;
@@ -879,6 +890,9 @@ static int core_magnet_direction(int person)
         peeps[person*22+21] = (uint8_t)delta;
         return delta;
     }
+    if (valid == 3 && !peeps[person*22+14] && !peeps[person*22+15] &&
+        !peeps[person*22+16] && !peeps[person*22+17])
+        core_queue_war_raise(owner,position);
     int direction = primary-1;
     for (int attempt = 0; attempt < 8; ++attempt, ++direction) {
         if (direction < 0) direction = 7;
@@ -2122,11 +2136,15 @@ static void _move_peeps(void)
         core_target(0) = core_target(1) = 0x820;
         A4_WORD(0xae78) = A4_WORD(0xae76) = 0x820;
     }
-    /* Ordinary walker/town/battle/remnant consumption; special producers disabled. */
+    /* Ordinary walker/town/battle/remnant consumption; heading/swamp and nonwar AI producers disabled. */
     for (int person = 0; person < no_peeps; ++person) {
         if (peep_word(person,4) <= 0) continue;
         int flags = peeps[person*22];
         int position = peep_word(person,8);
+        /* Entry flag, before water mutation or land recovery (asm:3481-3543).
+         * Keep host battle exemption and immediate damage/recovery unchanged. */
+        if ((flags&16) && !(flags&8) && !(game_mode&GAME_MODE_WATER_FATAL))
+            core_queue_war_raise(peep_owner(person),position);
         if (!map_blk[position] && !(flags&8)) {
             if (flags&1) core_set_town(person,1);
             peeps[person*22] = 18;
