@@ -2164,7 +2164,27 @@ static void draw_original(int view_x, int view_y)
         if (owner>1 || !graphics_tile(u,v,map_alt[cell],&left,&top)) continue;
         int frame=graphics_walker_frame(peep_word(person,10),owner,phase);
         int sx=left+8, sy=top-8+(map_blk[cell]==15 ? 0 : 4);
-        if (flags==1) { frame=64+phase+owner*2; sx=left+16; sy=top-8; }
+        if (flags==5 || flags==6 || flags==0x80 || flags==0x22 ||
+            flags==0x42 || flags==0x62 || flags==2 || flags==18) {
+            /* Presence spans all four host reference bytes, including opaque
+             * values. Select only canonical states; mixed flags keep the fallback. */
+            uint32_t raw_heading;
+            memcpy(&raw_heading,peeps+person*22+14,sizeof raw_heading);
+            int headed=raw_heading!=0;
+            if (flags==5 || flags==6) {
+                frame=(int)peep_word(person,12)+32*headed+4*owner;
+                sx=left+16; sy=top-8;
+            } else if (flags==0x80) {
+                frame=105+((uint16_t)game_turn&3); sy=top-8;
+            } else if (flags==0x22 || flags==0x42 || flags==0x62) {
+                frame=(int)peep_word(person,12)+24*headed+2*owner;
+                sx=left+16; sy=top-8;
+            } else if (flags==2) frame+=32*headed;
+            else frame=93+((uint16_t)game_turn&3)+16*headed+4*owner;
+            /* Bound the selected frame, not the stored simulation frame. The
+             * source's extra Y lift is already top-8 (_draw_it, asm:15831). */
+            if (frame<0 || frame>=143) continue;
+        } else if (flags==1) { frame=64+phase+owner*2; sx=left+16; sy=top-8; }
         else if (flags&8) { frame=138+phase; sx=left+16; sy=top-8; }
         else if (flags&16) frame=93+((uint16_t)game_turn&3)+owner*4;
         graphics_blit(game_pixels,64000,320,200,small,frame,sx,sy);
@@ -2284,8 +2304,8 @@ static int core_frame_walker(int person)
         return previous >= 7;
     }
     /* asm:5833-5845: exact-5/6 simulation consumers, not general mask 0x04.
-     * Keep the signed incremented word even on completion; no sprite-art
-     * parity is claimed. */
+     * Keep the signed incremented word even on completion; rendering selects
+     * the corresponding original sprites separately. */
     if (flags == 5 || flags == 6) {
         int frame = (int16_t)(previous+1);
         set_peep_word(person,12,frame);

@@ -35,7 +35,7 @@ ordinary `_do_battle`/`_battle_over`, joining, water loss and vertex sculpting.
 Source labels and assembly ranges appear beside each implementation. The
 opponent uses the same settlement/exploration rules, not timer-created units.
 Knight creation, original computer
-power/auto-level logic, celebration animations and exact Amiga movement
+power/auto-level logic and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
 Population is bounded at 32000; ordinary mana helpers clamp to -250..1999999.
@@ -70,8 +70,15 @@ uses the same celebration frames, but completion clears `0x04` and recalculates
 its town frame from current capacity instead of switching to a walker frame.
 It does not repaint the footprint or run growth, mana, splitting or evacuation
 in that update; ordinary town processing resumes on the following update.
-Broader mixed flags and visible celebration art remain separate work;
-heading-involved victories now produce these celebration states.
+Heading-involved victories produce these celebration states. The renderer uses
+the original celebration and remnant sprites, plus headed walker/wait/water
+variants for their canonical states. Heading presence reads all four host bytes,
+not the original pointer's high halfword. Sprite selection does not mutate A4
+or add interpolation; mixed-state and simulation-driven battle-frame parity
+remain separate work. `--special-sprites` compares literal frame/anchor cases
+against an independent pixel-mask oracle, including clipping, hidden residents,
+non-flat terrain and an exact 143-frame sheet. Full normal/sanitized suites,
+original-data matches and all 495 starts passed with unchanged test time limits.
 The focused `--celebration` tests cover signed frame boundaries, full-A4 state
 preservation, later-resident progress, pause/result/quit gates and water precedence.
 Normal and sanitized full suites, original-data matches and all 495 starts passed.

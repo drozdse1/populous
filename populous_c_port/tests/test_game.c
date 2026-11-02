@@ -2003,6 +2003,18 @@ static void fixture_pixels(const char *name,size_t size,int keep)
     for (size_t pixel=0;pixel<size;++pixel) assert(fputc(keep ? 1 : (pixel%15)+1,file)!=EOF);
     assert(!fclose(file));
 }
+/* Exactly the loader minimum, with frame-identifying pixels and both mask modes. */
+static void fixture_sprite_pixels(const char *name, int keep)
+{
+    char path[512]; snprintf(path,sizeof path,"%s/pixels/%s",test_data_directory,name);
+    FILE *file=fopen(path,"wb"); assert(file);
+    for (int frame=0;frame<143;++frame) for (int pixel=0;pixel<256;++pixel) {
+        int value=keep ? pixel%3==0 : (pixel%3==0 ? 0 :
+            pixel%3==1 ? frame%16 : frame/16);
+        assert(fputc(value,file)!=EOF);
+    }
+    assert(!fclose(file));
+}
 static void prepare_rule_data(void)
 {
     if (getenv("POPULOUS_TEST_REAL_DATA")) return;
@@ -2025,8 +2037,8 @@ static void prepare_rule_data(void)
     assert(setenv("POPULOUS_DATA_DIR",test_data_directory,1)==0);
     char path[512]; snprintf(path,sizeof path,"%s/pixels",test_data_directory); assert(!mkdir(path,0700));
     fixture_pixels("qaz.pic.indices.u8",64000,0);
-    fixture_pixels("sprites0.dat.indices.u8",GFX_SPRITE_PIXELS,0);
-    fixture_pixels("sprites0.dat.keep.u8",GFX_SPRITE_PIXELS,1);
+    fixture_sprite_pixels("sprites0.dat.indices.u8",0);
+    fixture_sprite_pixels("sprites0.dat.keep.u8",1);
     for (int land=0;land<4;++land) {
         char name[64]; snprintf(name,sizeof name,"land%d.indices.u8",land); fixture_pixels(name,GFX_LAND_PIXELS,0);
         snprintf(name,sizeof name,"land%d.keep.u8",land); fixture_pixels(name,GFX_LAND_PIXELS,1);
@@ -2170,6 +2182,186 @@ static void test_original_graphics_output(void)
     click.button.x=224; click.button.y=96; /* vertex (6,11), local (0,5), h=8 */
     game_handle_event(&click);
     assert(core_vertex(6,11)==7);
+    _closeall(); SDL_Quit();
+}
+
+/* This oracle uses raw asset bytes, never the production selector, projection
+ * or blitter. The ROI excludes the overview (x<=127); picking is disabled. */
+static void sprite_mask_oracle(uint8_t *expected, int frame, int left, int top)
+{
+    if (frame<0) return; /* Literal -1 expectations mean no occupant. */
+    assert(frame<143 && (size_t)(frame+1)*256<=game_assets->sprite_size);
+    for (int row=0;row<16;++row) for (int column=0;column<16;++column) {
+        int x=left+column,y=top+row;
+        if (x<0 || x>=320 || y<0 || y>=200) continue;
+        int source=frame*256+row*16+column, destination=y*320+x;
+        if (!game_assets->sprite_keep[source]) expected[destination]=0;
+        expected[destination]|=game_assets->sprite_indices[source];
+    }
+}
+static void assert_sprite_pixels(const uint8_t *expected)
+{
+    for (int y=0;y<200;++y) for (int x=128;x<320;++x) {
+        int pixel=y*320+x;
+        if (game_pixels[pixel]!=expected[pixel]) {
+            fprintf(stderr,"sprite mismatch flags=%02x owner=%u stored=%d turn=%d at %d,%d: got %u want %u\n",
+                peeps[0],peeps[1],peep_word(0,12),game_turn,x,y,game_pixels[pixel],expected[pixel]);
+            assert(0);
+        }
+        assert(prg_screen->chunky_buffer[pixel]==prg_screen->palette[expected[pixel]]);
+    }
+}
+static void sprite_scene(void)
+{
+    memset(map_who,0,4096); memset(map_bk2,0,4096);
+    memset(map_blk,15,4096); memset(map_alt,0,4096);
+    memset(peeps,0,208*22); no_peeps=2;
+    xoff=16; yoff=16; mousex=-100; mousey=-100;
+    core_tendency(0)=core_tendency(1)=1;
+}
+static void sprite_case(int flags, int owner, int stored, uint32_t heading,
+                        int turn, int delta, int block, int u, int v, int altitude,
+                        int want_frame, int want_x, int want_y)
+{
+    sprite_scene();
+    int cell=(16+v)*64+16+u;
+    peeps[0]=flags; peeps[1]=owner;
+    set_peep_word(0,4,100); set_peep_word(0,8,cell);
+    set_peep_word(0,10,delta); set_peep_word(0,12,stored);
+    set_peep_word(1,4,100); set_peep_word(1,8,4000);
+    memcpy(peeps+14,&heading,sizeof heading);
+    game_turn=turn; map_blk[cell]=block; map_alt[cell]=altitude;
+    uint8_t expected[64000],before[sizeof prg_a4_area];
+    memcpy(before,prg_a4_area,sizeof before);
+    draw_original(16,16);
+    assert(!memcmp(before,prg_a4_area,sizeof before));
+    memcpy(expected,game_pixels,sizeof expected);
+    sprite_mask_oracle(expected,want_frame,want_x,want_y);
+    map_who[cell]=1;
+    memcpy(before,prg_a4_area,sizeof before);
+    draw_original(16,16);
+    assert(!memcmp(before,prg_a4_area,sizeof before));
+    assert_sprite_pixels(expected);
+}
+static void test_special_sprite_frames(void)
+{
+    /* Each physical byte, valid target (2), self (1), and opaque values all
+     * mean present. In particular, the high half or pointer validity is not a gate. */
+    uint32_t headings[]={0,1,2,UINT32_MAX,0,0,0,0};
+    for (int byte=0;byte<4;++byte) ((uint8_t *)&headings[4+byte])[byte]=0x80;
+    const int celebration[2][2][3]={{{85,86,87},{117,118,119}},{{89,90,91},{121,122,123}}};
+    const int waiting[2][2][2]={{{101,102},{125,126}},{{103,104},{127,128}}};
+    const int water[2][2][4]={{{93,94,95,96},{109,110,111,112}},{{97,98,99,100},{113,114,115,116}}};
+    const int remnant[]={105,106,107,108};
+    const int town[2][2]={{64,65},{66,67}};
+    const int directions[]={-65,-64,-63,1,65,64,63,-1};
+    const int walkers[2][2][2][8]={
+        {{{0,2,4,6,8,10,12,14},{1,3,5,7,9,11,13,15}},
+         {{32,34,36,38,40,42,44,46},{33,35,37,39,41,43,45,47}}},
+        {{{16,18,20,22,24,26,28,30},{17,19,21,23,25,27,29,31}},
+         {{48,50,52,54,56,58,60,62},{49,51,53,55,57,59,61,63}}}
+    };
+    const int wait_flags[]={0x22,0x42,0x62};
+    for (int owner=0;owner<2;++owner) for (int raw=0;raw<8;++raw)
+    for (int phase=0;phase<2;++phase) {
+        int headed=raw!=0;
+        for (int stored=0;stored<3;++stored) for (int flags=5;flags<=6;++flags)
+            sprite_case(flags,owner,85+stored,headings[raw],phase*4,1,15,0,0,0,
+                celebration[owner][headed][stored],192,56);
+        for (int state=0;state<3;++state) for (int stored=0;stored<2;++stored)
+            sprite_case(wait_flags[state],owner,101+stored,headings[raw],phase*4,1,15,0,0,0,
+                waiting[owner][headed][stored],192,56);
+        sprite_case(1,owner,32767,headings[raw],phase*4,1,15,0,0,0,town[owner][phase],192,56);
+        sprite_case(9,owner,-1,headings[raw],phase*4,1,15,0,0,0,phase ? 139 : 138,192,56);
+        for (int turn=0;turn<4;++turn) {
+            sprite_case(0x80,owner,32767,headings[raw],phase*4+turn,1,15,0,0,0,remnant[turn],184,56);
+            for (int block=0;block<2;++block) for (int direction=0;direction<8;++direction)
+                sprite_case(18,owner,7,headings[raw],phase*4+turn,directions[direction],block ? 0 : 15,0,0,0,
+                    water[owner][headed][turn],184,block ? 60 : 56);
+        }
+        for (int direction=0;direction<8;++direction) for (int block=0;block<2;++block)
+            sprite_case(2,owner,7,headings[raw],phase*4,directions[direction],block ? 0 : 15,0,0,0,
+                walkers[owner][headed][phase][direction],184,block ? 60 : 56);
+    }
+    sprite_case(5,1,42,1,0,1,15,0,0,0,78,192,56);
+    /* Malformed stored frames are not repaired or narrowed before arithmetic. */
+    const int stored[]={0,142,143,-1,32767};
+    const int bounds[4][5]={{0,142,-1,-1,-1},{4,-1,-1,3,-1},
+                           {32,-1,-1,31,-1},{36,-1,-1,35,-1}};
+    const int wait_bounds[4][5]={{0,142,-1,-1,-1},{2,-1,-1,1,-1},
+                                {24,-1,-1,23,-1},{26,-1,-1,25,-1}};
+    for (int owner=0;owner<2;++owner) for (int headed=0;headed<2;++headed)
+    for (int sample=0;sample<5;++sample) {
+        for (int flags=5;flags<=6;++flags)
+            sprite_case(flags,owner,stored[sample],headed,0,1,15,0,0,0,bounds[headed*2+owner][sample],192,56);
+        for (int state=0;state<3;++state)
+            sprite_case(wait_flags[state],owner,stored[sample],headed,0,1,15,0,0,0,wait_bounds[headed*2+owner][sample],192,56);
+    }
+    /* Unsupported flags retain the old battle-before-water-before-walker cascade. */
+    const int fallback[][3]={{0,23,0},{4,23,0},{0x86,23,0},{0x88,139,1},
+        {0x16,100,0},{0x28,139,1},{0x62+1,23,0},{0x90,100,0},{0xff,139,1}};
+    for (unsigned sample=0;sample<sizeof fallback/sizeof fallback[0];++sample)
+        sprite_case(fallback[sample][0],1,32767,UINT32_MAX,7,1,0,0,0,0,
+            fallback[sample][1],fallback[sample][2] ? 192 : 184,fallback[sample][2] ? 56 : 60);
+    /* Current-cell coordinates, height lift, top clipping and far visible corners. */
+    sprite_case(6,1,42,1,0,1,15,0,0,8,78,192,-8);
+    sprite_case(2,1,7,1,4,1,0,0,0,8,55,184,-4);
+    sprite_case(0x80,0,0,0,3,1,15,7,0,0,108,296,112);
+    sprite_case(5,0,85,0,0,1,15,7,7,0,85,192,168);
+    sprite_case(0x22,0,101,0,0,1,15,3,2,3,101,208,72);
+    sprite_case(5,1,42,1,0,1,0,0,0,0,78,192,56);
+    sprite_case(0x80,1,0,1,3,1,0,0,0,0,108,184,56);
+    sprite_case(0x62,1,102,1,4,1,0,0,0,0,128,192,56);
+    for (int sample=0;sample<5;++sample) {
+        sprite_case(2,1,stored[sample],1,4,1,0,0,0,0,55,184,60);
+        sprite_case(18,1,stored[sample],1,7,1,0,0,0,0,116,184,60);
+    }
+}
+static void test_special_sprite_order_and_guards(void)
+{
+    sprite_scene(); game_turn=4;
+    uint8_t expected[64000],before[sizeof prg_a4_area];
+    draw_original(16,16); memcpy(expected,game_pixels,sizeof expected);
+    /* Reverse slot order: the earlier cell's celebration overlaps the later
+     * cell's walker. Hidden colocated slot 2 must not be drawn. */
+    no_peeps=3;
+    for (int person=0;person<3;++person) {
+        peeps[person*22]=person ? 5 : 2;
+        set_peep_word(person,4,100); set_peep_word(person,8,16*64+16+(person==0));
+        set_peep_word(person,10,1); set_peep_word(person,12,person==2 ? 86 : 85);
+    }
+    map_who[16*64+16]=2; map_who[16*64+17]=1;
+    sprite_mask_oracle(expected,85,192,56);
+    sprite_mask_oracle(expected,7,200,64);
+    memcpy(before,prg_a4_area,sizeof before); draw_original(16,16);
+    assert(!memcmp(before,prg_a4_area,sizeof before)); assert_sprite_pixels(expected);
+    for (int guard=0;guard<5;++guard) {
+        sprite_scene(); game_turn=0;
+        draw_original(16,16); memcpy(expected,game_pixels,sizeof expected);
+        map_who[16*64+16]=1; peeps[0]=5; peeps[1]=0;
+        set_peep_word(0,4,100); set_peep_word(0,8,16*64+16); set_peep_word(0,12,85);
+        if (guard==0) no_peeps=0;
+        if (guard==1) set_peep_word(0,4,0);
+        if (guard==2) set_peep_word(0,8,16*64+17);
+        if (guard==3) peeps[1]=2;
+        if (guard==4) map_who[16*64+16]=255;
+        memcpy(before,prg_a4_area,sizeof before); draw_original(16,16);
+        assert(!memcmp(before,prg_a4_area,sizeof before)); assert_sprite_pixels(expected);
+    }
+}
+static void test_special_sprites(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    if (!getenv("POPULOUS_TEST_REAL_DATA")) assert(game_assets->sprite_size==143*256);
+    test_special_sprite_frames(); test_special_sprite_order_and_guards();
+    /* Even on a larger valid sheet, selected specials are bounded to 143. */
+    size_t original_size=game_assets->sprite_size;
+    game_assets->sprite_size=GFX_SPRITE_PIXELS;
+    memset(game_assets->sprite_indices+143*256,14,4*256);
+    memset(game_assets->sprite_keep+143*256,0,4*256);
+    sprite_case(5,0,143,0,0,1,15,0,0,0,-1,192,56);
+    sprite_case(0x42,0,143,0,0,1,15,0,0,0,-1,192,56);
+    game_assets->sprite_size=original_size;
     _closeall(); SDL_Quit();
 }
 
@@ -5278,6 +5470,10 @@ static void test_heading_navigation(void)
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--special-sprites")) {
+        prepare_rule_data(); test_special_sprites(); cleanup_rule_data();
+        puts("focused special sprites: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--heading-town")) {
         test_heading_town(); puts("focused heading town completion: PASS"); return 0;
     }
@@ -5432,6 +5628,7 @@ int main(int argc, char **argv)
     test_swamp_render();
     test_original_reset();
     test_original_graphics_output();
+    test_special_sprites();
     test_isometric_match();
     test_colocated_hostile_encounter();
     test_no_hidden_town();

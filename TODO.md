@@ -198,7 +198,8 @@ Belege: `populous_c_port/populous_prg.c:1030-1062`, `:1509-1543`;
 - [ ] **Fehlt:** Originalschrift dekodieren und verwenden; eingebettetes `_font_data` und separates Launcher-`font.dat` vergleichen, nicht ungeprueft gleichsetzen.
 - [ ] **Fehlt:** Originalen Mauszeiger und Auswahl-/Zielanzeigen statt Ersatzkreuz integrieren.
 - [ ] **Fehlt:** Bereits extrahierte 32x32-Grosssprites in Laufzeit-Assets, Zeichnen und passende Spielzustaende integrieren.
-- [ ] **Teilweise:** Originale Bewegungsinterpolation, Kampf-, Sonderfiguren-, Effekt- und Feieranimationen statt Zellenspruengen/verkuerzten Framefolgen.
+- [x] Originalsprites fuer exakte Feierflags 5/6, Brandreste 0x80 und kanonische Heading-Geh-/Warte-/Wasserzustaende anbinden; originale Frameoffsets und Anker, volle Vierbyte-Praesenz statt Pointer-Halbwort, unveraenderter A4-Zustand beim Zeichnen.
+- [ ] **Teilweise:** Originale Bewegungsinterpolation, Kampf-, weitere Sonderfiguren- und Effektanimationen sowie gemischte Darstellungsflags statt Zellenspruengen/verkuerzten Framefolgen.
 - [ ] **Fehlt:** Mundanimation aus `mouths.pic`, inklusive Frames, Palette und Aufruf-/Anzeigesequenzen.
 - [ ] **Pruefen:** Ueberdeckung, Clipping, Vorderkanten, Sonderterrain, Minimap und Auswahl in allen Hoehen-/Kameralagen anhand von Originalbildern vergleichen.
 - [ ] **Pruefen:** Alle tatsaechlich sichtbaren Palettenwechsel und Sprite-/Bildschirmsonderpfade erfassen und im Renderer abbilden; Hardwareimplementierung siehe separater Abschnitt.
