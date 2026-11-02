@@ -37,10 +37,10 @@ opponent uses the same settlement/exploration rules, not timer-created units.
 Original computer power/auto-level logic and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
-Ordinary population helpers cap at 32000; ordinary mana helpers clamp to -250..1999999.
-Raw terrain commands, single-winner battle completion and already-submerged
-non-combat water loss instead preserve their source word/32-bit arithmetic, using
-unsigned operations rather than C signed overflow.
+Merge helpers cap population at 32000; general mana helpers clamp to -250..1999999.
+Raw terrain commands, single-winner battle completion, ordinary town economy and
+already-wet non-combat water loss instead preserve their source word/32-bit
+arithmetic, using unsigned operations rather than C signed overflow.
 
 The exact `0x80` peep remnant now consumes its original unsigned 16-bit timer
 (`src/populous_prg.asm:4283-4315`): it claims only empty occupancy and is removed
@@ -91,6 +91,21 @@ splitting and movement for that update. Population, occupancy, metadata and
 leader/view references are retained. Water, battle and waiting dispatch retain
 their existing precedence. Gameplay Armageddon connects these ordinary war
 navigation and deferred water-assistance paths; special-figure parity is separate.
+
+Ordinary town economy retains its eight-turn cadence but uses the original
+arithmetic widths (`src/populous_prg.asm:3863-3882,4007-4014`): sign-extended table
+mana wraps at 32 bits, and population growth wraps at 16 bits after the existing
+split attempt. The ordinary completion checks the signed population and removes
+nonpositive towns, including on non-economy turns. Evacuation remains an immediate
+return that bypasses this check. Thus an eligible direct town update can revive
+a nonpositive population through growth; the resident-loop entry still skips
+initially nonpositive records. Existing footprint timing, split-record differences,
+AI selection/capacity overrides and dry `0x11` town recovery remain separate work.
+This is not full town-consumer or original cleanup parity. `--town-economy`
+checks literal word/longword boundaries, cadence, low-byte weapons, direct revival
+and evacuation bypass, split/full-slot behavior, and resident-pass death bookkeeping.
+Focused/full normal and sanitized suites, original-data matches and all 495
+original starts passed; existing match outcomes remain unchanged.
 
 Ordinary magnet navigation uses the original nine-entry direction table: arriving
 at the target attempts north rather than switching to exploration. A new leader

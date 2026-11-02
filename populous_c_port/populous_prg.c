@@ -1215,9 +1215,14 @@ static void core_settle_tick(int person)
     core_frame_town(person,capacity); core_set_town(person,0);
     /* asm:3667-3677: reclaim a departed walker's slot, never another occupant. */
     if (!map_who[position]) map_who[position] = person+1;
-    if ((uint16_t)game_turn&7) return;
+    if ((uint16_t)game_turn&7) {
+        if (peep_word(person,4)<=0) core_remove(person);
+        return;
+    }
     int level = peep_word(person,12)-32;
-    core_add_mana(owner,A4_WORD(0x2fb6+level*2)); peeps[person*22+3] = A4_WORD(0x2fcc+level*2)&255;
+    /* asm:3863-3882: EXT.L signed word then ADD.L, without host mana bounds. */
+    A4_LONG(0x9a02+owner*16)+=(uint32_t)(int32_t)(int16_t)A4_WORD(0x2fb6+level*2);
+    peeps[person*22+3] = A4_WORD(0x2fcc+level*2)&255;
     if (peep_word(person,4) > capacity) {
         int child;
         for (child = 0; child < 208 && peep_word(child,4)>0; ++child) {}
@@ -1234,8 +1239,10 @@ static void core_settle_tick(int person)
             if (peeps[person*22+2] < 4) ++peeps[person*22+2];
         }
     }
-    int population = peep_word(person,4)+A4_WORD(0x2fe2+level*2);
-    set_peep_word(person,4,population > 32000 ? 32000 : population);
+    /* asm:4007-4014,4308-4315: ADD.W can revive or kill; test after storing.
+     * Evacuation above bypasses this completion (asm:3633). */
+    set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)+(uint16_t)A4_WORD(0x2fe2+level*2)));
+    if (peep_word(person,4)<=0) core_remove(person);
 }
 /* _raise_point/_lower_point: the same 8-neighbour slope constraint, bounded work. */
 static int core_sculpt(int owner, int column, int row, int direction)
