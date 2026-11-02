@@ -1825,7 +1825,7 @@ static void test_swamp_input(void)
         assert(core_mana(0)==(owner==0 ? 1000 : 6000));
         assert(core_mana(1)==(owner==1 ? 1000 : 6000));
     }
-    /* A valid target clears selection even if execution now rejects it. */
+    /* Mana/permission rejection consumes the target; war blocks before clear. */
     for (int failure=0;failure<3;++failure) {
         assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,640,512);
         A4_LONG(0x9a02)=6000; A4_WORD(0x82c4)=0x11;
@@ -1836,9 +1836,13 @@ static void test_swamp_input(void)
         uint16_t old_seed=seed;
         iso_click_vertex(20,20,SDL_BUTTON_LEFT);
         assert(seed==old_seed && A4_LONG(0xae72)==0 && core_vertex(20,20)==1);
+        assert(core_swamp_selected==(failure==2));
         A4_LONG(0x9a02)=10000; A4_WORD(0x82c4)=0x11; A4_WORD(0xae80)=0;
         iso_click_vertex(20,20,SDL_BUTTON_LEFT);
-        assert(core_vertex(20,20)==2 && core_mana(0)==9986);
+        if (failure==2) {
+            assert(core_swamp_selected==0);
+            assert(core_vertex(20,20)==1 && core_mana(0)==5000 && A4_LONG(0xae72)==50);
+        } else assert(core_vertex(20,20)==2 && core_mana(0)==9986);
     }
     /* Repeats/missing spell cannot arm; P never permits a free cast. */
     for (int paint=0;paint<2;++paint) for (int missing=0;missing<2;++missing) {
@@ -1924,8 +1928,234 @@ static void test_swamp_render(void)
     _closeall(); SDL_Quit();
 }
 
+static unsigned quake_draws;
+static uint16_t quake_values[162];
+static uint16_t quake_random(void)
+{
+    assert(quake_draws<162);
+    return quake_values[quake_draws++];
+}
+static void quake_fixture(int height)
+{
+    memset(prg_a4_area,0,sizeof prg_a4_area);
+    for (int row=0;row<=64;++row) for (int column=0;column<=64;++column)
+        core_set_vertex(column,row,height);
+    memset(map_blk,15,4096); memset(map_bk2,42,4096); memset(map_alt,2,4096);
+    for (int cell=0;cell<4096;++cell) A4_WORD(0xff88+cell*2)=91;
+    A4_LONG(0x8492)=2500; A4_LONG(0x9a02)=A4_LONG(0x9a12)=10000;
+    A4_WORD(0x82c4)=A4_WORD(0x82c4+46)=8;
+    A4_WORD(0x2f88)=123; seed=321; core_result=0; player=0;
+    quake_draws=0; memset(quake_values,0,sizeof quake_values);
+}
+static void test_original_lower(void)
+{
+    /* Zero/bounds are no-ops; each changed vertex increments a wrapping word. */
+    quake_fixture(0);
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    assert(original_lower_point(0,0)==0);
+    assert(original_lower_point(-1,0)==0 && original_lower_point(65,64)==0);
+    assert(original_lower_point(0,-1)==0 && original_lower_point(64,65)==0);
+    assert(!memcmp(before,prg_a4_area,sizeof before));
+    quake_fixture(8);
+    A4_WORD(0x2f88)=-1;
+    A4_WORD(0x2f8a)=A4_WORD(0x2f8c)=32;
+    A4_WORD(0x2f8e)=A4_WORD(0x2f90)=32;
+    assert(original_lower_point(32,32)==7 && A4_WORD(0x2f88)==0);
+    assert(original_lower_point(32,32)==6 && A4_WORD(0x2f88)==9);
+    assert(A4_WORD(0x2f8a)==31 && A4_WORD(0x2f8c)==33);
+    assert(A4_WORD(0x2f8e)==31 && A4_WORD(0x2f90)==33);
+    for (int row=0;row<=64;++row) for (int column=0;column<=64;++column) {
+        int distance=abs(column-32)>abs(row-32) ? abs(column-32) : abs(row-32);
+        assert(core_vertex(column,row)==(distance==0 ? 6 : distance==1 ? 7 : 8));
+    }
+    static const int corners[4][2]={{0,0},{64,0},{0,64},{64,64}};
+    for (int corner=0;corner<4;++corner) {
+        quake_fixture(8);
+        int x=corners[corner][0],y=corners[corner][1];
+        A4_WORD(0x2f8a)=A4_WORD(0x2f8c)=x;
+        A4_WORD(0x2f8e)=A4_WORD(0x2f90)=y;
+        for (int height=7;height>=0;--height) assert(original_lower_point(x,y)==height);
+        assert(original_lower_point(x,y)==0);
+        assert(A4_WORD(0x2f88)==327); /* 123 + 8+7*3+6*5+...+1*15. */
+        assert(A4_WORD(0x2f8a)==(x ? 57 : 0) && A4_WORD(0x2f8c)==(x ? 64 : 7));
+        assert(A4_WORD(0x2f8e)==(y ? 57 : 0) && A4_WORD(0x2f90)==(y ? 64 : 7));
+        for (int row=0;row<=64;++row) for (int column=0;column<=64;++column) {
+            int distance=abs(column-x)>abs(row-y) ? abs(column-x) : abs(row-y);
+            assert(core_vertex(column,row)==(distance<8 ? distance : 8));
+        }
+    }
+}
+static void test_quake_cast(void)
+{
+    for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint)
+    for (int gate=0;gate<13;++gate) {
+        quake_fixture(1); paint_map=paint;
+        int side=owner,x=20,y=30;
+        if (gate==0) side=-1;
+        if (gate==1) side=2;
+        if (gate==2) x=-1;
+        if (gate==3) x=57;
+        if (gate==4) y=-1;
+        if (gate==5) y=57;
+        if (gate==6) A4_LONG(0x9a02+owner*16)=2499;
+        if (gate==7) A4_WORD(0x82c4+owner*46)=0xfff7;
+        if (gate==8) pause=1;
+        if (gate==9) A4_WORD(0xae80)=1;
+        if (gate>=10) core_result=gate-9;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(!core_quake(side,x,y,quake_random));
+        assert(!quake_draws && !memcmp(before,prg_a4_area,sizeof before));
+    }
+    for (int owner=0;owner<2;++owner) for (int local=0;local<2;++local)
+    for (int paint=0;paint<2;++paint) for (int height=0;height<2;++height) {
+        quake_fixture(height); player=local; paint_map=paint;
+        A4_LONG(0x9a02+owner*16)=2500; A4_LONG(0xae72)=17;
+        assert(core_quake(owner,20,30,quake_random));
+        assert(core_mana(owner)==0 && core_mana(1-owner)==10000);
+        assert(A4_LONG(0xae72)==(owner==local ? 42u : 17u) && A4_WORD(0x2fac)==76);
+        assert(quake_draws==(height ? 162u : 0u) && seed==321 && A4_WORD(0x2f88)==123);
+        assert(A4_WORD(0x2f8a)==20 && A4_WORD(0x2f8c)==20);
+        assert(A4_WORD(0x2f8e)==30 && A4_WORD(0x2f90)==30);
+    }
+    /* Column-major, second pass sees first-pass mutations: all initially-one
+     * vertices lowered to zero consume only 81 draws, not a fixed 162. */
+    static const int corners[4][2]={{0,0},{56,0},{0,56},{56,56}};
+    for (int corner=0;corner<4;++corner) {
+        quake_fixture(1);
+        for (int draw=0;draw<162;++draw) quake_values[draw]=2+draw%3;
+        int x=corners[corner][0],y=corners[corner][1];
+        assert(core_quake(0,x,y,quake_random));
+        assert(quake_draws==81 && A4_WORD(0x2f88)==204);
+        for (int row=0;row<=64;++row) for (int column=0;column<=64;++column)
+            assert(core_vertex(column,row)==!(column>=x && column<=x+8 && row>=y && row<=y+8));
+        assert(A4_WORD(0x2f8a)==(x ? 56 : 1) && A4_WORD(0x2f8c)==(x ? 63 : 8));
+        assert(A4_WORD(0x2f8e)==(y ? 56 : 1) && A4_WORD(0x2f90)==(y ? 63 : 8));
+    }
+    /* Mixed script: raise the third vertex, lower the first vertex in the
+     * second column, then raise the first again on pass two. */
+    quake_fixture(1); quake_values[2]=1; quake_values[9]=2; quake_values[81]=1;
+    assert(core_quake(0,20,30,quake_random));
+    assert(quake_draws==162 && A4_WORD(0x2f88)==127);
+    /* The second-pass raise also repairs the adjacent zero before its visit. */
+    assert(core_vertex(20,32)==2 && core_vertex(21,30)==1 && core_vertex(20,30)==2);
+    assert(core_vertex(22,30)==1 && core_vertex(20,31)==1);
+    /* Raising twice immediately grows previously-zero neighbours before their
+     * turn; later draws must see them, not an initial height snapshot. */
+    quake_fixture(0); core_set_vertex(20,30,1);
+    quake_values[0]=quake_values[4]=1;
+    assert(core_quake(0,20,30,quake_random));
+    assert(quake_draws==13 && A4_WORD(0x2f88)==157);
+    assert(core_vertex(20,30)==3 && core_vertex(21,31)==2 && core_vertex(22,32)==1);
+    assert(A4_WORD(0x2f8a)==18 && A4_WORD(0x2f8c)==22);
+    assert(A4_WORD(0x2f8e)==28 && A4_WORD(0x2f90)==32);
+    /* Regional conversion resets changed map steps only and never touches
+     * occupancy/peeps. No core_sculpt restrictions, price or town repaint. */
+    quake_fixture(1); game_mode=GAME_MODE_NO_BUILD|GAME_MODE_BUILD_ONLY_UP|GAME_MODE_BUILD_NEAR_TOWNS;
+    quake_values[0]=2;
+    no_peeps=1; peeps[0]=1; set_peep_word(0,4,100); set_peep_word(0,8,30*64+20);
+    map_who[30*64+20]=1;
+    uint8_t people[208*22],occupancy[4096];
+    memcpy(people,peeps,sizeof people); memcpy(occupancy,map_who,sizeof occupancy);
+    assert(core_quake(0,20,30,quake_random));
+    assert(core_mana(0)==7500 && A4_WORD(0x2f88)==124 && quake_draws==161);
+    assert(!memcmp(people,peeps,sizeof people) && !memcmp(occupancy,map_who,sizeof occupancy));
+    for (int row=0;row<64;++row) for (int column=0;column<64;++column) {
+        int cell=row*64+column;
+        if (column>=19 && column<=20 && row>=29 && row<=30) {
+            assert(A4_WORD(0xff88+cell*2)==0 && map_bk2[cell]==42 && map_alt[cell]==0);
+            static const int blocks[2][2]={{27,23},{29,30}};
+            assert(map_blk[cell]==blocks[row-29][column-19]);
+        } else {
+            assert(A4_WORD(0xff88+cell*2)==91 && map_bk2[cell]==42 && map_alt[cell]==2 && map_blk[cell]==15);
+        }
+    }
+}
+
+static void test_quake_input(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_q;
+    /* Q executes immediately at the viewport, not at the mouse or S target.
+     * Exact-cost admission and P must not become an editor bypass. */
+    for (int diagnostic=0;diagnostic<2;++diagnostic) for (int tool=0;tool<2;++tool)
+    for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint) {
+        assert(game_reset(0)); diagnostic_view=diagnostic; core_tool=tool;
+        player=owner; paint_map=paint; core_swamp_selected=1;
+        xoff=20; yoff=30; mousex=mousey=0;
+        memset(A4_DISP(0xae86),0,65*65*2);
+        A4_LONG(0x9a02+owner*16)=2500; A4_WORD(0x82c4+owner*46)=8;
+        uint16_t old_seed=seed;
+        game_handle_event(&key);
+        assert(core_mana(owner)==0 && A4_LONG(0xae72)==25 && A4_WORD(0x2fac)==76);
+        assert(seed==old_seed && core_swamp_selected && core_tool==tool);
+        assert(A4_WORD(0x2f8a)==20 && A4_WORD(0x2f8e)==30);
+        assert(xoff==20 && yoff==30);
+        game_render();
+        assert(strstr(SDL_GetWindowTitle(prg_screen->window),"Q quake 2500"));
+    }
+    /* Moving the viewport moves the actual footprint despite a fixed mouse. */
+    for (int diagnostic=0;diagnostic<2;++diagnostic) for (int view=0;view<2;++view) {
+        assert(game_reset(0)); diagnostic_view=diagnostic;
+        xoff=view ? 40 : 10; yoff=view ? 40 : 20; mousex=mousey=0;
+        A4_LONG(0x9a02)=5000; A4_WORD(0x82c4)=8; seed=123;
+        int column=xoff,row=yoff;
+        game_handle_event(&key);
+        assert(core_mana(0)==2500 && A4_WORD(0xae72)==25 && seed!=123);
+        assert(core_vertex(column,row+1)!=1 || core_vertex(column,row+2)!=1);
+        for (int y=0;y<=64;++y) for (int x=0;x<=64;++x)
+            if (x<column-8 || x>column+16 || y<row-8 || y>row+16)
+                assert(core_vertex(x,y)==1);
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        key.key.repeat=1; game_handle_event(&key); key.key.repeat=0;
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        game_render(); assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    /* Every rejected key preserves the entire emulated state and armed tool. */
+    for (int diagnostic=0;diagnostic<2;++diagnostic) for (int paint=0;paint<2;++paint)
+    for (int gate=0;gate<9;++gate) {
+        assert(game_reset(0)); diagnostic_view=diagnostic; paint_map=paint;
+        xoff=20; yoff=30; core_tool=1; core_swamp_selected=1;
+        A4_LONG(0x9a02)=2500; A4_WORD(0x82c4)=8;
+        if (gate==0) key.key.repeat=1;
+        if (gate==1) pause=1;
+        if (gate==2) A4_WORD(0xae80)=1;
+        if (gate==3) core_result=1;
+        if (gate==4) core_result=2;
+        if (gate==5) core_result=3;
+        if (gate==6) A4_WORD(0x82c4)=0xfff7;
+        if (gate==7) A4_LONG(0x9a02)=2499;
+        if (gate==8) player=2;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        game_handle_event(&key); key.key.repeat=0;
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(core_tool==1 && core_swamp_selected==1);
+        assert(core_result==(gate>=3 && gate<=5 ? gate-2 : 0));
+    }
+    assert(game_reset(0));
+    key.key.keysym.sym=SDLK_d; game_handle_event(&key);
+    for (int step=0;step<100;++step) {
+        key.key.keysym.sym=SDLK_RIGHT; game_handle_event(&key);
+        key.key.keysym.sym=SDLK_DOWN; game_handle_event(&key);
+    }
+    assert(diagnostic_view && xoff==56 && yoff==56);
+    for (int step=0;step<100;++step) {
+        key.key.keysym.sym=SDLK_LEFT; game_handle_event(&key);
+        key.key.keysym.sym=SDLK_UP; game_handle_event(&key);
+    }
+    assert(xoff==0 && yoff==0);
+    _closeall(); SDL_Quit();
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--lower")) { test_original_lower(); return 0; }
+    if (argc==2 && !strcmp(argv[1],"--quake-core")) { test_quake_cast(); return 0; }
+    if (argc==2 && !strcmp(argv[1],"--quake")) {
+        test_original_lower(); test_quake_cast();
+        prepare_rule_data(); test_quake_input(); cleanup_rule_data();
+        puts("focused quake regression: PASS");
+        return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--swamp")) {
         test_swamp_cast();
         test_swamp_hazard();
@@ -1969,6 +2199,8 @@ int main(int argc, char **argv)
         return 0;
     }
     assert(argc == 1);
+    test_original_lower();
+    test_quake_cast();
     test_swamp_cast();
     test_swamp_hazard();
     test_blocked_entry();
@@ -1979,6 +2211,7 @@ int main(int argc, char **argv)
     test_original_generator();
     test_original_placement();
     prepare_rule_data();
+    test_quake_input();
     test_swamp_input();
     test_swamp_render();
     test_original_reset();

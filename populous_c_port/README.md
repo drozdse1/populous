@@ -34,7 +34,7 @@ ordinary `_where_do_i_go`/magnet navigation, settlement growth/mana/splitting,
 ordinary `_do_battle`/`_battle_over`, joining, water loss and vertex sculpting.
 Source labels and assembly ranges appear beside each implementation. The
 opponent uses the same settlement/exploration rules, not timer-created units.
-Special powers other than swamp, knights, original computer
+Special powers other than swamp and earthquake, knights, original computer
 power/auto-level logic, celebration animations and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
@@ -305,9 +305,8 @@ mapping. Selection requires the active swamp permission (`0x10`) and **more than
 A valid left-click consumes targeting even if execution is then rejected and
 restores the previous terrain/magnet tool. Right-click does not cast or sculpt
 while targeting; minimap navigation is still available. Pause, war and finished
-matches prevent gameplay casts. Pause/outcome clicks retain targeting; a war-time
-valid click currently consumes targeting but pays nothing, unlike original
-`_sculpt`'s early war return. This small UI difference remains explicit.
+matches prevent gameplay casts and retain targeting. Other valid rejected casts
+(for example, insufficient mana after selection) consume the one-shot target.
 
 Accepted casts cost 5000, award the player-caster 50 score and consume exactly
 60 random draws: 30 attempts within a 7x7 area. Empty cells of block 15, 31, 32 or
@@ -325,6 +324,26 @@ Editor free casting is deliberately absent: `P` remains diagnostic display state
 and never bypasses costs or permissions. Original toolbar activation, editor mode
 and computer swamp selection remain separate TODOs.
 
+## Earthquake power
+
+`Q` is a port-specific immediate binding for the original viewport-origin command,
+not a clicked target. It uses the current camera origin (0..56), requires active
+permission `0x08` and at least 2500 mana, and is rejected during pause, war or a
+finished match. Keyboard repeats do not cast again; diagnostic `P` is not a free
+editor mode. An accepted cast charges 2500 and awards the player-caster 25 score.
+
+Two sequential 9x9 vertex passes run column first, row second. Zero heights consume
+no randomness; nonzero heights draw `%5` (0 unchanged, 1 raise, 2..4 lower).
+Recursive slope propagation happens immediately. Only the affected cell region
+is rebuilt afterwards; outside movement history and all occupancy remain intact.
+The existing build counter accumulates changes rather than being reset by casting.
+No direct population damage is invented; later simulation handles changed terrain.
+
+This milestone implements terrain rules and effect code 76, **not** the original
+20-step terrain-only screen shake or sound. The original shake offsets the terrain
+by -4/-1 scanlines, not the entire framebuffer or a horizontal 120 pixels. Full
+presentation, editor bypass and original toolbar wiring remain TODOs.
+
 ## Controls
 
 - Blue is your population; red is the opponent. Original houses/castles show
@@ -338,6 +357,7 @@ and computer swamp selection remain separate TODOs.
 - `0`: gather walkers at the initial magnet (32,32). After a leader reaches it,
   `m` selects magnet placement; left-click moves the target for 200 mana. `m`
   again returns to terrain. Settlements release walkers when over capacity.
+- `q`: earthquake on the current viewport, if allowed, for 2500 mana.
 - `s`: select one-shot swamp targeting when allowed and mana exceeds 5000;
   left-click targets, then the previous terrain/magnet tool returns.
 - Arrows/numpad: scroll by world cells. Click the upper-left diamond minimap to
@@ -350,7 +370,7 @@ and computer swamp selection remain separate TODOs.
 The opponent independently settles, grows, explores, merges and fights. Flatten
 plots to encourage settlement, wait for population/mana, and lower the four
 corners of hostile plots to deny land. The goal is to remove the opposing living
-population, including settlements. `q`, `v`, `a` and unported special powers are
+population, including settlements. `v`, `a` and unported special powers are
 inactive. No timer or population target declares a winner.
 
 ## Verification

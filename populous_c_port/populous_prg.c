@@ -1104,7 +1104,7 @@ static void _place_first_people(void)
     }
 }
 
-/* Generator-only raise: no player powers, mana or settlement restrictions.
+/* Raw raise for generation and powers: no mana or settlement restrictions.
  * asm:1274-1416; discard out-of-map neighbours before reading their heights. */
 static int original_raise_point(int column, int row)
 {
@@ -1130,7 +1130,62 @@ static int original_raise_point(int column, int row)
     return core_vertex(column, row);
 }
 
+/* _lower_point asm:2571-2713: ADDQ.W build_count, then SUBQ.W height.
+ * Keep the source recursive neighbour order, but bounds-check before reads. */
+static int original_lower_point(int column, int row)
+{
+    if (column < 0 || column > 64 || row < 0 || row > 64) return 0;
+    int height = core_vertex(column, row);
+    if (!height) return 0;
+    A4_WORD(0x2f88) = (int16_t)((uint16_t)A4_WORD(0x2f88) + 1u);
+    core_set_vertex(column, row, --height);
+    static const int neighbours[8][2] = {
+        {1,0}, {1,1}, {0,1}, {-1,1}, {-1,0}, {-1,-1}, {0,-1}, {1,-1}
+    };
+    for (int index = 0; index < 8; ++index) {
+        int next_column = column + neighbours[index][0];
+        int next_row = row + neighbours[index][1];
+        if (next_column >= 0 && next_column <= 64 && next_row >= 0 && next_row <= 64 &&
+            core_vertex(next_column, next_row) - height > 1)
+            original_lower_point(next_column, next_row);
+    }
+    if (column < A4_WORD(0x2f8a)) A4_WORD(0x2f8a) = column;
+    if (column > A4_WORD(0x2f8c)) A4_WORD(0x2f8c) = column;
+    if (row < A4_WORD(0x2f8e)) A4_WORD(0x2f8e) = row;
+    if (row > A4_WORD(0x2f90)) A4_WORD(0x2f90) = row;
+    return core_vertex(column, row);
+}
+
 typedef uint16_t (*WorldRandom)(void);
+/* _do_quake asm:7863-8042, gameplay only (P is not the editor).
+ * Terrain-only pre-mutation shake and audio remain separate work. */
+static int core_quake(int owner, int column, int row, WorldRandom random)
+{
+    if (owner < 0 || owner > 1 || column < 0 || column > 56 || row < 0 || row > 56 ||
+        pause || A4_WORD(0xae80) || core_result ||
+        core_mana(owner) < (int32_t)A4_LONG(0x8492) ||
+        !(A4_WORD(0x82c4+owner*46)&8)) return 0;
+    A4_LONG(0x9a02+owner*16) -= A4_LONG(0x8492);
+    A4_WORD(0x2f8a) = A4_WORD(0x2f8c) = column;
+    A4_WORD(0x2f8e) = A4_WORD(0x2f90) = row;
+    A4_WORD(0x2fac) = 76;
+    if (owner == player) A4_LONG(0xae72) += 25;
+    for (int pass = 0; pass < 2; ++pass)
+        for (int x = column; x < column+9; ++x)
+            for (int y = row; y < row+9; ++y) {
+                if (!core_vertex(x,y)) continue;
+                int action = random()%5;
+                if (action == 1) original_raise_point(x,y);
+                else if (action >= 2) original_lower_point(x,y);
+            }
+    if (A4_WORD(0x2f8a) < 1) A4_WORD(0x2f8a) = 1;
+    if (A4_WORD(0x2f8c) > 63) A4_WORD(0x2f8c) = 63;
+    if (A4_WORD(0x2f8e) < 1) A4_WORD(0x2f8e) = 1;
+    if (A4_WORD(0x2f90) > 63) A4_WORD(0x2f90) = 63;
+    core_make_map_region(A4_WORD(0x2f8a)-1,A4_WORD(0x2f8e)-1,
+                         A4_WORD(0x2f8c),A4_WORD(0x2f90));
+    return 1;
+}
 /* _do_swamp asm:8295-8387, gameplay only: P is not the original editor.
  * Byte target coordinates can be outside the map; still consume all 60 draws. */
 static int core_swamp(int owner, int column, int row, WorldRandom random)
@@ -1800,7 +1855,7 @@ static void draw_original(int view_x, int view_y)
         "S SWAMP ARMED 5000 / LMB TARGET / RMB INERT" :
         "LMB RAISE / RMB LOWER / ARROWS SCROLL / MAP CLICK");
     hud_text(4,222,"0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET / S SWAMP 5000");
-    hud_text(4,231,"SPACE PAUSE / R RESET / ESC QUIT / D DIAGNOSTIC");
+    hud_text(4,231,"Q QUAKE 2500 / SPACE PAUSE / R RESET / ESC QUIT / D VIEW");
     hud_text(4,240,core_swamp_selected ?
         (core_tool ? "AFTER TARGET: MAGNET / ORIGINAL TOOLBAR DECORATIVE" :
                      "AFTER TARGET: TERRAIN / ORIGINAL TOOLBAR DECORATIVE") :
@@ -1860,7 +1915,7 @@ static void _draw_it(int16_t y, int16_t x)
     }
     } else draw_original(x,y);
     char title[512];
-    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; mouse raise/lower; Space pause R reset Esc quit",
+    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; Q quake 2500; mouse raise/lower; Space pause R reset Esc quit",
         core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : "RUNNING",
         core_population(0),core_population(1),core_mana(0),core_swamp_selected ?
         (core_tool ? "SWAMP ARMED (5000) LMB target then MAGNET / RMB inert" :
@@ -1869,7 +1924,7 @@ static void _draw_it(int16_t y, int16_t x)
     SDL_SetWindowTitle(prg_screen->window,title);
 }
 
-static void _do_quake(void) { /* Disabled until original power rules are ported. */ }
+static void _do_quake(void) { core_quake(player,xoff,yoff,___newrand); }
 static void _do_funny(void) {}
 /* Ordinary _set_frame branches, asm:5728-5743,5846-5861. */
 static int core_frame_walker(int person)
@@ -2013,6 +2068,7 @@ static void game_handle_event(const SDL_Event *event)
             fprintf(stderr, "Reset failed; keeping the current game.\n");
             if (!pause && !core_result && key >= SDLK_0 && key <= SDLK_3) core_tendency(0) = key-SDLK_0;
             if (key == SDLK_m) core_tool = !core_tool;
+            if (key == SDLK_q) _do_quake();
             /* Host S mapping for source selection asm:2021-2042 (> cost). */
             if (key == SDLK_s && player >= 0 && player <= 1 &&
                 core_mana(player) > (int32_t)A4_LONG(0x8496) &&
@@ -2062,6 +2118,7 @@ static void game_handle_event(const SDL_Event *event)
             if (column>=64 || row>=64) return;
         } else if (!game_pick(sx,sy,&column,&row)) return;
         if (core_swamp_selected) {
+            if (A4_WORD(0xae80)) return; /* _sculpt asm:7295, before clearing. */
             if (event->button.button == SDL_BUTTON_LEFT) {
                 /* asm:7451-7489 clears selection before command execution.
                  * Diagnostic picks use this same vertex-to-byte mapping. */
@@ -2078,7 +2135,7 @@ static void game_handle_event(const SDL_Event *event)
         } else if (event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT)
             core_sculpt(0,column,row,event->button.button == SDL_BUTTON_LEFT ? 1 : -1);
     }
-    /* q/v and unsupported special powers remain inert. */
+    /* V and unsupported special powers remain inert. */
 }
 static void ___setup_mouse(void){printf("[SDL] setup_mouse\n");}
 static void ___AddIntServer(int16_t l,void *is){printf("[PRG] AddIntServer %d\n",l);}
