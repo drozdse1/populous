@@ -366,7 +366,8 @@ static void test_colocated_hostile_encounter(void)
     setup_colocated_walkers(0);
     peeps[2]=0;
     core_move(0);
-    assert(!core_battles && peeps[0]==2 && map_who[50*64+50]==2);
+    assert(!core_battles && peeps[0]==0x42 && peep_word(0,6)==7);
+    assert(map_who[50*64+50]==2);
     /* A defending town retains its town bit, then transfers through normal battle. */
     setup_colocated_walkers(0);
     int position=50*64+50;
@@ -471,6 +472,149 @@ static void test_ongoing_battle_blocks_third_party(void)
         assert(peep_word(0,6)==1 && peep_word(1,6)==0);
     }
     _closeall(); SDL_Quit();
+}
+
+static void setup_blocked_walker(void)
+{
+    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(map_blk,47,4096);
+    no_peeps=1; core_battles=core_settlements=0;
+    peeps[0]=2; peeps[2]=peeps[3]=1;
+    set_peep_word(0,4,100); set_peep_word(0,8,650);
+    map_blk[650]=1; map_who[650]=1;
+    core_tendency(0)=1; A4_WORD(0x2fb0)=1;
+}
+
+static void test_blocked_entry(void)
+{
+    setup_blocked_walker();
+    set_peep_word(0,10,-64); set_peep_word(0,12,6);
+    uint8_t occupancy[4096]; memcpy(occupancy,map_who,sizeof occupancy);
+    assert(core_explore(0)==999);
+    core_move(0);
+    assert(peeps[0]==0x42 && peep_word(0,6)==7);
+    assert(peep_word(0,8)==650 && peep_word(0,10)==-64 && peep_word(0,12)==6);
+    assert(peep_word(0,4)==100 && !memcmp(occupancy,map_who,sizeof occupancy));
+    assert(!core_battles && !core_settlements);
+    /* Successful navigation clears only the blocked bit (asm:4437). */
+    map_blk[651]=1; core_tendency(0)=0; core_leader(0)=1; core_target(0)=651;
+    core_move(0);
+    assert(peeps[0]==2 && peep_word(0,8)==651 && peep_word(0,10)==1);
+    assert(!map_who[650] && map_who[651]==1 && peep_word(0,12)==6);
+}
+
+static void test_blocked_retry(void)
+{
+    setup_blocked_walker(); set_peep_word(0,12,7);
+    _move_peeps();
+    assert(peeps[0]==0x42 && peep_word(0,6)==7 && peep_word(0,12)==0);
+    assert(peep_word(0,4)==99);
+    for (int tick=1; tick<=8; ++tick) {
+        _move_peeps();
+        assert(peeps[0]==0x42 && peep_word(0,6)==7+tick);
+        assert(peep_word(0,4)==99-tick && peep_word(0,12)==(tick%2 ? 101 : 102));
+        assert(peep_word(0,8)==650 && map_who[650]==1);
+    }
+    _move_peeps();
+    assert(peeps[0]==0x42 && peep_word(0,6)==7 && peep_word(0,12)==0);
+    assert(peep_word(0,4)==90 && peep_word(0,8)==650 && map_who[650]==1);
+    assert(!core_battles && !core_settlements);
+}
+
+static void test_wait_boundaries(void)
+{
+    /* Seed collision waits: generating 0x20 still requires phase occupancy. */
+    const int flags[] = {0x22,0x42,0x62};
+    const int counters[] = {0,14,15,0xffff};
+    for (unsigned state=0; state<sizeof flags/sizeof flags[0]; ++state)
+        for (unsigned count=0; count<sizeof counters/sizeof counters[0]; ++count) {
+            setup_blocked_walker(); peeps[0]=flags[state];
+            set_peep_word(0,6,counters[count]); set_peep_word(0,12,101);
+            /* Opening a route must not bypass the unsigned postincrement timeout. */
+            map_blk[651]=1; core_tendency(0)=0; core_leader(0)=1; core_target(0)=651;
+            int ticks=counters[count]<=14 ? 16-counters[count] : 1;
+            for (int tick=1; tick<ticks; ++tick) {
+                _move_peeps();
+                assert(peeps[0]==flags[state] && peep_word(0,6)==counters[count]+tick);
+                assert(peep_word(0,8)==650 && map_who[650]==1 && !map_who[651]);
+                assert(peep_word(0,12)==(tick%2 ? 102 : 101));
+                assert(peep_word(0,4)==100-tick);
+            }
+            _move_peeps();
+            assert(peeps[0]==2 && peep_word(0,6)==(counters[count]==0xffff ? 0 : 16));
+            assert(peep_word(0,8)==651 && peep_word(0,10)==1 && peep_word(0,12)==0);
+            assert(peep_word(0,4)==100-ticks && !map_who[650] && map_who[651]==1);
+        }
+    setup_blocked_walker(); peeps[0]=0x60;
+    set_peep_word(0,6,15); set_peep_word(0,12,101);
+    _move_peeps(); /* Timeout retries movement only for restored exact flag 2. */
+    assert(!peeps[0] && peep_word(0,6)==16 && peep_word(0,4)==99);
+    assert(peep_word(0,8)==650 && peep_word(0,12)==102 && map_who[650]==1);
+}
+
+static void test_wait_water_and_death(void)
+{
+    for (int fatal=0; fatal<=1; ++fatal) {
+        setup_blocked_walker(); peeps[0]=0x42; set_peep_word(0,6,14);
+        map_blk[650]=0; game_mode=fatal;
+        _move_peeps();
+        assert(peep_word(0,6)==14); /* Water precedes the waiting timer. */
+        assert(peep_word(0,4)==(fatal ? 0 : 98));
+        assert(peeps[0]==(fatal ? 0 : 18) && map_who[650]==(fatal ? 0 : 1));
+    }
+    setup_blocked_walker(); peeps[0]=0x42;
+    set_peep_word(0,6,7); set_peep_word(0,4,1); core_leader(0)=1;
+    _move_peeps();
+    assert(!peep_word(0,4) && !peeps[0] && !map_who[650] && !core_leader(0));
+    for (int population=1; population<=2; ++population) {
+        setup_blocked_walker(); peeps[0]=0x42;
+        set_peep_word(0,6,15); set_peep_word(0,4,population);
+        set_peep_word(0,12,101); core_leader(0)=1;
+        no_peeps=2; peeps[22]=2; peeps[23]=1; peeps[24]=peeps[25]=1;
+        set_peep_word(1,4,100); set_peep_word(1,8,650); map_who[650]=2;
+        map_blk[651]=1; core_tendency(0)=0; core_target(0)=651;
+        _move_peeps();
+        assert(core_battles==1); /* Expiry may enter battle before death cleanup. */
+        if (population==1) {
+            assert(!peeps[0] && !peep_word(0,4) && !core_leader(0));
+            assert(peeps[22]==2 && peep_word(1,6)==0 && map_who[650]==2);
+        } else {
+            assert(peeps[0]==8 && peeps[22]==10 && peep_word(0,4)==1);
+            assert(peep_word(0,6)==1 && peep_word(1,6)==0 && map_who[650]==1);
+            core_remove(0);
+            assert(peeps[22]==2 && peep_word(1,6)==0 && map_who[650]==2);
+        }
+        assert(peep_word(1,4)==100 && !map_who[651]);
+    }
+    /* asm:4560-4563: negative expiry population cannot join a destination. */
+    setup_blocked_walker(); peeps[0]=0x42; peeps[3]=9;
+    A4_WORD(0x2fb0)=2; set_peep_word(0,4,1); set_peep_word(0,6,15);
+    set_peep_word(0,12,101); core_leader(0)=1;
+    no_peeps=2; peeps[22]=2; peeps[24]=3; peeps[25]=2;
+    set_peep_word(1,4,100); set_peep_word(1,6,23);
+    set_peep_word(1,8,651); set_peep_word(1,10,-64);
+    for (int byte=14; byte<22; ++byte) peeps[22+byte]=byte;
+    uint8_t metadata[8]; memcpy(metadata,peeps+22+14,sizeof metadata);
+    map_blk[651]=1; map_who[651]=2;
+    core_tendency(0)=0; core_target(0)=651;
+    _move_peeps();
+    assert(peep_word(1,4)==100 && peeps[25]==2 && !core_leader(0));
+    assert(peeps[22]==2 && peeps[23]==0 && peeps[24]==3);
+    assert(peep_word(1,6)==23 && peep_word(1,8)==651 && peep_word(1,10)==-64);
+    assert(peep_word(1,12)==1 && !memcmp(metadata,peeps+22+14,sizeof metadata));
+    assert(!peeps[0] && !peep_word(0,4) && peep_word(0,8)==650);
+    assert(!map_who[650] && map_who[651]==2 && !A4_WORD(0xff88+651*2));
+    assert(!core_battles && !core_settlements);
+    /* A battle partner index, even above 14, is not a waiting timer. */
+    setup_blocked_walker(); no_peeps=17; peeps[0]=8;
+    peeps[16*22]=10; peeps[16*22+1]=1; peeps[16*22+3]=1;
+    set_peep_word(0,6,16); set_peep_word(16,6,0);
+    set_peep_word(16,4,100); set_peep_word(16,8,650);
+    seed=123; /* Rolls 1 and 3: lesser strength 100, loss 11, not wait loss 1. */
+    _move_peeps();
+    assert(peeps[0]==8 && peeps[16*22]==10);
+    assert(peep_word(0,6)==16 && peep_word(16,6)==0);
+    assert(peep_word(0,4)==89 && peep_word(16,4)==89);
 }
 
 static void test_near_town_sculpt(void)
@@ -1151,7 +1295,20 @@ int main(int argc, char **argv)
         puts("focused overlap regression: PASS");
         return 0;
     }
+    if (argc == 3 && !strcmp(argv[1], "--waiting")) {
+        if (!strcmp(argv[2], "entry")) test_blocked_entry();
+        else if (!strcmp(argv[2], "retry")) test_blocked_retry();
+        else if (!strcmp(argv[2], "boundaries")) test_wait_boundaries();
+        else if (!strcmp(argv[2], "death")) test_wait_water_and_death();
+        else assert(0);
+        puts("focused waiting regression: PASS");
+        return 0;
+    }
     assert(argc == 1);
+    test_blocked_entry();
+    test_blocked_retry();
+    test_wait_boundaries();
+    test_wait_water_and_death();
     test_original_selection();
     test_original_generator();
     test_original_placement();

@@ -899,7 +899,13 @@ static void core_move(int person)
 {
     int owner = peep_owner(person), position = peep_word(person,8);
     int delta = core_tendency(owner) ? core_explore(person) : core_magnet_direction(person);
-    if (delta == 999) return;
+    /* _move_explorer asm:4425-4437: entry does not change the frame. */
+    if (delta == 999) {
+        peeps[person*22] |= 0x40;
+        set_peep_word(person,6,7);
+        return;
+    }
+    peeps[person*22] &= 0xbf;
     /* _move_explorer asm:4510-4559 encounters the current occupant before
      * settlement/departure. Keep the port's immediate destination path below. */
     int occupant = map_who[position]-1;
@@ -915,6 +921,8 @@ static void core_move(int person)
             return;
         }
     }
+    /* asm:4560-4563: encounters precede this guard, settlement/departure do not. */
+    if (peep_word(person,4) <= 0) return;
     if (!delta && core_check_life(owner,position) > 0) {
         if (map_who[position] && map_who[position] != person+1) return;
         /* A split walker may leave no representative until the town's next
@@ -1775,6 +1783,23 @@ static void _draw_it(int16_t y, int16_t x)
 
 static void _do_quake(void) { /* Disabled until original power rules are ported. */ }
 static void _do_funny(void) {}
+/* Ordinary _set_frame branches, asm:5728-5743,5846-5861. */
+static int core_frame_walker(int person)
+{
+    if (!peep_word(person,4)) return 0;
+    int flags = peeps[person*22], previous = peep_word(person,12);
+    if (flags == 2) {
+        set_peep_word(person,12,previous >= 7 ? 0 : previous+1);
+        return previous >= 7;
+    }
+    if ((flags&0x60) && !(flags&0x1c)) {
+        int frame = (int16_t)(previous+1);
+        int complete = frame < 101 || frame > 102;
+        set_peep_word(person,12,complete ? 101 : frame);
+        return complete;
+    }
+    return 0;
+}
 static void _move_peeps(void)
 {
     /* Ordinary walker/town/battle closure of _move_peeps. Specials are disabled. */
@@ -1795,11 +1820,22 @@ static void _move_peeps(void)
         if (flags&8) {
             int other = peep_word(person,6);
             if (other > person && other < no_peeps && peep_word(other,4)>0) core_battle(person,other);
+        } else if (flags&0x60) {
+            /* _move_peeps asm:4213-4268: loss every tick, unsigned old counter. */
+            core_frame_walker(person);
+            set_peep_word(person,4,peep_word(person,4)-A4_WORD(0x2fb0));
+            unsigned previous = (uint16_t)peep_word(person,6);
+            set_peep_word(person,6,(uint16_t)(previous+1));
+            if (previous > 14) {
+                peeps[person*22] &= 0x9f;
+                core_frame_walker(person);
+                if (peeps[person*22] == 2) core_move(person);
+            }
+            /* A retry can create a reciprocal battle before attrition kills us. */
+            if (peep_word(person,4)<=0) core_remove(person);
         } else if (flags&1) core_settle_tick(person);
         else {
-            int frame = peep_word(person,12)+1;
-            if (frame < 8) { set_peep_word(person,12,frame); continue; }
-            set_peep_word(person,12,0);
+            if (!core_frame_walker(person)) continue;
             int position = peep_word(person,8);
             if (!map_blk[position]) {
                 if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }

@@ -269,9 +269,16 @@ now retain their original placement rather than being relocated. Hostile current
 encounters are handled before settlement/departure at the existing C movement gate;
 ongoing battles cannot have their partner links overwritten by a third walker.
 Settlement guards prevent hidden/duplicate towns while retaining town/split-walker
-sharing. This is bounded overlap support, not the original waiting handshake
-(flags `0x20`, frame 101), its population losses, or delayed movement occupancy.
-Those state-machine details and multi-party battle joining remain migration work.
+sharing. Blocked navigation now sets `0x40` and counter 7. Waiting consumes one
+LAND walking loss per tick, advances frames 101/102, and retries when the previous
+unsigned counter exceeds 14 (nine waiting updates after blocked entry). A retry
+does not incur a second walking loss. Seeded `0x20`/`0x60` wait states share this
+consumer, but the original collision-handshake producer (setting another peep's
+`0x20`, frame 101 and counter 0) and delayed movement occupancy remain unported.
+This is bounded state support, not complete original movement timing. The C loop
+retains battle precedence over unsupported mixed battle/wait flags so a partner
+index cannot become a retry counter. Waiting artwork is not yet original-faithful.
+Multi-party battle joining remains migration work.
 
 This is world initialization, not 495 completed campaign levels. Independent
 assembly-derived comparisons are cross-implementation evidence, **not** an

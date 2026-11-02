@@ -93,9 +93,10 @@ Letztschreiber-Belegung, Seeds und Anfuehrer stimmen ueberein. Keine unabhaengig
 Amiga-Ausfuehrung. Die vorher abgewiesenen Starts 70, 74, 93, 94, 160, 201, 204,
 472, 477, 478, 479 werden jetzt ohne veraenderte Karten oder Platzierungen geladen.
 
-Die neue Begegnungslogik bleibt an der bisherigen C-Bewegungsschranke. Originale
-Warteflags 0x20, Frame 101, Warteverluste und phasenabhaengige vorherige Belegung
-sind nicht migriert; diese Etappe behauptet keine tickgenaue Bewohnerparitaet.
+Die Begegnungslogik bleibt an der bisherigen C-Bewegungsschranke. Blockadeflag
+0x40 und der Wartezustands-Verbrauch sind inzwischen migriert (siehe unten);
+Erzeugung des Kollisions-Warteflags 0x20 und phasenabhaengige vorherige Belegung
+fehlen weiterhin. Keine tickgenaue Gesamtparitaet behauptet.
 Der exhaustive Originalstart-Test `test-level-local` hat wegen Assetladen/Simulation
 ein separates 120s-Zeitlimit. Testdatenisolation und transaktionaler Reset bleiben
 abgesichert. Verifikation der Ueberlappungsetappe: Build, `test`, `test-sanitize`
@@ -110,7 +111,8 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 
 ## P1 - Bewohner, Navigation und Kampf vervollstaendigen
 
-- [ ] **Teilweise:** Gesamten Bewohner-Zustandsautomaten abgleichen: Warte-/Blockadezaehler, Flagkombinationen, Bewegungsphasen, Anfuehrer-/Folgerzustand und Uebergaenge zwischen Bewegung, Stadt und Kampf.
+- [x] Blockierte Navigation (`999` -> Flag 0x40, Zaehler 7), Warteframes 101/102, Verlust pro Wartetick und Retry bei vorherigem Zaehler >14 migrieren; keine doppelte Bewegungsverlustbuchung beim Retry.
+- [ ] **Teilweise:** Gesamten Bewohner-Zustandsautomaten abgleichen: Erzeugung der Kollisions-Warteflags 0x20, weitere Flagkombinationen, phasenweise Bewegung, Anfuehrer-/Folgerzustand und Uebergaenge zwischen Bewegung, Stadt und Kampf.
 - [ ] **Teilweise:** Originale Magnetnavigation, Zielwahl und Ausweich-/Fehlversuchspfade vervollstaendigen; direkte Zielrichtung plus Ausweichsuche reicht als Paritaetsnachweis nicht aus.
 - [ ] **Fehlt:** Beitritt zu laufenden Kaempfen einschliesslich richtiger Partei, Verstaerkung, Belegung und Zustandsuebernahme.
 - [ ] **Fehlt:** Ritter, Sonderfiguren und `_do_funny`-/`_do_place_funny`-Ereignisse, auch bei erschoepften 208 normalen Bewohnerplaetzen.
