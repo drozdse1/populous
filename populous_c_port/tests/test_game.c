@@ -379,7 +379,7 @@ static void test_colocated_hostile_encounter(void)
     assert(peeps[0]==8 && peeps[22]==9 && map_who[position]==1);
     assert(peep_word(0,6)==1 && peep_word(1,6)==0 && map_bk2[position]==35);
     set_peep_word(1,4,10); seed=123; core_battle(0,1);
-    assert(peeps[0]==1 && !peep_word(1,4) && map_who[position]==1);
+    assert(peeps[0]==5 && peep_word(0,12)==85 && !peep_word(1,4) && map_who[position]==1);
     assert(map_blk[position]==31 && map_bk2[position]==42);
     _closeall(); SDL_Quit();
 }
@@ -445,7 +445,12 @@ static void test_colocated_battle_death(void)
         set_peep_word(winner,4,100); set_peep_word(1-winner,4,10);
         seed=123; core_battle(0,1);
         assert(peep_word(winner,4)==90 && !peep_word(1-winner,4));
-        assert(peeps[winner*22]==2 && map_who[50*64+50]==winner+1);
+        assert(peeps[winner*22]==6 && peep_word(winner,12)==85 && map_who[50*64+50]==winner+1);
+        for (int tick=0; tick<3; ++tick) {
+            _move_peeps();
+            assert(peeps[winner*22]==(tick==2 ? 2 : 6));
+            assert(peep_word(winner,4)==90 && peep_word(winner,8)==50*64+50);
+        }
         core_move(winner);
         assert(peeps[winner*22]==1 && core_settlements==1);
     }
@@ -4977,7 +4982,7 @@ static void check_heading_battle(int winner, int32_t winner_mana, int32_t loser_
 static void test_heading_battle_presence(void)
 {
     for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
-    for (int side=1; side<=3; ++side) for (int byte=14; byte<18; ++byte)
+    for (int side=0; side<=3; ++side) for (int byte=14; byte<18; ++byte)
     for (int high=0; high<2; ++high) {
         setup_heading_battle(winner,owner);
         int loser=3-winner;
@@ -4987,7 +4992,7 @@ static void test_heading_battle_presence(void)
         check_heading_battle(winner,side&2 ? 1024 : 1023,side&2 ? 1976 : 1977);
     }
     for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
-    for (int side=1; side<=3; ++side) for (int kind=0; kind<3; ++kind)
+    for (int side=0; side<=3; ++side) for (int kind=0; kind<3; ++kind)
     for (int leader=0; leader<2; ++leader) {
         setup_heading_battle(winner,owner);
         int loser=3-winner;
@@ -5008,10 +5013,12 @@ static void test_heading_battle_state(void)
     const uint8_t flags[]={8,9,0x68,0x69}, markers[]={0,1,255};
     const uint16_t counters[]={7,0x7fff,0xffff};
     for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
+    for (int headed=0; headed<2; ++headed)
     for (unsigned state=0; state<4; ++state) for (int occupancy=0; occupancy<4; ++occupancy)
     for (int distinct=0; distinct<2; ++distinct) for (int view=0; view<4; ++view) {
         setup_heading_battle(winner,owner);
         int loser=3-winner;
+        if (!headed) memset(peeps+winner*22+14,0,4);
         peeps[winner*22]=flags[state];
         map_who[650]=occupancy==0 ? 0 : occupancy==1 ? winner+1 : occupancy==2 ? loser+1 : 4;
         if (distinct) { set_peep_word(loser,8,750); map_who[750]=loser+1; }
@@ -5019,10 +5026,12 @@ static void test_heading_battle_state(void)
         check_heading_battle(winner,1023,1977);
     }
     for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
+    for (int headed=0; headed<2; ++headed)
     for (int mark=0; mark<3; ++mark) for (int enemy_mark=0; enemy_mark<3; ++enemy_mark)
     for (int count=0; count<3; ++count) for (int paused=0; paused<2; ++paused) {
         setup_heading_battle(winner,owner);
         int loser=3-winner;
+        if (!headed) memset(peeps+winner*22+14,0,4);
         peeps[winner*22+20]=markers[mark]; peeps[loser*22+20]=markers[enemy_mark];
         A4_WORD(0xae7a+owner*2)=counters[count];
         core_leader(1-owner)=loser+1; pause=paused;
@@ -5045,10 +5054,11 @@ static void test_heading_battle_mana(void)
         {-32768,1000,2147483644,-17,-31768,-17}
     };
     for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
-    for (int kind=0; kind<3; ++kind)
+    for (int headed=0; headed<2; ++headed) for (int kind=0; kind<3; ++kind)
     for (unsigned sample=0; sample<sizeof cases/sizeof cases[0]; ++sample) {
         setup_heading_battle(winner,owner);
         int loser=3-winner;
+        if (!headed) memset(peeps+winner*22+14,0,4);
         if (kind==1) { peeps[loser*22+17]=0x80; core_leader(1-owner)=loser+1; }
         if (kind==2) core_leader(1-owner)=loser+1;
         A4_WORD(kind==0 ? 0x3010 : kind==1 ? 0x3012 : 0x3014)=cases[sample].reward;
@@ -5188,14 +5198,71 @@ static void test_heading_town_remnants(void)
     }
 }
 
+static void test_ordinary_town_full_state(void)
+{
+    /* Catch signed reward, reframe ordering, cleanup and stray terrain/A4 writes.
+     * Each isolated farmland center has capacity 65 and town frame 34. */
+    const struct { int16_t reward; int32_t winner_mana, loser_mana; } cases[]={
+        {0,1000,2000}, {-7,993,2007}, {-32768,-31768,34768}, {104,1104,1896}
+    };
+    for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
+    for (int negative=0; negative<2; ++negative) for (int success=0; success<2; ++success)
+    for (int town=0; town<2; ++town)
+    for (unsigned sample=0; sample<sizeof cases/sizeof cases[0]; ++sample) {
+        setup_heading_town(winner,owner,negative ? 9 : 10);
+        int loser=3-winner, enemy=1-owner;
+        memset(peeps+winner*22+14,0,4);
+        memset(peeps+loser*22+14,0,4);
+        peeps[winner*22]=town ? 9 : 8;
+        set_peep_word(winner,8,750);
+        map_blk[750]=success ? 15 : 1;
+        game_turn=12345;
+        A4_WORD(0xae7a+owner*2)=-1;
+        /* Zero retains frame 35/index 3; negative reframes to 34/index 2. */
+        A4_WORD(0x2ffe)=A4_WORD(0x3000)=cases[sample].reward;
+        uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+        memcpy(before,prg_a4_area,sizeof before);
+
+        /* All neighbours are block 1 with no buildings: only these two centers
+         * can change. Failed conquest keeps the original winner town bit/link. */
+        map_blk[650]=15; map_bk2[650]=0; map_who[650]=0;
+        map_blk[750]=success ? 31+owner : 1;
+        map_bk2[750]=success ? 34 : 0; map_who[750]=winner+1;
+        peeps[winner*22]=success || town ? 5 : 6;
+        set_peep_word(winner,4,90);
+        set_peep_word(winner,6,success ? 12345 : loser);
+        set_peep_word(winner,10,0); set_peep_word(winner,12,85);
+        peeps[loser*22]=0; set_peep_word(loser,4,0);
+        set_peep_word(loser,6,success ? 0 : winner);
+        set_peep_word(loser,12,negative ? 34 : 35);
+        A4_WORD(0x2ff8)=0; A4_WORD(0x2fb2)=success;
+        peeps[winner*22+20]=19;
+        A4_WORD(0x82d2+owner*46)=2; A4_WORD(0x82d4+owner*46)=750;
+        A4_WORD(0x82d2+enemy*46)=0;
+        A4_WORD(0xae7a+owner*2)=0;
+        A4_LONG(0x9a02+owner*16)=(uint32_t)cases[sample].winner_mana;
+        A4_LONG(0x9a02+enemy*16)=(uint32_t)cases[sample].loser_mana;
+        core_leader(enemy)=0; core_target(enemy)=650;
+        A4_WORD(enemy ? 0xae76 : 0xae78)=650;
+        view_who=winner+1; seed=28505;
+        memcpy(expected,prg_a4_area,sizeof expected);
+        memcpy(prg_a4_area,before,sizeof before);
+
+        core_battle(1,2);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(core_battles==17 && !core_settlements && !core_result);
+    }
+}
+
 static void test_heading_town_conquest(void)
 {
     for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
-    for (int negative=0; negative<2; ++negative) for (int byte=14; byte<18; ++byte)
+    for (int negative=0; negative<2; ++negative) for (int byte=13; byte<18; ++byte)
     for (int town=0; town<2; ++town) for (int location=0; location<3; ++location) {
         setup_heading_town(winner,owner,negative ? 9 : 10);
         int loser=3-winner, position=location==0 ? 651 : 750;
-        memset(peeps+winner*22+14,0,4); peeps[loser*22+byte]=0x80;
+        memset(peeps+winner*22+14,0,4);
+        if (byte>=14) peeps[loser*22+byte]=0x80;
         peeps[winner*22]=town ? 0x69 : 0x68;
         set_peep_word(winner,8,position); set_peep_word(winner,6,-123);
         map_blk[position]=location==2 ? 1 : 15; map_who[position]=4;
@@ -5271,10 +5338,12 @@ static void test_heading_town_ticks(void)
         assert(!memcmp(loser_heading,peeps+loser*22+14,4));
     }
     /* Successful conquest must feed the town consumer in resident order. */
-    for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner) {
+    for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
+    for (int headed=0; headed<2; ++headed) {
         setup_heading_town(winner,owner,10); set_peep_word(3,4,0);
         int loser=3-winner;
-        memset(peeps+winner*22+14,0,4); peeps[loser*22+17]=0x80;
+        memset(peeps+winner*22+14,0,4);
+        if (headed) peeps[loser*22+17]=0x80;
         core_leader(owner)=core_leader(1-owner)=0; game_turn=12345;
         _move_peeps();
         assert(peeps[winner*22]==5 && !peep_word(loser,4));
@@ -5321,19 +5390,19 @@ static void test_heading_town_casualty_controls(void)
     }
     for (int population=9; population<=10; ++population) {
         setup_heading_town(1,0,population); memset(peeps+22+14,0,4);
+        game_turn=12345;
         core_battle(1,2);
-        /* No raw headings still uses legacy town conquest, with no celebration
-         * or remnant, even for an exact-zero casualty. */
-        assert(peeps[22]==1 && !peeps[44] && !peep_word(2,4));
-        assert(peep_word(1,12)==34 && peep_word(1,6)==2);
+        /* Direct zero completion retains town frame 35; negative reframes first. */
+        assert(peeps[22]==5 && !peeps[44] && !peep_word(2,4));
+        assert(peep_word(1,12)==85 && peep_word(1,6)==12345);
         assert(map_blk[650]==31 && map_bk2[650]==34);
-        assert(core_mana(0)==1103 && A4_WORD(0xae7a)==8);
+        assert(core_mana(0)==(population==9 ? 1103 : 1104) && A4_WORD(0xae7a)==8);
     }
 }
 
 static void test_heading_town(void)
 {
-    test_heading_town_remnants(); test_heading_town_conquest();
+    test_heading_town_remnants(); test_heading_town_conquest(); test_ordinary_town_full_state();
     test_heading_town_ticks(); test_heading_town_casualty_controls();
 }
 
@@ -5370,26 +5439,16 @@ static void test_heading_battle_controls(void)
     /* Nonzero trailing bytes 18..21 are not a heading (including byte 20). */
     for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner) {
         setup_heading_battle(winner,owner); memset(peeps+winner*22+14,0,4);
-        uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
-        memcpy(before,prg_a4_area,sizeof before);
-        int loser=3-winner;
-        set_peep_word(winner,4,90); set_peep_word(winner,10,0); set_peep_word(winner,12,0);
-        peeps[winner*22]=2; peeps[loser*22]=0;
-        set_peep_word(loser,4,0); set_peep_word(loser,6,0);
-        map_who[650]=winner+1; view_who=0;
-        A4_LONG(0x9a02+owner*16)=1023; A4_LONG(0x9a02+(1-owner)*16)=1977;
-        A4_WORD(0xae7a+owner*2)=8; seed=28505;
-        memcpy(expected,prg_a4_area,sizeof expected); memcpy(prg_a4_area,before,sizeof before);
-        core_battle(1,2);
-        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        check_heading_battle(winner,1023,1977);
     }
 }
 
 static void test_heading_battle_ticks(void)
 {
     for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
-    for (int town=0; town<2; ++town) {
+    for (int headed=0; headed<2; ++headed) for (int town=0; town<2; ++town) {
         setup_heading_battle(winner,owner);
+        if (!headed) memset(peeps+winner*22+14,0,4);
         int loser=3-winner;
         peeps[winner*22]=town ? 9 : 8;
         core_leader(owner)=0; set_peep_word(3,4,0);
@@ -5401,6 +5460,7 @@ static void test_heading_battle_ticks(void)
         assert(peep_word(winner,6)==loser && seed==28505);
         /* Start a fresh completion at frame 85, then consume exactly three times. */
         setup_heading_battle(winner,owner); peeps[winner*22]=town ? 9 : 8;
+        if (!headed) memset(peeps+winner*22+14,0,4);
         core_leader(owner)=0; set_peep_word(3,4,0);
         core_battle(1,2);
         uint8_t terrain[4096], buildings[4096], metadata[8];
@@ -5422,16 +5482,22 @@ static void test_heading_battle_ticks(void)
 
 static void test_heading_battle_guards(void)
 {
+    setup_heading_battle(1,0); set_peep_word(2,4,0);
+    memset(peeps+22+14,0,4);
+    assert(core_battle_over(1,2,false));
+    assert(peeps[22]==6 && peep_word(1,12)==85 && !peeps[44]);
+    assert(peep_word(1,4)==100 && seed==123 && view_who==2);
+    assert(core_mana(0)==1023 && core_mana(1)==1977 && A4_WORD(0xae7a)==8);
     const int invalid[]={-1,4,208,32767};
     for (unsigned sample=0; sample<sizeof invalid/sizeof invalid[0]; ++sample) {
         setup_heading_battle(1,0); set_peep_word(2,4,0);
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
-        assert(!core_heading_battle_over(invalid[sample],2,false));
-        assert(!core_heading_battle_over(1,invalid[sample],false));
-        assert(!core_heading_battle_over(1,1,false));
+        assert(!core_battle_over(invalid[sample],2,false));
+        assert(!core_battle_over(1,invalid[sample],false));
+        assert(!core_battle_over(1,1,false));
         assert(!memcmp(before,prg_a4_area,sizeof before));
     }
-    for (int variant=0; variant<14; ++variant) {
+    for (int variant=0; variant<13; ++variant) {
         setup_heading_battle(1,0); set_peep_word(2,4,0);
         switch (variant) {
         case 0: no_peeps=-1; break;
@@ -5447,10 +5513,9 @@ static void test_heading_battle_guards(void)
         case 10: set_peep_word(1,8,4096); break;
         case 11: set_peep_word(2,8,-1); break;
         case 12: set_peep_word(2,8,4096); break;
-        case 13: memset(peeps+22+14,0,4); break;
         }
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
-        assert(!core_heading_battle_over(1,2,false));
+        assert(!core_battle_over(1,2,false));
         assert(!memcmp(before,prg_a4_area,sizeof before));
         assert(core_battles==17 && !core_settlements && !core_result);
     }
@@ -5889,7 +5954,7 @@ static void test_battle_frame_deaths(void)
         core_battle(1,2);
         assert(seed==28505 && !peep_word(loser,4));
         if (both) assert(!peep_word(winner,4));
-        else assert(peep_word(winner,4)==90 && peep_word(winner,12)==(heads ? 85 : 0));
+        else assert(peep_word(winner,4)==90 && peep_word(winner,12)==85 && peeps[winner*22]==6);
         /* Same host outcome for 9 and 10; only nonzero casualties animate the
          * retained dead record. Explicit literal successor/wrap per slot. */
         if (negative&(1<<(loser-1))) set_peep_word(loser,12,loser==1 ? base+1 : base);
@@ -6025,9 +6090,11 @@ static void test_battle_entry_town_reward(void)
 {
     for (int destination=0; destination<2; ++destination)
     for (int attacker=1; attacker<=2; ++attacker) for (int owner=0; owner<2; ++owner)
-    for (int negative=0; negative<2; ++negative) {
+    for (int headed=0; headed<2; ++headed) for (int negative=0; negative<2; ++negative) {
         setup_heading_town(attacker,owner,negative ? 9 : 10);
-        int defender=3-attacker, base=owner ? 134 : 130;
+        if (!headed) memset(peeps+attacker*22+14,0,4);
+        int defender=3-attacker, base=headed ? (owner ? 134 : 130) : 70;
+        game_turn=12345;
         peeps[attacker*22]=2; peeps[defender*22]=1;
         set_peep_word(attacker,8,destination ? 649 : 650);
         if (destination) map_who[649]=attacker+1;
@@ -6038,15 +6105,18 @@ static void test_battle_entry_town_reward(void)
         assert(seed==123 && core_mana(owner)==1000 && core_mana(1-owner)==2000);
         assert(peep_word(attacker,4)==100 && peep_word(defender,4)==(negative ? 9 : 10));
         core_battle(1,2);
-        assert(peeps[attacker*22]==6 && peep_word(attacker,12)==85 && peep_word(attacker,4)==90);
-        assert(peeps[defender*22]==0x80 && peep_word(defender,4)==1 && peep_word(defender,6)==40);
+        assert(peeps[attacker*22]==(headed ? 6 : 5) && peep_word(attacker,12)==85 && peep_word(attacker,4)==90);
+        assert(peeps[defender*22]==(headed ? 0x80 : 0));
+        assert(peep_word(defender,4)==headed && peep_word(defender,6)==(headed ? 40 : 0));
+        assert(peep_word(attacker,6)==(headed ? defender : 12345));
         assert(peep_word(defender,12)==(negative ? 34 : base));
         assert(core_mana(owner)==(negative ? 1103 : 1100));
         assert(core_mana(1-owner)==(negative ? 1897 : 1900));
         assert(A4_WORD(0xae7a+owner*2)==8 && seed==28505 && core_battles==18);
-        assert(map_who[650]==attacker+1 && map_blk[650]==66 && map_bk2[650]==56);
-        assert(A4_WORD(0x2ff8)==(negative ? 0 : 1234));
-        assert(A4_WORD(0x2fb2)==(negative ? 0 : 2345));
+        assert(map_who[650]==attacker+1 && map_blk[650]==(headed ? 66 : 31+owner));
+        assert(map_bk2[650]==(headed ? 56 : 34));
+        assert(A4_WORD(0x2ff8)==(!headed || negative ? 0 : 1234));
+        assert(A4_WORD(0x2fb2)==(!headed ? 1 : negative ? 0 : 2345));
     }
 }
 
@@ -6102,6 +6172,10 @@ static void test_battle_frame_render_and_entry(void)
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--battle-over")) {
+        test_heading_battle(); test_battle_entry_town_reward();
+        puts("focused battle completion: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--battle-entry")) {
         test_battle_entry_state(); test_battle_entry_wait_retry(); test_battle_entry_town_reward();
         test_heading_town(); test_battle_reinforcement(); test_blocked_reinforcement_retry();

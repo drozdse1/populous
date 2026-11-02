@@ -38,7 +38,7 @@ Original computer power/auto-level logic and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
 Population is bounded at 32000; ordinary mana helpers clamp to -250..1999999.
-Raw terrain commands and the bounded heading-battle completion path instead
+Raw terrain commands and single-winner battle completion instead
 preserve their source word/32-bit arithmetic, using defined unsigned operations
 rather than C signed overflow.
 
@@ -147,24 +147,29 @@ Opaque out-of-range metadata stays intact and uses bounded magnet fallback witho
 leader acquisition; unsafe map coordinates never become map accesses. The exact
 selector remains position-word based rather than silently filtering its candidates.
 Gameplay knight creation connects these paths through `K` (see below).
-A heading-involved fight with one survivor now enters the
-original completion tail: walker/town celebration, headed-loser reward precedence,
+Every valid single-winner fight now uses one original-derived completion path:
+walker/town celebration, headed-loser reward precedence,
 owner bookkeeping, conditional occupancy and loser-view transfer. Raw heading
-presence selects this path, even when the reference is opaque; it is not dereferenced.
+presence selects special rewards and burning, even when the reference is opaque;
+it is not dereferenced. Ordinary victories also enter the three-update celebration.
 Rewards sign-extend their original word and wrap 32-bit mana, flooring only the
-loser's result against the active minimum. This path does not use the ordinary
-mana clamp. Metadata-zero pairs and mutual death keep their existing paths.
+loser's result against the active minimum. Completion does not use the general
+mana clamp. Mutual death keeps its separate cleanup path.
 For town losers, an exactly zero post-loss population retains the entry frame
 for the reward; a negative pre-clamp population recomputes the town frame before
 terrain changes.
 A headed winner burns the town and leaves a timed remnant. An ordinary winner
-against a headed town may occupy it, setting the original conquest timer and
+may occupy the defeated town, setting the original conquest timer and
 protecting the newly drawn town from loser cleanup. Higher-slot new states can
 already advance later in the same resident pass; no global deferral was added.
 Host casualty arithmetic/timing and `core_remove` semantics remain unchanged.
 In particular, extreme weapon/population combinations can differ from original
 wrapping `SUB.W` outcomes; this is not full combat parity. Original previous-cell
-cleanup remains separate work. The focused `--heading-town` suite covers town
+cleanup remains separate work. `--battle-over` covers the unified completion
+path, including full-A4 ordinary-town cases with signed rewards and successful
+or failed conquest. Full normal/sanitized suites and all 495 starts passed;
+ordinary match inputs and winner assertions are unchanged.
+The focused `--heading-town` suite covers town
 reward boundaries, independent burn-footprint expectations, conquest, same-pass
 state consumption and remnant expiry. Normal/sanitized full suites, original-data
 matches and all 495 starts passed for this extension.
@@ -335,9 +340,8 @@ population skips framing, while a negative pre-clamp result still advances.
 The renderer uses those stored frames. Both current-cell and destination
 encounters initialize attacker and defender frames after writing combat links;
 no casualty or RNG draw occurs at entry. A render-only representative fallback
-remains for malformed/legacy frames. In the migrated heading-completion path,
-exact-zero town losses after normal entry retain their combat frame and use the
-original fallback reward of 100; direct
+remains for malformed/legacy frames. Exact-zero town losses after normal entry
+retain their combat frame and use the original fallback reward of 100; direct
 completion fixtures without entry still exercise retained town-frame rewards.
 Source casualty arithmetic and full timing parity remain separate work. No
 copper, large-sprite specials, original cursor/font,
@@ -357,11 +361,11 @@ terrain/overlay/occupant pixels, transactional load failure, scaled isometric
 sculpt/magnet input, minimap navigation, pause, and reset. Its original top-down
 match regression remains available through an explicit diagnostic toggle. A
 second end-to-end match uses actual isometric clicks and minimap navigation only.
-With battle reinforcement, friendly state transfer and supplied real data the
-isometric sequence reaches victory at tick 9058 (271 battles, 296 settlement
-formations, population 93085/0), and legal
-self-sculpt reaches defeat at tick 694. Normal and sanitizer suites cover these
-paths; no outcome, population or camera patches are used in the match sequence.
+With unified battle completion and supplied real data the isometric sequence
+reaches victory at tick 7515 (263 battles, 163 settlement formations, population
+27636/0), and legal self-sculpt reaches defeat at tick 694. Normal and sanitizer
+suites cover these paths; no outcome, population or camera patches are used in
+the match sequence.
 
 ```sh
 make -C populous_c_port test-graphics-local ASSET_DIR="$PWD/binaries/populous-extracted"
@@ -671,10 +675,10 @@ The fixed scenario-0 sequence selects fight tendency, simulates settlement and
 combat, then after tick 6000 sends legal right-clicks to the four corners of
 visible hostile plots every eight ticks. Budget: 12000 ticks, no teleportation
 or population/result edits. With the supplied original grass LAND it reached
-victory at tick 7515 after 266 engagements and 136 settlement formations, with
-17045 friendly population remaining. Normal and ASan/UBSan runs agreed. Clearing
-the movement delta on town evacuation changes the previous 9058-tick result;
-no test script or winning-state assertion was weakened to recover old timing. A
+victory at tick 7515 after 263 engagements and 163 settlement formations, with
+27636 friendly population remaining. Normal and ASan/UBSan runs agreed. The
+unified ordinary completion changes the earlier 266/136/17045 result without
+changing the input script or winning-state assertion. A
 separate legal self-sculpt sequence verifies defeat and reset/quit. The synthetic
 rule fixture may reach defeat sooner; it is not a balance/authenticity fixture.
 At 20 simulation ticks/sec this represents minutes of gameplay, not a claim

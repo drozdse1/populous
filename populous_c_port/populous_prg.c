@@ -972,9 +972,8 @@ static int core_magnet_direction(int person)
     peeps[person*22+21] = (uint8_t)directions[direction == 8 ? 0 : opposite[direction]];
     return 999;
 }
-/* _battle_over asm:6220-6564, bounded to raw heading metadata on either
- * participant. Casualties and winner selection stay in core_battle. */
-static int core_heading_battle_over(int winner, int loser, bool raw_loser_nonzero)
+/* _battle_over asm:6207-6564. Casualties and winner selection stay in core_battle. */
+static int core_battle_over(int winner, int loser, bool raw_loser_nonzero)
 {
     if (no_peeps < 0 || no_peeps > 208 || winner < 0 || winner >= no_peeps ||
         loser < 0 || loser >= no_peeps || winner == loser ||
@@ -986,7 +985,6 @@ static int core_heading_battle_over(int winner, int loser, bool raw_loser_nonzer
     uint32_t winner_heading, loser_heading;
     memcpy(&winner_heading,peeps+winner*22+14,sizeof winner_heading);
     memcpy(&loser_heading,peeps+loser*22+14,sizeof loser_heading);
-    if (!winner_heading && !loser_heading) return 0;
     int32_t reward=A4_WORD(loser_heading ? 0x3012 : core_leader(enemy)==loser+1 ? 0x3014 : 0x3010);
     A4_WORD(0xae7a+owner*2)=(uint16_t)((uint16_t)A4_WORD(0xae7a+owner*2)+1u);
     if (peeps[loser*22]&1) {
@@ -1078,25 +1076,7 @@ static void core_battle(int first, int second)
      * dies here although the source SUB.W wraps back to a surviving population.
      * Only pre-clamp nonzero crosses into completion, never a wrapped decision. */
     bool raw_loser_nonzero=(loser==first ? first_pop : second_pop)!=0;
-    if (core_heading_battle_over(winner,loser,raw_loser_nonzero)) return;
-    int owner = peep_owner(winner), enemy = peep_owner(loser), reward = A4_WORD(0x3010);
-    if (peeps[loser*22]&1) {
-        int capacity = core_check_life(enemy,peep_word(loser,8));
-        int level = capacity >= 3050 ? 10 : capacity*10/305;
-        reward = A4_WORD(0x2ffa+level*2);
-        core_set_town(loser,1); peeps[winner*22] = 1;
-        capacity = core_check_life(owner,peep_word(winner,8));
-        peeps[winner*22] = capacity > 0 ? 1 : 2;
-        if (capacity > 0) { core_frame_town(winner,capacity); core_set_town(winner,0); }
-        peeps[loser*22] &= ~1;
-    } else {
-        peeps[winner*22] = (peeps[winner*22]&1) ? 1 : 2;
-        if (core_leader(enemy) == loser+1) reward = A4_WORD(0x3014);
-    }
-    core_add_mana(owner,reward); core_add_mana(enemy,-reward);
-    ++A4_WORD(0xae7a+owner*2); core_remove(loser);
-    map_who[peep_word(winner,8)] = winner+1; set_peep_word(winner,10,0);
-    if (!(peeps[winner*22]&1)) set_peep_word(winner,12,0);
+    core_battle_over(winner,loser,raw_loser_nonzero);
 }
 /* _join_battle asm:6663-6765. Keep the pair's combat state intact. */
 static void core_join_battle(int newcomer, int encountered)

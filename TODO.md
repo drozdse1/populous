@@ -109,6 +109,9 @@ Niederlage weiter Tick 694. Nach freundlicher Zustandsvereinigung: Sieg Tick 905
 laeufe und alle 495 Starts bestanden ohne veraenderte Siegerassertionen.
 Nach originaler Siedlungsaufloesung mit geloeschtem Bewegungsdelta: Sieg Tick 7515,
 266 Kaempfe, 136 Stadtgruendungen, 17045/0; Niederlage unveraendert Tick 694.
+Nach gemeinsamem originalem Kampfabschluss: Sieg weiter Tick 7515, nun 263 Kaempfe,
+163 Stadtgruendungen und 27636/0; Niederlage weiter Tick 694. Siegerassertionen
+und Eingabeskript unveraendert.
 Unabhaengiges Review ohne
 blockierende Befunde; kurze Integrationstests sind kein Kampagnen-Paritaetsnachweis.
 
@@ -138,8 +141,9 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 - [x] Kriegsgebundene Wasserproduzenten: primarer Magnet-Wasserschritt schreibt aktuelle Zelle vor Ausweichsuche; vorhandenes Wasserflag erzeugt vor Verlust/Rueckkehr einen Befehl ausser bei Fatalwasser/Kampf. Je Besitzer letzter Schreiber, keine Sofort-Terrainmutation; neuer Wasserzustand erzeugt erst im Folgepass.
 - [ ] **Teilweise:** Nichtkriegs-KI-Produzenten, originale Ertrinkensphasen und weitere Terrain-/Aktionsopcodes anbinden. Ungueltiger Controller-1-Null-Divisor wird sicher abgewiesen, nicht durch einen erfundenen Takt ersetzt.
 - [x] Zustandsuebertragung bei freundlicher Zielzellen-Vereinigung nach `_join_forces`: Metadaten-/Stadtsperre, Anfuehrer/Ansicht, Bevoelkerung/Waffen und Zuruecksetzen der Wartebits/Frames. Nicht mit unveraenderten Kampfframes bei Verstaerkung vermischen.
+- [x] Gemeinsamen originalen Abschluss fuer alle gueltigen Einzelgewinner verwenden; gewoehnliche Kaempfe erhalten ebenfalls Siegeszustand 5/6, Ansichts-/Besitzerbuchung, geschuetzte Drittbelegung und originale Manaarithmetik. Alte Ersatz-Abschlusslogik entfernt; Kampfverluste und Doppel-Tod bleiben separate bestehende Pfade.
 - [ ] **Pruefen:** Weitere Sonderfaelle bei Stadtuebernahme, Kampfende, Belohnungen, gleichem-Zellen-Vereinigungszeitpunkt, Tod und Belegungswechseln gegen die Originalpfade testen; gewoehnlicher Zweierkampf existiert bereits.
-- [ ] **Pruefen:** Bewusste Host-Sicherheitsgrenzen dokumentieren und gegen originale Wortarithmetik abgrenzen: Bevoelkerung bis 32000, normale Manahelfer -250..1999999; rohe Terrain-Befehle und der begrenzte Heading-Kampfabschluss nutzen dagegen ihre originalen Wort-/32-Bit-Regeln. Speicher-/Undefiniertes-Verhalten-Sicherheit nicht zugunsten vermeintlicher Treue aufgeben.
+- [ ] **Pruefen:** Bewusste Host-Sicherheitsgrenzen dokumentieren und gegen originale Wortarithmetik abgrenzen: Bevoelkerung bis 32000, normale Manahelfer -250..1999999; rohe Terrain-Befehle und alle Einzelgewinner-Kampfabschluesse nutzen dagegen ihre originalen Wort-/32-Bit-Regeln. Speicher-/Undefiniertes-Verhalten-Sicherheit nicht zugunsten vermeintlicher Treue aufgeben.
 - [ ] **Pruefen:** RNG-Aufrufreihenfolge, Tick-Reihenfolge und Zustandshashes mit Originalreferenzen vergleichen; gleicher RNG allein ergibt keinen gleichen Spielverlauf.
 
 **Abnahme:** Jeder migrierte Zustand und Uebergang hat reproduzierbare Tests;
