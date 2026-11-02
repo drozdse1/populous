@@ -69,7 +69,7 @@ uses the same celebration frames, but completion clears `0x04` and recalculates
 its town frame from current capacity instead of switching to a walker frame.
 It does not repaint the footprint or run growth, mana, splitting or evacuation
 in that update; ordinary town processing resumes on the following update.
-Heading-involved victories produce these celebration states. The renderer uses
+Single-winner victories produce these celebration states. The renderer uses
 the original celebration and remnant sprites, plus headed walker/wait/water
 variants for their canonical states. Heading presence reads all four host bytes,
 not the original pointer's high halfword. Sprite selection does not mutate A4
@@ -127,11 +127,26 @@ bit `0x10` queue before the port's water loss or land recovery, unless fatal-wat
 mode or the existing battle exemption applies. Newly assigned water flags do not
 produce in that same pass. Later residents overwrite earlier same-owner commands;
 no terrain changes until the consumer runs. Nonwar AI and swamp-target command
-production remain disabled. Existing immediate drowning/recovery differences are unchanged.
+production remain disabled. Already-wet loss/recovery and combat-water differences
+remain unchanged; newly submerged non-combat residents use the entry transition below.
 A controlled two-island fixture raises a route solely through movement-produced
 commands, enters combat at tick 41 and reaches mutual extinction at tick 45 in
 normal and sanitized builds. This is a prerequisite integration test, not an
 original campaign trace or a human-playability claim.
+
+Newly submerged non-combat residents follow the original entry transition
+(`src/populous_prg.asm:3562-3580`): remove any town footprint, set flags to `0x12`,
+and clear the stored frame only if its signed word is at least 8. The entry update
+preserves population, timers and occupancy; it does not move, queue rescue, apply
+fatal-water removal or deduct drowning loss. Those water effects begin on the
+next update carrying bit `0x10`. The existing already-wet branch, dry-land
+recovery, combat exemption and word-arithmetic differences remain separate work.
+This is not full drowning or original movement-phase parity. `--water-entry`
+checks full-A4 transitions, town/city footprints at map boundaries, opaque heading
+preservation, all 65,536 frame words, subsequent cleanup, deferred rescue and
+pause/result/quit gates without changing the match input or winner assertions.
+Focused and full normal/ASan/UBSan suites, original-data matches and all 495
+original starts passed after this transition.
 
 Heading target selection (`_get_heading`) now has a bounded implementation:
 self when no enemy qualifies, otherwise the first nearest living different-owner
@@ -361,9 +376,9 @@ terrain/overlay/occupant pixels, transactional load failure, scaled isometric
 sculpt/magnet input, minimap navigation, pause, and reset. Its original top-down
 match regression remains available through an explicit diagnostic toggle. A
 second end-to-end match uses actual isometric clicks and minimap navigation only.
-With unified battle completion and supplied real data the isometric sequence
-reaches victory at tick 7515 (263 battles, 163 settlement formations, population
-27636/0), and legal self-sculpt reaches defeat at tick 694. Normal and sanitizer
+With delayed water entry and supplied real data the isometric sequence reaches
+victory at tick 7516 (263 battles, 164 settlement formations, population 27250/0),
+and legal self-sculpt reaches defeat at tick 695. Normal and sanitizer
 suites cover these paths; no outcome, population or camera patches are used in
 the match sequence.
 
@@ -513,9 +528,11 @@ Every positive height in the entire 65x65 vertex map decreases by one, without
 recursive propagation or RNG. The whole 64x64 cell map is regenerated, clearing
 all movement-history words; dirty bounds and build counter stay unchanged. Even
 an all-water cast pays and rebuilds the map. Population and occupancy do not
-change during casting; subsequent ticks apply existing water/settlement rules.
-Those rules still use the port's immediate movement model, including its battle
-water exemption, not full original drowning/tick parity. Sound, editor bypass,
+change during casting. The first subsequent resident update marks newly submerged
+non-combat residents wet and removes their town footprint without population loss;
+water loss or fatal removal follows on the next wet update. These rules still use
+the port's immediate movement model and battle-water exemption, not full original
+drowning/tick parity. Sound, editor bypass,
 original toolbar and AI power selection remain deferred. `P` never makes it free.
 
 ## Volcano power
@@ -675,10 +692,10 @@ The fixed scenario-0 sequence selects fight tendency, simulates settlement and
 combat, then after tick 6000 sends legal right-clicks to the four corners of
 visible hostile plots every eight ticks. Budget: 12000 ticks, no teleportation
 or population/result edits. With the supplied original grass LAND it reached
-victory at tick 7515 after 263 engagements and 163 settlement formations, with
-27636 friendly population remaining. Normal and ASan/UBSan runs agreed. The
-unified ordinary completion changes the earlier 266/136/17045 result without
-changing the input script or winning-state assertion. A
+victory at tick 7516 after 263 engagements and 164 settlement formations, with
+27250 friendly population remaining. Normal and ASan/UBSan runs agreed. Delayed
+water entry changes the earlier 7515/263/163/27636 result without changing the
+input script or winning-state assertion. A
 separate legal self-sculpt sequence verifies defeat and reset/quit. The synthetic
 rule fixture may reach defeat sooner; it is not a balance/authenticity fixture.
 At 20 simulation ticks/sec this represents minutes of gameplay, not a claim

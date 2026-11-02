@@ -2380,12 +2380,18 @@ static void _move_peeps(void)
         int flags = peeps[person*22];
         int position = peep_word(person,8);
         /* Entry flag, before water mutation or land recovery (asm:3481-3543).
-         * Keep host battle exemption and immediate damage/recovery unchanged. */
+         * Keep host battle exemption and already-wet damage/recovery unchanged. */
         if ((flags&16) && !(flags&8) && !(game_mode&GAME_MODE_WATER_FATAL))
             core_queue_war_raise(peep_owner(person),position);
         if (!map_blk[position] && !(flags&8)) {
             if (flags&1) core_set_town(person,1);
             peeps[person*22] = 18;
+            /* asm:3562-3580: new water entry only reframes; exact 18 then
+             * reaches the common positive-population check without other work. */
+            if (!(flags&16)) {
+                if (peep_word(person,12) >= 8) set_peep_word(person,12,0);
+                continue;
+            }
             if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
             int population = peep_word(person,4)-2*A4_WORD(0x2fb0);
             set_peep_word(person,4,population > 0 ? population : 0);

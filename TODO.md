@@ -111,7 +111,8 @@ Nach originaler Siedlungsaufloesung mit geloeschtem Bewegungsdelta: Sieg Tick 75
 266 Kaempfe, 136 Stadtgruendungen, 17045/0; Niederlage unveraendert Tick 694.
 Nach gemeinsamem originalem Kampfabschluss: Sieg weiter Tick 7515, nun 263 Kaempfe,
 163 Stadtgruendungen und 27636/0; Niederlage weiter Tick 694. Siegerassertionen
-und Eingabeskript unveraendert.
+und Eingabeskript unveraendert. Nach verzoegertem Wassereintritt: Sieg Tick 7516,
+263 Kaempfe, 164 Stadtgruendungen und 27250/0; Niederlage Tick 695.
 Unabhaengiges Review ohne
 blockierende Befunde; kurze Integrationstests sind kein Kampagnen-Paritaetsnachweis.
 
@@ -133,6 +134,7 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 - [x] Exakten Stadt-Siegeszustand 5 verbrauchen: gleiche Feierframes, danach Stadtframe aus aktueller Kapazitaet berechnen; keine Fussabdruckpflege, Mana, Wachstum, Abspaltung oder Aufloesung im Abschluss-Tick. Normaler Stadtpfad erst beim naechsten Bewohnerupdate.
 - [x] Heading-gebundenen Einzelgewinner gegen Nicht-Stadt-Verlierer abschliessen: Siegeszustand 5/6, originale Belohnungsprioritaet und Wort-/32-Bit-Manaarithmetik, Besitzerbuchung, geschuetzte Drittbelegung und Ansichtsuebergabe. Kein neuer globaler Kampf-/Todeszeitpunkt.
 - [x] Heading-gebundene Stadtniederlage: Belohnung bei exakt null versus negativer Restpopulation unterscheiden, Staedte niederbrennen und Restzustand 0x80 erzeugen; ohne Heading des Gewinners Stadtuebernahme mit originalem Timer. Besitzerbuchung und bestehende Siegesverbraucher verbinden, gleiche-Pass-Reihenfolge erhalten.
+- [x] Neuen Wassereintritt ohne Kampfbit verzoegern: Stadtfussabdruck entfernen, exakt 0x12 setzen und nur vorzeichenbehaftete Frames >=8 nullen; keine Verluste/Fatalentfernung, Rettungsnachricht oder Bewegung im Eintrittsupdate. Bestehender Wasserverbrauch, Landrueckkehr und Kampf-Wasserausnahme bleiben getrennte Folgeschritte.
 - [ ] **Teilweise:** Gemischte Sonderflags, Ertrinkensphasen, Darstellung und originale Wortueberlaeufe der Kampfverluste migrieren. Der Host behaelt bisherige Verluste/Entscheidungen; extreme Waffenwerte koennen vom originalen SUB.W abweichen.
 - [ ] **Teilweise:** Weitere Sonderfiguren und `_do_funny`-/`_do_place_funny`-Ereignisse, auch bei erschoepften 208 normalen Bewohnerplaetzen; Gameplay-Ritter sind separat angebunden.
 - [x] Sumpf-Folgen fuer normale Bewohner am abgeschlossenen Gehframe: gesamte Population entfernen, Effekt 66, flachen Sumpf zu Block 15 zuruecksetzen; bodenlosen Sumpf erhalten.
