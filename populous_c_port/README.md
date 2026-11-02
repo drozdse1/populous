@@ -176,9 +176,12 @@ retains that byte. For controller 1, a corrupt zero divisor discards that owner'
 command and logs an error without dividing or clearing its latch. Controller 0
 does not use that divisor. No replacement cadence is guessed.
 
-Primary-water magnet navigation still produces deferred raises only during war.
-Ordinary and admitted heading navigation queue the walker's current cell, then
-continue fallback navigation; opaque invalid headings do not produce.
+Primary-water magnet navigation queues deferred raises during war, or outside
+war for controller word exactly 1 when `GAME_MODE_NO_BUILD` is clear
+(`src/populous_prg.asm:5277-5327`). Ordinary and admitted heading navigation queue
+the walker's current cell, not the blocked destination, then continue fallback
+navigation. Opaque invalid headings do not produce. Fatal-water mode does not
+suppress this still-dry walker's command; only the old-water caller has that gate.
 Residents already carrying bit `0x10` also queue outside war when their owner's
 controller word is exactly 1 and `GAME_MODE_NO_BUILD` is clear
 (`src/populous_prg.asm:3491-3543`). Fatal-water mode and the existing battle
@@ -187,7 +190,14 @@ including on already-dry terrain, without checking funds, cadence or the old lat
 Newly assigned water flags do not produce in that same pass. Later residents
 overwrite earlier same-owner commands; rejection leaves a pending command intact.
 No terrain changes until the consumer runs, and normal raises still cost mana.
-Other nonwar navigation/AI and swamp-target command production remain disabled.
+Both callers share the same validated admission and mailbox writer; their
+state-specific fatal/heading guards remain at the callsites. `--magnet-rescue`
+checks word-controller and mode boundaries, current-cell coordinates, opaque
+references, fallback history, mixed producer ordering and paid retry-to-crossing.
+Focused/full normal and sanitized suites, real-data victories, historical cadence
+regressions and all 495 starts passed with unchanged limits after enabling this
+walking producer; measured match outcomes remain those listed below.
+Other AI and swamp-target command production remain disabled.
 Mixed-water recovery and combat-water differences remain; canonical entry,
 submerged loss and dry recovery are described below.
 A controlled two-island fixture raises a route solely through movement-produced
