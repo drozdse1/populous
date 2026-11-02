@@ -115,7 +115,14 @@ und Eingabeskript unveraendert. Nach verzoegertem Wassereintritt: Sieg Tick 7516
 263 Kaempfe, 164 Stadtgruendungen und 27250/0; Niederlage Tick 695.
 Nach lokalen Kapazitaetskorrekturen: isometrischer Sieg Tick 11938 (125 Kaempfe,
 392 Stadtgruendungen, 192496/0), Diagnoseansicht Tick 11953 (125/402/212387/0).
-Niederlage weiter Tick 695; Eingaben, Siegerassertionen und 12000-Tick-Budget unveraendert.
+Niederlage weiter Tick 695; Eingaben, Siegerassertionen und 12000-Tick-Budget in dieser Etappe unveraendert.
+Nach Nichtkriegs-Wasserrettung gewinnt die alte Acht-Tick-Versenkung nicht mehr;
+separate Originaldaten-Regression bestaetigt beide laufenden Partien bei Tick12000.
+Mit Senkeingaben in jedem Simulationsschritt statt im Acht-Tick-Abstand
+ab6000 gewinnen beide Ansichten bei Tick11928: isometrisch125/394/205816/0,
+Diagnose125/401/219245/0. Niederlage695, strikte Siegerassertionen und Limits erhalten.
+Fokussierte/vollstaendige Normal-/Sanitizerlaeufe, historische Strategien und alle495
+Starts bestanden.
 Unabhaengiges Review ohne
 blockierende Befunde; kurze Integrationstests sind kein Kampagnen-Paritaetsnachweis.
 
@@ -150,7 +157,8 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 - [x] Verbrauch des gesetzten Kriegszustands und Siedlungsaufloesung: vier Ziele auf 0x0820; exakte friedliche Stadt bei Kapazitaet <=0, Metadaten oder Krieg aufloesen, Frame/Delta leeren und Tick beenden. Bewohnerdaten/Belegung erhalten, vorhandenen Stadtfussabdruck entfernen; kein vorgezogener Mana-/Wachstums-/Bewegungsschritt.
 - [x] Nachgelagerter Terrain-Befehlsempfaenger: je Besitzer drei Bytes, Besitzerreihenfolge 0/1, unabhaengiger Controller-/Divisor-Latch, Opcode 1 mit originalem rekursivem Heben, Wortkosten und lokalen Kartenupdates; terminale Partie verwirft alte Befehle.
 - [x] Kriegsgebundene Wasserproduzenten: primarer Magnet-Wasserschritt schreibt aktuelle Zelle vor Ausweichsuche; vorhandenes Wasserflag erzeugt vor Verlust/Rueckkehr einen Befehl ausser bei Fatalwasser/Kampf. Je Besitzer letzter Schreiber, keine Sofort-Terrainmutation; neuer Wasserzustand erzeugt erst im Folgepass.
-- [ ] **Teilweise:** Nichtkriegs-KI-Produzenten, originale Ertrinkensphasen und weitere Terrain-/Aktionsopcodes anbinden. Ungueltiger Controller-1-Null-Divisor wird sicher abgewiesen, nicht durch einen erfundenen Takt ersetzt.
+- [x] Bereits nasse Computerbewohner ausserhalb des Kriegs retten: Controllerwort exakt1 und Bauen erlaubt erzeugt denselben bezahlten Terrainbefehl vor Wasserverlust/Rueckkehr. Wortgrenzen, Wiederherstellung, Reihenfolge und Stadt-Latch getestet. Alte Acht-Tick-Versenkung als separate laufende Partie bei Tick12000 erhalten; Siegskripte senken nach6000 jetzt jeden Tick ueber dieselben legalen SDL-Eingaben, ohne geaenderte Siegerassertion oder Limits.
+- [ ] **Teilweise:** Weitere Nichtkriegs-KI-Produzenten, originale Ertrinkensphasen und weitere Terrain-/Aktionsopcodes anbinden. Ungueltiger Controller-1-Null-Divisor wird sicher abgewiesen, nicht durch einen erfundenen Takt ersetzt.
 - [x] Zustandsuebertragung bei freundlicher Zielzellen-Vereinigung nach `_join_forces`: Metadaten-/Stadtsperre, Anfuehrer/Ansicht, Bevoelkerung/Waffen und Zuruecksetzen der Wartebits/Frames. Nicht mit unveraenderten Kampfframes bei Verstaerkung vermischen.
 - [x] Gemeinsamen originalen Abschluss fuer alle gueltigen Einzelgewinner verwenden; gewoehnliche Kaempfe erhalten ebenfalls Siegeszustand 5/6, Ansichts-/Besitzerbuchung, geschuetzte Drittbelegung und originale Manaarithmetik. Alte Ersatz-Abschlusslogik entfernt; Kampfverluste und Doppel-Tod bleiben separate bestehende Pfade.
 - [x] Gewoehnliche Stadtwirtschaft mit originalen Breiten: signiertes Mana-Tabellenwort modulo32 addieren, Wachstum nach Abspaltungsversuch modulo16 speichern und am normalen Stadtende nichtpositive Population aufraeumen. Acht-Tick-Takt und Waffenbyte erhalten; Siedlungsaufloesung umgeht weiterhin diese Todespruefung.

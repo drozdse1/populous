@@ -895,12 +895,25 @@ static int core_explore(int person)
     for (int index = 0; index < 5; ++index) if (distance[index] != 5) return choices[index];
     return 999;
 }
-/* _move_magnet_peeps asm:5293-5327 / _move_peeps asm:3505-3543.
+/* _move_magnet_peeps asm:5293-5327.
  * Owner mailboxes overwrite unconditionally; the tick consumer owns execution. */
 static void core_queue_war_raise(int owner, int position)
 {
     if (!A4_WORD(0xae80) || owner < 0 || owner > 1 || position < 0 || position >= 4096) return;
     int displacement = owner * 46;
+    A4_DISP(0x82b6 + displacement)[0] = 1;
+    A4_DISP(0x82b7 + displacement)[0] = position & 63;
+    A4_DISP(0x82b8 + displacement)[0] = position / 64;
+    A4_WORD(0x82be + displacement) = 1;
+}
+/* _move_peeps asm:3491-3543. Called for live, nonfatal old-water entries;
+ * admission is independent of current terrain, latch, cadence and funds. */
+static void core_queue_submerged_raise(int owner, int position)
+{
+    if (owner < 0 || owner > 1 || position < 0 || position >= 4096) return;
+    int displacement = owner * 46;
+    if (!A4_WORD(0xae80) &&
+        (A4_WORD(0x82bc + displacement) != 1 || (game_mode&GAME_MODE_NO_BUILD))) return;
     A4_DISP(0x82b6 + displacement)[0] = 1;
     A4_DISP(0x82b7 + displacement)[0] = position & 63;
     A4_DISP(0x82b8 + displacement)[0] = position / 64;
@@ -2405,9 +2418,9 @@ static void _move_peeps(void)
         int flags = peeps[person*22];
         int position = peep_word(person,8);
         /* Entry flag, before water mutation or land recovery (asm:3481-3543).
-         * Keep the war-only predicate and host battle exemption/recovery. */
+         * Retain the host battle exemption and existing recovery behavior. */
         if ((flags&16) && !(flags&8) && !(game_mode&GAME_MODE_WATER_FATAL))
-            core_queue_war_raise(peep_owner(person),position);
+            core_queue_submerged_raise(peep_owner(person),position);
         if (!map_blk[position] && !(flags&8)) {
             if (flags&16) {
                 /* asm:3484-3490,3544-3559,4308-4315: fatal removal sees

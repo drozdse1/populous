@@ -168,27 +168,47 @@ controller/divisor latch does not gate command execution. Raw raises use origina
 recursive bounds and local map rebuilding, not the UI sculpt helper; war makes
 them free, while normal execution charges the original word-sized build cost,
 including 10 mana for a saturated vertex. Diagnostic `P` is not editor permission.
-Nonwar producers and other command opcodes remain separate work.
+Nonwar submerged rescue uses this consumer too; other command opcodes and
+remaining AI producers are separate work.
 Starts restore controllers 0/1, divisors 1/selected speed and latches 1/0.
 Runtime initialization rejects zero speed transactionally; the disk parser still
 retains that byte. For controller 1, a corrupt zero divisor discards that owner's
 command and logs an error without dividing or clearing its latch. Controller 0
 does not use that divisor. No replacement cadence is guessed.
 
-War-only water assistance produces those deferred raises. Ordinary and admitted
-heading navigation queue the walker's current cell when the primary step is
-water, then continue fallback navigation; opaque invalid headings do not produce.
-Residents already carrying
-bit `0x10` queue before the port's water loss or land recovery, unless fatal-water
-mode or the existing battle exemption applies. Newly assigned water flags do not
-produce in that same pass. Later residents overwrite earlier same-owner commands;
-no terrain changes until the consumer runs. Nonwar AI and swamp-target command
-production remain disabled. Mixed-water recovery and combat-water differences
-remain; canonical entry, submerged loss and dry recovery are described below.
+Primary-water magnet navigation still produces deferred raises only during war.
+Ordinary and admitted heading navigation queue the walker's current cell, then
+continue fallback navigation; opaque invalid headings do not produce.
+Residents already carrying bit `0x10` also queue outside war when their owner's
+controller word is exactly 1 and `GAME_MODE_NO_BUILD` is clear
+(`src/populous_prg.asm:3491-3543`). Fatal-water mode and the existing battle
+exemption suppress this entry producer. It runs before water loss or land recovery,
+including on already-dry terrain, without checking funds, cadence or the old latch.
+Newly assigned water flags do not produce in that same pass. Later residents
+overwrite earlier same-owner commands; rejection leaves a pending command intact.
+No terrain changes until the consumer runs, and normal raises still cost mana.
+Other nonwar navigation/AI and swamp-target command production remain disabled.
+Mixed-water recovery and combat-water differences remain; canonical entry,
+submerged loss and dry recovery are described below.
 A controlled two-island fixture raises a route solely through movement-produced
 commands, enters combat at tick 41 and reaches mutual extinction at tick 45 in
 normal and sanitized builds. This is a prerequisite integration test, not an
 original campaign trace or a human-playability claim.
+
+The every-eight-ticks sinking strategy used before nonwar rescue is no longer a
+verified victory strategy with this producer enabled: at tick 12000 the isometric
+run still has populations 65387/9594 (225 battles), and the diagnostic run has
+26818/177062 (316 battles). Those earlier victory timings are historical evidence,
+not current rescue-enabled results. `--rescue-legacy-match` preserves both old
+scripts as explicit ongoing-at-12000 regressions. The default victory scripts now
+use the same legal lowering inputs every tick after tick 6000, rather than every
+eighth tick. Both win at tick 11928: isometric 125 battles, 394 settlement formations,
+population 205816/0; diagnostic 125 battles, 401 formations, population 219245/0.
+Defeat remains tick 695. Start, game rules, strict victory assertions and test
+limits are unchanged. Focused/full normal and sanitized suites, original-data
+victories, both historical-script regressions and all 495 starts passed.
+`--water-rescue` covers admission, word-controller boundaries, deferred payment,
+recovery, same-owner overwrite, shared town latches and stopped ticks.
 
 Newly submerged non-combat residents follow the original entry transition
 (`src/populous_prg.asm:3562-3580`): remove any town footprint, set flags to `0x12`,
@@ -210,7 +230,7 @@ is decided from the signed wrapped result, not an unbounded C intermediate; for
 example population 100 with walk loss 30000 becomes 5636. Word wrapping can leave
 up to 32767 population; this path does not apply the ordinary 32000 helper cap.
 Survivors preserve their flags, frames, timers, metadata and town footprints.
-Fatal mode removes them without producing a rescue command; nonfatal war rescue
+Fatal mode removes them without producing a rescue command; admitted rescue
 is queued before loss, even for a dying producer. Cleanup retains the host's
 existing leader/view and occupancy policy. No drowning frame, waiting timer or
 movement advances while still submerged. `--water-loss`
@@ -296,7 +316,7 @@ remain outside this bounded change. `--water-town` covers full-A4 state/loss
 matrices, selective splits and growth revival, clipped footprints, deferred rescue,
 and 200 frozen pause/result/quit cases. Focused/full normal and sanitized suites,
 original-data matches and all 495 starts passed with unchanged limits. The two
-victory sequences still finish at ticks 11938 and 11953; defeat remains tick 695.
+victory sequences at this milestone finished at ticks 11938 and 11953; defeat remained tick 695.
 
 Battle casualties now use the original `SUB.W` result for survival decisions
 (`src/populous_prg.asm:6082-6200`). Both losses use the lesser pre-casualty rolled
@@ -311,7 +331,7 @@ RNG order, battle scheduling, water exemptions and completion remain unchanged.
 `--battle-loss` exercises these word boundaries, independent full-A4 completion
 and simultaneous-death expectations, both argument orders, and same-pass resident
 continuation. Focused/full normal and sanitized suites, original-data matches and
-all 495 starts passed. Victory ticks remain 11938/11953 and defeat 695, with
+all 495 starts passed. At this milestone victory ticks remained 11938/11953 and defeat 695, with
 unchanged winner assertions, inputs and time limits.
 
 Heading target selection (`_get_heading`) now has a bounded implementation:
@@ -541,9 +561,9 @@ terrain/overlay/occupant pixels, transactional load failure, scaled isometric
 sculpt/magnet input, minimap navigation, pause, and reset. Its original top-down
 match regression remains available through an explicit diagnostic toggle. A
 second end-to-end match uses actual isometric clicks and minimap navigation only.
-With original capacity overrides and supplied real data the isometric sequence
-reaches victory at tick 11938 (125 battles, 392 settlement formations, population
-192496/0), and legal self-sculpt reaches defeat at tick 695. Normal and sanitizer
+With nonwar rescue, the every-tick input sequence and supplied real data, the
+isometric sequence reaches victory at tick 11928 (125 battles, 394 settlement
+formations, population 205816/0), and legal self-sculpt reaches defeat at tick 695. Normal and sanitizer
 suites cover these paths; no outcome, population or camera patches are used in
 the match sequence.
 
@@ -855,14 +875,17 @@ POPULOUS_TEST_REAL_DATA=1 \
 
 The fixed scenario-0 sequence selects fight tendency, simulates settlement and
 combat, then after tick 6000 sends legal right-clicks to the four corners of
-visible hostile plots every eight ticks. Budget: 12000 ticks, no teleportation
-or population/result edits. With the supplied original grass LAND it reached
-victory at tick 11953 after 125 engagements and 402 settlement formations, with
-212387 friendly population remaining in the diagnostic-view sequence. Normal and
-ASan/UBSan runs agreed. Original capacity overrides change the earlier
-7516/263/164/27250 result without changing the input script, 12000-tick budget or
-winning-state assertion. The separate isometric sequence finishes at tick 11938. A
-separate legal self-sculpt sequence verifies defeat and reset/quit. The synthetic
+visible hostile plots every tick. Budget: 12000 ticks, no teleportation
+or population/result edits. With nonwar rescue and the supplied original grass
+LAND it reaches victory at tick 11928 after 125 engagements and 401 settlement
+formations, with 219245 friendly population remaining in the diagnostic view.
+Normal and ASan/UBSan runs agreed. The original every-eight-ticks script no longer
+wins within that budget; `--rescue-legacy-match` retains its new ongoing outcome
+as a separate regression. The default's stricter input cadence is explicit, not
+a relaxed victory assertion or changed game rule. Historical capacity-override
+results were 11953/125/402/212387 (diagnostic) and 11938 (isometric), following the
+earlier 7516/263/164/27250 result. The current isometric sequence also wins at
+11928. A separate legal self-sculpt sequence verifies defeat and reset/quit. The synthetic
 rule fixture may reach defeat sooner; it is not a balance/authenticity fixture.
 At 20 simulation ticks/sec this represents minutes of gameplay, not a claim
 that a human can execute the automated click rate.
