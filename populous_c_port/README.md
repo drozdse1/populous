@@ -99,8 +99,9 @@ split attempt. The ordinary completion checks the signed population and removes
 nonpositive towns, including on non-economy turns. Evacuation remains an immediate
 return that bypasses this check. Thus an eligible direct town update can revive
 a nonpositive population through growth; the resident-loop entry still skips
-initially nonpositive records. AI selection/terrain work and dry `0x11` town
-recovery remain separate work.
+initially nonpositive records. Dry `0x11` recovery now reaches this same consumer
+after water loss, including its growth-revival and evacuation-bypass behavior.
+AI selection and terrain work remain separate work.
 This is not full town-consumer or original cleanup parity. `--town-economy`
 checks literal word/longword boundaries, cadence, low-byte weapons, direct revival
 and evacuation bypass, split/full-slot behavior, and resident-pass death bookkeeping.
@@ -227,7 +228,7 @@ first frame update; a negative result still advances it before cleanup. Thus a
 survivor at frame 6 can move in this update, whereas frame 7 or 93 ends at frame 1
 without moving. Rescue terrain does not guarantee survival of the following
 recovery update. Other mixed-water states retain the previous host recovery
-behavior, except for the bounded victory, waiting and remnant states described
+behavior, except for the bounded town, victory, waiting and remnant states described
 below; this change does not establish full drowning, movement or cleanup parity.
 `--water-recovery` covers literal full-A4 frame/loss outcomes, negative-population
 encounter prevention, swamp ordering, stopped ticks and rescue-to-death sequences.
@@ -277,6 +278,25 @@ full-A4 dry/wet boundaries, word losses, timer expiry, fatal ordering, map edges
 foreign occupancy, stopped ticks and deferred rescue/death sequences. Focused/full
 normal and sanitized suites, original-data matches and all 495 starts passed;
 original-data match outcomes remain unchanged.
+
+Dry water-town state `0x11` recovers to exact town state `1` after the wrapped
+water loss (`src/populous_prg.asm:3544-3557,3600-4055`). Fatal mode instead removes
+the original town state before loss or framing. Nonfatal recovery computes the
+first town frame for any nonzero population, including negative words; exactly
+zero skips that call. Both then reach the ordinary town consumer without an early
+death check. Eligible growth can revive a nonpositive population, while ordinary
+completion removes one that remains nonpositive. Evacuation for unsuitable land,
+heading metadata or war deliberately bypasses that cleanup: it leaves a walker
+record with the post-loss population, which the next pass skips if nonpositive.
+The first frame call also affects whether subsequent footprint maintenance sees
+a frame change. Existing capacity overrides, split initialization and protected
+occupancy apply; no extra movement occurs in the recovery update. Town AI terrain
+work, candidate selection, full-pool special figures and original cleanup parity
+remain outside this bounded change. `--water-town` covers full-A4 state/loss
+matrices, selective splits and growth revival, clipped footprints, deferred rescue,
+and 200 frozen pause/result/quit cases. Focused/full normal and sanitized suites,
+original-data matches and all 495 starts passed with unchanged limits. The two
+victory sequences still finish at ticks 11938 and 11953; defeat remains tick 695.
 
 Heading target selection (`_get_heading`) now has a bounded implementation:
 self when no enemy qualifies, otherwise the first nearest living different-owner

@@ -2423,7 +2423,7 @@ static void _move_peeps(void)
             if (peep_word(person,12) >= 8) set_peep_word(person,12,0);
             continue;
         }
-        if ((flags == 18 || flags == 0x15 || flags == 0x16 ||
+        if ((flags == 0x11 || flags == 18 || flags == 0x15 || flags == 0x16 ||
              flags == 0x32 || flags == 0x52 || flags == 0x72 || flags == 0x90) && map_blk[position]) {
             /* asm:3484-3490,3544-3557: dry recovery still loses first.
              * Frame even a negative word, but never zero; ignore completion.
@@ -2434,7 +2434,14 @@ static void _move_peeps(void)
             uint16_t loss = (uint16_t)(2u*(uint16_t)A4_WORD(0x2fb0));
             set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)-loss));
             peeps[person*22] = flags &= 0xef;
-            core_frame_walker(person);
+            /* asm:5728,5810-5832: zero skips this first frame, negative does
+             * not. Exact-1 still enters the ordinary town consumer below:
+             * evacuation bypasses death; eligible growth can revive the word.
+             * This does not enable town AI, candidate selection or funny work. */
+            if (flags == 1) {
+                if (peep_word(person,4)!=0)
+                    core_frame_town(person,core_check_life(peep_owner(person),position));
+            } else core_frame_walker(person);
             if (flags == 2 && peep_word(person,4)<=0) { core_remove(person); continue; }
         } else if (flags&16) { peeps[person*22] = 2; set_peep_word(person,12,0); flags = 2; }
         /* asm:3584-3599, scoped to exact 5/6 after existing water handling.

@@ -2509,8 +2509,8 @@ static void test_water_remnant_gates(void)
         assert(core_result==(owner ? 1 : 2) && !core_battles && !core_settlements);
     }
     /* All other unported dry water combinations retain reset/no-loss behavior.
-     * Exact 0x90 now has dedicated full-state coverage above, never this oracle. */
-    const int mixed[]={0x10,0x11,0x13,0x14,0x17,0x18,0x19,0x1e,0x30,0x31,
+     * Exact 0x90 and 0x11 have dedicated full-state coverage, never this oracle. */
+    const int mixed[]={0x10,0x13,0x14,0x17,0x18,0x19,0x1e,0x30,0x31,
                        0x33,0x36,0x50,0x51,0x53,0x56,0x70,0x71,0x73,0x76,
                        0x91,0x92,0x94,0x95,0x96,0x97,0x98,0xb2,0xd2,0xf2};
     for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal)
@@ -8338,8 +8338,308 @@ static void test_battle_frame_render_and_entry(void)
     _closeall(); SDL_Quit();
 }
 
+/* Dry exact-0x11 recovery: independent literal capacities and word arithmetic.
+ * In particular, removing the first town frame rewrites sentinel overlays for
+ * negative words; treating zero as nonzero suppresses a required refresh. */
+static void setup_water_town(int owner, int fixture, int position)
+{
+    setup_town_economy(owner,100);
+    memset(map_blk,1,4096); memset(map_bk2,55,4096); memset(map_who,0,4096);
+    set_peep_word(0,8,position); set_peep_word(0,12,87); peeps[0]=0x11;
+    map_who[position]=1;
+    for (int cell=0; cell<4096; ++cell) {
+        int dx=abs(cell%64-position%64), dy=abs(cell/64-position/64);
+        int inner=dx<=1 && dy<=1;
+        int ordinary=inner || (dx==2 && (dy==0 || dy==2)) || (dy==2 && dx==0);
+        if ((fixture==1 && cell==position) || (fixture==2 && inner) ||
+            (fixture>=3 && ordinary)) map_blk[cell]=31+owner;
+        if (fixture>=5 && inner) map_bk2[cell]=41;
+    }
+    if (fixture==3 || fixture==6) map_blk[position+130]=32-owner;
+    if (fixture>=5) map_bk2[position]=42;
+    if (fixture==7) map_bk2[position-65]=55;
+    if (fixture==8) map_blk[position]=15;
+    core_leader(1-owner)=0;
+    for (int level=0; level<11; ++level) {
+        A4_WORD(0x2fb6+level*2)=-17;
+        A4_WORD(0x2fcc+level*2)=0xab09;
+        A4_WORD(0x2fe2+level*2)=11;
+    }
+}
+
+static void test_water_town_state(void)
+{
+    const struct { int fixture, capacity, frame, city, flat; } plots[]={
+        {0,0,32,0,0},{1,65,34,0,0},{2,185,38,0,0},{3,290,41,0,0},
+        {4,3050,42,0,0},{5,3050,42,9,0},{6,290,41,9,0},
+        {7,3050,42,8,0},{8,3050,42,9,1}
+    };
+    const struct { int initial, loss, water, grown; } populations[]={
+        {100,1,98,109},{3,1,1,12},{2,1,0,11},{1,1,-1,10},
+        {100,30000,5636,5647},{1,16385,32767,-32758},
+        {100,16384,-32668,-32657},{1,0,1,12}
+    };
+    unsigned checked=0;
+    for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal)
+    for (int war=0; war<2; ++war) for (int heading=0; heading<9; ++heading)
+    for (unsigned plot=0; plot<sizeof plots/sizeof plots[0]; ++plot)
+    for (unsigned sample=0; sample<sizeof populations/sizeof populations[0]; ++sample)
+    for (int turn=7; turn<=8; ++turn) {
+        setup_water_town(owner,plots[plot].fixture,650);
+        set_peep_word(0,4,populations[sample].initial);
+        A4_WORD(0x2fb0)=populations[sample].loss; game_turn=turn;
+        game_mode=fatal; A4_WORD(0xae80)=war;
+        if (heading) {
+            core_leader(owner)=0;
+            peeps[14+(heading-1)/2]=(heading&1) ? 1 : 0x80;
+        }
+        /* Full pool excludes splits here while retaining their real predicate.
+         * Live inert battle records keep allocation full without other work. */
+        for (int person=1; person<208; ++person) {
+            peeps[person*22]=8; peeps[person*22+1]=1-owner;
+            set_peep_word(person,4,77); set_peep_word(person,6,person);
+            set_peep_word(person,8,900);
+        }
+        no_peeps=208;
+        int occupant=sample%3; map_who[650]=occupant;
+        uint8_t expected[sizeof prg_a4_area];
+        int evacuate=!plots[plot].capacity || war || heading;
+        int population=populations[sample].water;
+        if (!evacuate && turn==8) population=populations[sample].grown;
+        if (fatal) water_loss_expected(expected,owner,650,0);
+        else {
+            /* Reuse only the existing positive loss/queue oracle; death is
+             * deliberately deferred until AFTER the town consumer below. */
+            water_loss_expected(expected,owner,650,1);
+            celebration_expected_word(expected,0x9c26+4,population);
+            expected[peeps-prg_a4_area]=evacuate ? 2 : 1;
+            celebration_expected_word(expected,0x2ff8,plots[plot].city);
+            celebration_expected_word(expected,0x2fb2,plots[plot].flat);
+            celebration_expected_word(expected,0x9c26+12,evacuate ? 0 : plots[plot].frame);
+            if (evacuate) {
+                celebration_expected_word(expected,0x9c26+10,0);
+                town_footprint_map(expected,owner,650,0,0,1);
+            } else {
+                if (!occupant) expected[map_who-prg_a4_area+650]=1;
+                if (turn==8) {
+                    expected[peeps-prg_a4_area+3]=9;
+                    town_expected_long(expected,0x9a02+owner*16,owner ? 23439 : 12328);
+                }
+                int refresh=populations[sample].water==0 || plots[plot].flat ||
+                    (plots[plot].frame==42 && plots[plot].city<9);
+                town_footprint_map(expected,owner,650,plots[plot].frame,refresh,population<=0);
+                if (population<=0) {
+                    expected[peeps-prg_a4_area]=0;
+                    celebration_expected_word(expected,0x9c26+4,0);
+                    if (occupant<=1) expected[map_who-prg_a4_area+650]=0;
+                    celebration_expected_word(expected,0x99f6+owner*16,0);
+                    celebration_expected_word(expected,0x99f8+owner*16,650);
+                    celebration_expected_word(expected,owner ? 0xae76 : 0xae78,650);
+                    celebration_expected_word(expected,0xae68,0);
+                }
+            }
+        }
+        _move_peeps();
+        if (memcmp(expected,prg_a4_area,sizeof expected))
+            fprintf(stderr,"water town owner=%d fatal=%d war=%d heading=%d plot=%u pop=%u turn=%d flags=%x pop=%d frame=%d\n",
+                    owner,fatal,war,heading,plot,sample,turn,peeps[0],peep_word(0,4),peep_word(0,12));
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(!core_battles && !core_settlements && seed==123);
+        if (!fatal && evacuate && population<=0) {
+            memcpy(expected,prg_a4_area,sizeof expected);
+            _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        }
+        ++checked;
+    }
+    printf("dry town full-A4 state cases: %u\n",checked);
+}
+
+static void test_water_town_edges_and_skips(void)
+{
+    const int positions[]={0,63,4032,4095};
+    const int blocks[]={0,1,15,31,32,53};
+    for (int owner=0; owner<2; ++owner) for (int city=0; city<2; ++city)
+    for (unsigned place=0; place<4; ++place) for (unsigned terrain=0; terrain<6; ++terrain)
+    for (int fatal=0; fatal<2; ++fatal) {
+        int position=positions[place];
+        setup_town_footprint(owner,position,city,0);
+        peeps[0]=0x11; set_peep_word(0,4,1); set_peep_word(0,12,87);
+        map_blk[position]=blocks[terrain]; map_who[position]=1; game_mode=fatal;
+        game_turn=7;
+        uint8_t expected[sizeof prg_a4_area];
+        /* Both zero-capacity evacuation and valid off-cadence death retain
+         * their different record/ref/occupancy semantics at map boundaries. */
+        int valid=blocks[terrain]==15 || blocks[terrain]==31+owner;
+        if (fatal || !blocks[terrain] || valid) {
+            water_loss_expected(expected,owner,position,0);
+            if (!fatal && blocks[terrain]) {
+                celebration_expected_word(expected,0x2ff8,city ? 4 : 0);
+                celebration_expected_word(expected,0x2fb2,blocks[terrain]==15);
+                celebration_expected_word(expected,0x9c26+12,37);
+            }
+        } else {
+            water_loss_expected(expected,owner,position,1);
+            expected[peeps-prg_a4_area]=2;
+            celebration_expected_word(expected,0x9c26+4,-1);
+            celebration_expected_word(expected,0x9c26+10,0);
+            celebration_expected_word(expected,0x9c26+12,0);
+            celebration_expected_word(expected,0x2ff8,0);
+            celebration_expected_word(expected,0x2fb2,0);
+            town_footprint_map(expected,owner,position,0,0,1);
+        }
+        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+    const int dead[]={0,-1,-32768};
+    for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal)
+    for (unsigned sample=0; sample<3; ++sample) {
+        setup_water_town(owner,5,650); game_mode=fatal; set_peep_word(0,4,dead[sample]);
+        uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+}
+
+static void test_water_town_split_and_growth(void)
+{
+    const struct { int initial, loss, controller, latch, cheat, growth, mother, child, final_latch; } cases[]={
+        {308,1,1,0,0,11,163,154,1},{308,1,1,1,0,11,317,0,1},
+        {308,1,0,0,0,11,317,0,0},{308,1,2,0,0,11,317,0,0},
+        {308,1,1,0,1,11,36,281,1},{53,1,0,0,1,11,36,26,0},
+        {53,1,0,0,2,11,62,0,0},{100,30000,0,0,0,11,1536,4111,0},
+        {1,16385,0,0,0,11,1536,31242,0},
+        {100,16384,0,0,0,-101,32767,0,0},
+        {308,1,1,0,0,32767,0,154,1},{2,1,0,0,0,0,0,0,0},
+        {1,1,0,0,0,0,0,0,0}
+    };
+    unsigned checked=0;
+    for (int owner=0; owner<2; ++owner) for (int occupant=0; occupant<3; ++occupant)
+    for (int stale=0; stale<3; ++stale)
+    for (unsigned sample=0; sample<sizeof cases/sizeof cases[0]; ++sample) {
+        setup_town_capacity(owner,cases[sample].initial); peeps[0]=0x11;
+        A4_WORD(0x2fb0)=cases[sample].loss;
+        A4_WORD(0x82bc+owner*46)=cases[sample].controller;
+        A4_WORD(0x82be + owner*46)=cases[sample].latch;
+        A4_WORD(0x2fb4)=cases[sample].cheat==1 ? owner+1 : cases[sample].cheat==2 ? 2-owner : 0;
+        A4_WORD(0x2ff6)=cases[sample].growth;
+        for (int byte=0; byte<22; ++byte) peeps[22+byte]=0xa0+byte;
+        const int dead[]={0,-1,-32768}; set_peep_word(1,4,dead[stale]);
+        set_peep_word(1,6,0x8001+stale); peeps[43]=193+stale;
+        /* Later ordinary enemy would expose recovery fallthrough/collision,
+         * and proves processing continues even after parent growth death. */
+        no_peeps=3; peeps[44]=2; peeps[45]=1-owner;
+        set_peep_word(2,4,77); set_peep_word(2,8,650);
+        set_peep_word(2,12,0); core_leader(1-owner)=3;
+        map_who[650]=occupant==2 ? 3 : occupant;
+        uint8_t expected[sizeof prg_a4_area];
+        town_capacity_expected(expected,owner,cases[sample].mother,cases[sample].child,
+                               cases[sample].final_latch,1,owner ? 23473 : 12362);
+        expected[peeps-prg_a4_area]=cases[sample].mother ? 1 : 0;
+        celebration_expected_word(expected,0xae5e,3);
+        celebration_expected_word(expected,0x9c26+44+12,1);
+        if (cases[sample].child) {
+            celebration_expected_word(expected,0x9c26+22+12,1);
+            if (occupant==2) expected[map_who-prg_a4_area+650]=3;
+            if (!cases[sample].mother) {
+                celebration_expected_word(expected,0x99f8+owner*16,core_target(owner));
+                celebration_expected_word(expected,owner ? 0xae76 : 0xae78,A4_WORD(owner ? 0xae76 : 0xae78));
+            }
+        }
+        _move_peeps();
+        if (memcmp(expected,prg_a4_area,sizeof expected)) {
+            fprintf(stderr,"water split owner=%d occupant=%d stale=%d sample=%u\n",owner,occupant,stale,sample);
+            for (size_t byte=0; byte<sizeof expected; ++byte)
+                if (expected[byte]!=prg_a4_area[byte])
+                    fprintf(stderr,"A4 %04zx expected=%02x actual=%02x\n",(byte-32768)&0xffff,expected[byte],prg_a4_area[byte]);
+        }
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(!core_battles && !core_settlements && seed==123); ++checked;
+    }
+    printf("dry town split/growth A4 cases: %u\n",checked);
+}
+
+static void test_water_town_deferred_raise(void)
+{
+    for (int owner=0; owner<2; ++owner) for (int fertile=0; fertile<2; ++fertile)
+    for (int initial=3; initial<=5; ++initial) for (int terminal=0; terminal<2; ++terminal) {
+        setup_water_town(owner,0,650); game_turn=6;
+        map_blk[650]=0; set_peep_word(0,4,initial);
+        no_peeps=terminal ? 2 : 3;
+        for (int person=1; person<no_peeps; ++person) {
+            peeps[person*22]=2; peeps[person*22+1]=person==1 ? 1-owner : owner;
+            set_peep_word(person,4,100); set_peep_word(person,8,900+person);
+            map_who[900+person]=person+1;
+        }
+        if (fertile) {
+            /* Start-only pending raise completes a height-one flat cell.
+             * No mid-sequence edits to population, terrain or commands. */
+            core_set_vertex(11,10,1); core_set_vertex(10,11,1); core_set_vertex(11,11,1);
+            A4_DISP(0x82b6+owner*46)[0]=1;
+            A4_DISP(0x82b7+owner*46)[0]=10;
+            A4_DISP(0x82b8+owner*46)[0]=10;
+        } else A4_WORD(0xae80)=1;
+        game_tick();
+        assert(peeps[0]==0x11 && peep_word(0,4)==initial-2 && peep_word(0,12)==87);
+        assert(map_blk[650]==(fertile ? 15 : 17) && core_vertex(10,10)==1);
+        assert(!core_result); assert_mailbox_empty();
+        game_tick();
+        assert(peeps[0]==(fertile ? 1 : 2));
+        assert(peep_word(0,4)==(fertile ? initial+7 : initial-4));
+        assert(peep_word(0,12)==(fertile ? 34 : 0));
+        assert(map_who[650]==1 && view_who==1 && core_leader(owner)==1);
+        assert(peep_word(0,6)==1234 && peep_word(0,10)==(fertile ? -65 : 0));
+        assert(peep_word(1,12)==2 && core_population(1-owner)==100);
+        assert(core_population(owner)==(terminal ? 0 : 100)+(fertile ? initial+7 : initial==5));
+        assert(core_result==(!fertile && terminal && initial<5 ? (owner ? 1 : 2) : 0));
+        assert(!core_battles && !core_settlements && seed==123); assert_mailbox_empty();
+        if (!fertile && initial<5) {
+            uint8_t record[22]; memcpy(record,peeps,22);
+            game_tick(); assert(!memcmp(record,peeps,22));
+            assert(map_who[650]==1 && view_who==1 && core_leader(owner)==1);
+        }
+    }
+}
+
+static void test_water_town_gates(void)
+{
+    /* Catch running either the heading/war prepass, resident recovery or
+     * pending terrain commands through any public tick freeze gate. */
+    unsigned checked=0;
+    for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal)
+    for (int war=0; war<2; ++war) for (int heading=0; heading<5; ++heading)
+    for (int gate=0; gate<5; ++gate) {
+        setup_water_town(owner,5,650); game_mode=fatal; A4_WORD(0xae80)=war;
+        set_peep_word(0,4,1); game_turn=7;
+        if (heading) peeps[14+heading-1]=0x80;
+        no_peeps=18; peeps[17*22]=2; peeps[17*22+1]=1-owner;
+        set_peep_word(17,4,100); set_peep_word(17,8,900);
+        map_blk[900]=1; map_who[900]=18;
+        A4_DISP(0x82b6+owner*46)[0]=1;
+        A4_DISP(0x82b7+owner*46)[0]=10;
+        A4_DISP(0x82b8+owner*46)[0]=10;
+        pause=gate==0; core_result=gate>=1 && gate<=3 ? gate : 0; prg_quit=gate==4;
+        uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+        game_tick();
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(core_result==(gate>=1 && gate<=3 ? gate : 0) && prg_quit==(gate==4));
+        assert(!core_battles && !core_settlements);
+        ++checked;
+    }
+    pause=core_result=prg_quit=0;
+    printf("dry town frozen full-A4 gate cases: %u\n",checked);
+}
+
+static void test_water_town(void)
+{
+    test_water_town_state(); test_water_town_edges_and_skips();
+    test_water_town_split_and_growth(); test_water_town_deferred_raise();
+    test_water_town_gates();
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--water-town")) {
+        test_water_town(); test_water_loss(); test_town_capacity();
+        puts("focused dry water town: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--town-capacity")) {
         test_town_capacity();
         puts("focused town capacity regression: PASS"); return 0;
@@ -8534,6 +8834,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_water_town();
     test_town_capacity();
     test_town_split();
     test_town_footprint(); test_town_economy();
