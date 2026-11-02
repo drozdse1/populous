@@ -1218,6 +1218,14 @@ static void core_settle_tick(int person)
     if (!map_who[position]) map_who[position] = person+1;
     if (!((uint16_t)game_turn&7)) {
         int level = peep_word(person,12)-32;
+        /* asm:3818-3862: local split limits, never reframe or reindex economy. */
+        if (peep_word(person,12) == 42 && A4_WORD(0x82bc+owner*46) == 1 &&
+            peep_word(person,4) > 305 && !A4_WORD(0x82be + owner*46)) {
+            capacity = 305;
+            A4_WORD(0x82be + owner*46) = 1;
+        }
+        uint16_t cheat = (uint16_t)A4_WORD(0x2fb4);
+        if (cheat && (uint16_t)owner == (uint16_t)(cheat-1u)) capacity = 50;
         /* asm:3863-3882: EXT.L signed word then ADD.L, without host mana bounds. */
         A4_LONG(0x9a02+owner*16)+=(uint32_t)(int32_t)(int16_t)A4_WORD(0x2fb6+level*2);
         peeps[person*22+3] = A4_WORD(0x2fcc+level*2)&255;

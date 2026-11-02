@@ -113,6 +113,9 @@ Nach gemeinsamem originalem Kampfabschluss: Sieg weiter Tick 7515, nun 263 Kaemp
 163 Stadtgruendungen und 27636/0; Niederlage weiter Tick 694. Siegerassertionen
 und Eingabeskript unveraendert. Nach verzoegertem Wassereintritt: Sieg Tick 7516,
 263 Kaempfe, 164 Stadtgruendungen und 27250/0; Niederlage Tick 695.
+Nach lokalen Kapazitaetskorrekturen: isometrischer Sieg Tick 11938 (125 Kaempfe,
+392 Stadtgruendungen, 192496/0), Diagnoseansicht Tick 11953 (125/402/212387/0).
+Niederlage weiter Tick 695; Eingaben, Siegerassertionen und 12000-Tick-Budget unveraendert.
 Unabhaengiges Review ohne
 blockierende Befunde; kurze Integrationstests sind kein Kampagnen-Paritaetsnachweis.
 
@@ -152,6 +155,7 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 - [x] Gewoehnliche Stadtwirtschaft mit originalen Breiten: signiertes Mana-Tabellenwort modulo32 addieren, Wachstum nach Abspaltungsversuch modulo16 speichern und am normalen Stadtende nichtpositive Population aufraeumen. Acht-Tick-Takt und Waffenbyte erhalten; Siedlungsaufloesung umgeht weiterhin diese Todespruefung.
 - [x] Siedlungsfussabdruck nach Wirtschaft/Abspaltung und vor Todespruefung pflegen: nur bei Framewechsel, flachem Block oder unvollstaendiger Stadt; alten Frame vor Neuberechnung merken. Normale und uebersprungene Wirtschaft erreichen dieselbe Endpflege, Aufloesung bleibt separater Rueckweg.
 - [x] Abgespaltene Bewohner selektiv initialisieren: wiederverwendete Bytes 6/7/21 erhalten, Delta/Frame/Heading/Marker20 leeren und Ansicht unabhaengig vom Anfuehrer uebertragen. Erste freie Normalstelle, Radius vor Elterninkrement und geschuetzte Drittbelegung erhalten; spaetere Slots werden noch im selben Pass verarbeitet.
+- [x] Lokale Stadt-Kapazitaetskorrekturen vor Abspaltung: Frame42/Controller1/Population>305/Latch0 setzt Kapazitaet305 und Latch1, danach vorhandenes internes Cheatwort gegebenenfalls Kapazitaet50. Reales Stadtframe/Tabellenindex erhalten, keine neue Eingabefreigabe oder Terrainnachricht; geteilter Latch und voller Normalpool getestet.
 - [ ] **Pruefen:** Weitere Sonderfaelle bei Stadtuebernahme, Kampfende, Belohnungen, gleichem-Zellen-Vereinigungszeitpunkt, Tod und Belegungswechseln gegen die Originalpfade testen; gewoehnlicher Zweierkampf existiert bereits.
 - [ ] **Pruefen:** Bewusste Host-Sicherheitsgrenzen dokumentieren und gegen originale Wortarithmetik abgrenzen: Vereinigungshelfer bis 32000, allgemeine Manahelfer -250..1999999; rohe Terrain-Befehle, Einzelgewinner-Kampfabschluesse, Stadtwirtschaft und Verluste bereits untergetauchter Nichtkaempfer nutzen dagegen ihre originalen Wort-/32-Bit-Regeln. Speicher-/Undefiniertes-Verhalten-Sicherheit nicht zugunsten vermeintlicher Treue aufgeben.
 - [ ] **Pruefen:** RNG-Aufrufreihenfolge, Tick-Reihenfolge und Zustandshashes mit Originalreferenzen vergleichen; gleicher RNG allein ergibt keinen gleichen Spielverlauf.

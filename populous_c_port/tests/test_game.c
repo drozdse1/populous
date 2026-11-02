@@ -2904,8 +2904,7 @@ static void test_war_state(void)
     test_war_dispatch(); test_war_tick_totals();
 }
 
-/* Ordinary exact-1 economy only: source capacity overrides and dry 0x11
- * remain deferred. Controllers stay neutral. */
+/* Ordinary exact-1 economy fixtures keep controllers neutral. */
 static void setup_town_economy(int owner, int population)
 {
     setup_war_town(owner,650,1);
@@ -3520,6 +3519,281 @@ static void test_town_footprint(void)
     test_town_footprint_pass_and_clock();
 }
 
+/* Literal outcomes catch missing/early overrides, Boolean controller tests,
+ * unsigned population comparisons, cheat-owner truncation and lost latch order. */
+static void town_capacity_expected(uint8_t *expected, int owner, int mother,
+                                   int child_population, int latch, int economy,
+                                   uint32_t mana)
+{
+    town_expected_completion(expected,owner,mother,economy,mana);
+    celebration_expected_word(expected,0x82be + owner*46,latch);
+    if (!child_population) return;
+    uint8_t *child=expected+(peeps-prg_a4_area)+22;
+    child[0]=2; child[1]=owner; child[2]=3; child[3]=9;
+    memset(child+10,0,8); child[20]=0;
+    celebration_expected_word(expected,0x9c26+22+4,child_population);
+    celebration_expected_word(expected,0x9c26+22+8,650);
+    celebration_expected_word(expected,0x9c26+22+18,650);
+    celebration_expected_word(expected,0xae5e,2);
+    celebration_expected_word(expected,0x99f6+owner*16,2);
+    celebration_expected_word(expected,0xae68,2);
+    expected[peeps-prg_a4_area+2]=4;
+    expected[map_who-prg_a4_area+650]=2;
+}
+
+static void setup_town_capacity(int owner, int population)
+{
+    setup_town_economy(owner,population);
+    A4_WORD(0x82bc+owner*46)=1;
+    /* Permissions, funds and no-build must not gate a local capacity change. */
+    A4_WORD(0x82c4)=A4_WORD(0x82c4+46)=0;
+    game_mode=GAME_MODE_NO_BUILD;
+    for (int side=0; side<2; ++side) {
+        A4_DISP(0x82b6+side*46)[0]=1;
+        A4_DISP(0x82b6+side*46)[1]=20+side;
+        A4_DISP(0x82b6+side*46)[2]=30+side;
+    }
+}
+
+static void test_town_capacity_words(void)
+{
+    const struct { int controller,latch,population,mother,child,result_latch; } controls[]={
+        {1,0,306,163,154,1},{1,0,305,316,0,0},
+        {0,0,306,317,0,0},{2,0,306,317,0,0},{-1,0,306,317,0,0},
+        {1,1,306,317,0,1},{1,-1,306,317,0,-1},
+        {0,1,305,316,0,1},{2,-1,305,316,0,-1},{-1,0,305,316,0,0},
+        {0,0,305,316,0,0},{0,-1,305,316,0,-1},
+        {0,1,306,317,0,1},{0,-1,306,317,0,-1},
+        {1,1,305,316,0,1},{1,-1,305,316,0,-1},
+        {2,0,305,316,0,0},{2,1,305,316,0,1},
+        {2,1,306,317,0,1},{2,-1,306,317,0,-1},
+        {-1,1,305,316,0,1},{-1,-1,305,316,0,-1},
+        {-1,1,306,317,0,1},{-1,-1,306,317,0,-1}
+    };
+    const struct { int turn,eligible; } turns[]={
+        {0,1},{7,0},{8,1},{9,0},{0x7fff,0},{0x8000,1},
+        {0x8001,0},{0xfff8,1},{0xffff,0}
+    };
+    unsigned checked=0;
+    for (int owner=0; owner<2; ++owner)
+    for (unsigned sample=0; sample<sizeof controls/sizeof controls[0]; ++sample)
+    for (unsigned tick=0; tick<sizeof turns/sizeof turns[0]; ++tick) {
+        setup_town_capacity(owner,controls[sample].population);
+        A4_WORD(0x82bc+owner*46)=controls[sample].controller;
+        A4_WORD(0x82be + owner*46)=controls[sample].latch;
+        game_turn=turns[tick].turn;
+        uint8_t expected[sizeof prg_a4_area];
+        town_capacity_expected(expected,owner,turns[tick].eligible ? controls[sample].mother : controls[sample].population,
+                               turns[tick].eligible ? controls[sample].child : 0,
+                               turns[tick].eligible ? controls[sample].result_latch : controls[sample].latch,
+                               turns[tick].eligible,owner ? 23473 : 12362);
+        core_settle_tick(0);
+        assert(peep_word(0,4)==(turns[tick].eligible ? controls[sample].mother : controls[sample].population));
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        ++checked;
+    }
+    const struct { int cheat,child0,child1; } cheats[]={
+        {0,0,0},{1,26,0},{2,0,26},{-1,0,0},{32767,0,0},{-32768,0,0}
+    };
+    for (int owner=0; owner<2; ++owner) for (int controller=0; controller<=1; ++controller)
+    for (unsigned sample=0; sample<sizeof cheats/sizeof cheats[0]; ++sample)
+    for (int population=50; population<=51; ++population)
+    for (unsigned tick=0; tick<sizeof turns/sizeof turns[0]; ++tick) {
+        setup_town_capacity(owner,population); A4_WORD(0x82bc+owner*46)=controller;
+        A4_WORD(0x2fb4)=cheats[sample].cheat; game_turn=turns[tick].turn;
+        int child=population==51 && turns[tick].eligible ? (owner ? cheats[sample].child1 : cheats[sample].child0) : 0;
+        uint8_t expected[sizeof prg_a4_area];
+        town_capacity_expected(expected,owner,child ? 36 : population+(turns[tick].eligible ? 11 : 0),
+                               child,0,turns[tick].eligible,owner ? 23473 : 12362);
+        core_settle_tick(0);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected)); ++checked;
+    }
+    const struct { int population,growth,result; } signed_cases[]={
+        {0,11,11},{-1,11,10},{-32768,-1,32767}
+    };
+    for (int owner=0; owner<2; ++owner) for (int cheat=0; cheat<=1; ++cheat)
+    for (unsigned sample=0; sample<sizeof signed_cases/sizeof signed_cases[0]; ++sample)
+    for (int direct=0; direct<=1; ++direct) {
+        setup_town_capacity(owner,signed_cases[sample].population);
+        A4_WORD(0x2fb4)=cheat ? owner+1 : 0; A4_WORD(0x2ff6)=signed_cases[sample].growth;
+        /* Do not let the leader prepass obscure the resident initial skip. */
+        core_leader(0)=core_leader(1)=view_who=0;
+        uint8_t expected[sizeof prg_a4_area];
+        if (direct) town_capacity_expected(expected,owner,signed_cases[sample].result,0,0,1,owner ? 23473 : 12362);
+        else memcpy(expected,prg_a4_area,sizeof expected);
+        if (direct) core_settle_tick(0); else _move_peeps();
+        assert(!memcmp(expected,prg_a4_area,sizeof expected)); ++checked;
+    }
+    printf("town capacity literal A4 cases: %u\n",checked);
+}
+
+static void test_town_capacity_order_and_economy(void)
+{
+    const struct { uint32_t before; int increment; uint32_t after; } mana[]={
+        {0,17,17},{0,-1,0xffffffffu},{0xffffffffu,1,0},
+        {0x7fffffffu,1,0x80000000u},{0x80000000u,-32768,0x7fff8000u}
+    };
+    for (int owner=0; owner<2; ++owner) for (int cheat=0; cheat<=1; ++cheat)
+    for (unsigned sample=0; sample<sizeof mana/sizeof mana[0]; ++sample) {
+        setup_town_capacity(owner,3100); A4_WORD(0x2fb4)=cheat ? owner+1 : 0;
+        A4_LONG(0x9a02+owner*16)=mana[sample].before; A4_WORD(0x2fca)=mana[sample].increment;
+        uint8_t expected[sizeof prg_a4_area];
+        town_capacity_expected(expected,owner,cheat ? 36 : 163,cheat ? 3075 : 2948,1,1,mana[sample].after);
+        core_settle_tick(0);
+        assert(peep_word(0,12)==42 && peeps[3]==9 && peeps[25]==9);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+    /* Growth crossing 305 is not a second predicate evaluation this turn. */
+    setup_town_capacity(0,305); core_settle_tick(0);
+    assert(peep_word(0,4)==316 && !A4_WORD(0x82be) && no_peeps==1);
+    game_turn=9; core_settle_tick(0);
+    assert(peep_word(0,4)==316 && !A4_WORD(0x82be) && no_peeps==1);
+    game_turn=16; core_settle_tick(0);
+    assert(peep_word(0,4)==163 && peep_word(1,4)==164 && A4_WORD(0x82be)==1);
+    /* A stored city can downgrade: predicate sees the newly computed frame. */
+    for (int owner=0; owner<2; ++owner) for (int cheat=0; cheat<=1; ++cheat) {
+        setup_town_capacity(owner,306); set_peep_word(0,12,42);
+        map_blk[780]=32-owner; A4_WORD(0x2fb4)=cheat ? owner+1 : 0;
+        A4_WORD(0x2ff4)=11; A4_WORD(0x2fde)=0xab09;
+        uint8_t expected[sizeof prg_a4_area];
+        town_capacity_expected(expected,owner,cheat ? 36 : 156,cheat ? 281 : 161,0,1,owner ? 23565 : 12454);
+        celebration_expected_word(expected,0x9c26+12,41);
+        town_footprint_map(expected,owner,650,41,1,0);
+        core_settle_tick(0);
+        assert(peep_word(0,12)==41 && !A4_WORD(0x82be + owner*46));
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+    /* ADD.W death after a successful override split must preserve its child. */
+    for (int owner=0; owner<2; ++owner) for (int cheat=0; cheat<=1; ++cheat) {
+        setup_town_capacity(owner,306); A4_WORD(0x2fb4)=cheat ? owner+1 : 0;
+        A4_WORD(0x2ff6)=32767;
+        uint8_t expected[sizeof prg_a4_area];
+        town_capacity_expected(expected,owner,cheat ? -32744 : -32617,cheat ? 281 : 154,1,1,owner ? 23473 : 12362);
+        /* Split transfers references BEFORE mother cleanup, so targets survive. */
+        celebration_expected_word(expected,0x99f8+owner*16,core_target(owner));
+        celebration_expected_word(expected,owner ? 0xae76 : 0xae78,A4_WORD(owner ? 0xae76 : 0xae78));
+        core_settle_tick(0);
+        assert(!peeps[0] && !peep_word(0,4));
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+}
+
+static void test_town_capacity_records(void)
+{
+    const struct { int parent,child,count,result_count; } layouts[]={
+        {2,0,4,4},{0,2,4,4},{0,207,1,208},{207,1,208,208},{0,208,208,208}
+    };
+    for (int owner=0; owner<2; ++owner) for (int cheat=0; cheat<=1; ++cheat)
+    for (unsigned layout=0; layout<sizeof layouts/sizeof layouts[0]; ++layout)
+    for (int occupant=0; occupant<3; ++occupant) for (int leader=0; leader<=1; ++leader)
+    for (int view=0; view<=1; ++view) {
+        int parent=layouts[layout].parent, child=layouts[layout].child, full=child==208;
+        setup_town_split(owner,parent,child,layouts[layout].count);
+        A4_WORD(0x82bc+owner*46)=1; A4_WORD(0x2fb4)=cheat ? owner+1 : 0;
+        core_leader(owner)=leader ? parent+1 : 206; view_who=view ? parent+1 : 206;
+        map_who[650]=occupant==0 ? 0 : occupant==1 ? parent+1 : 206;
+        uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+        celebration_expected_word(expected,0x2ff8,9); celebration_expected_word(expected,0x2fb2,0);
+        celebration_expected_word(expected,0x82be + owner*46,1);
+        celebration_expected_word(expected,0x9c26+parent*22+4,full ? 3111 : cheat ? 36 : 163);
+        expected[peeps-prg_a4_area+parent*22+3]=9;
+        town_expected_long(expected,0x9a02+owner*16,owner ? 23473 : 12362);
+        if (!occupant) expected[map_who-prg_a4_area+650]=parent+1;
+        if (!full) {
+            uint8_t *record=expected+(peeps-prg_a4_area)+child*22;
+            record[0]=2; record[1]=owner; record[2]=3; record[3]=9;
+            celebration_expected_word(expected,0x9c26+child*22+4,cheat ? 3075 : 2948);
+            celebration_expected_word(expected,0x9c26+child*22+8,650);
+            memset(record+10,0,8); record[20]=0;
+            celebration_expected_word(expected,0x9c26+child*22+18,650);
+            celebration_expected_word(expected,0xae5e,layouts[layout].result_count);
+            if (leader) celebration_expected_word(expected,0x99f6+owner*16,child+1);
+            if (view) celebration_expected_word(expected,0xae68,child+1);
+            expected[peeps-prg_a4_area+parent*22+2]=4;
+            if (occupant<2) expected[map_who-prg_a4_area+650]=child+1;
+        }
+        core_settle_tick(parent);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(no_peeps==layouts[layout].result_count);
+    }
+    for (int owner=0; owner<2; ++owner) for (int cheat=0; cheat<=1; ++cheat) {
+        setup_town_split(owner,0,208,208);
+        A4_WORD(0x82bc+owner*46)=1; A4_WORD(0x2fb4)=cheat ? owner+1 : 0;
+        A4_WORD(0x2ff6)=30000;
+        uint8_t expected[sizeof prg_a4_area];
+        town_capacity_expected(expected,owner,-32436,0,1,1,owner ? 23473 : 12362);
+        core_settle_tick(0);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(no_peeps==208 && A4_WORD(0x82be + owner*46)==1);
+    }
+}
+
+static void test_town_capacity_evacuation(void)
+{
+    for (int owner=0; owner<2; ++owner) for (int trigger=0; trigger<10; ++trigger) {
+        setup_town_capacity(owner,306); A4_WORD(0x2fb4)=owner+1;
+        if (!trigger) map_blk[650]=1;
+        else if (trigger==1) A4_WORD(0xae80)=1;
+        else peeps[14+(trigger-2)/2]=(trigger&1) ? 0x80 : 1;
+        uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+        celebration_expected_word(expected,0x2ff8,trigger ? 9 : 0);
+        celebration_expected_word(expected,0x2fb2,0);
+        expected[peeps-prg_a4_area]=2;
+        celebration_expected_word(expected,0x9c26+10,0);
+        celebration_expected_word(expected,0x9c26+12,0);
+        town_expected_clear_footprint(expected,owner);
+        core_settle_tick(0);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+}
+
+static void test_town_capacity_mailbox(void)
+{
+    /* Residents share only their owner's latch; clearing occurs after ALL of
+     * them, even when the mailbox is empty. Pending terrain is a separate act. */
+    const struct { int turn,divisor,latch; } clocks[]={
+        {8,8,0},{8,3,1},{8,0,1},{0x8000,0x8000,0},{0,3,0}
+    };
+    for (int owner=0; owner<2; ++owner) for (unsigned clock=0; clock<sizeof clocks/sizeof clocks[0]; ++clock)
+    for (int pending=0; pending<=1; ++pending) for (int terminal=0; terminal<=1; ++terminal) {
+        setup_town_capacity(owner,306); no_peeps=3;
+        for (int person=1; person<3; ++person) {
+            memcpy(peeps+person*22,peeps,22);
+            peeps[person*22+1]=person==1 ? owner : 1-owner;
+            set_peep_word(person,8,person==1 ? 1300 : 2600);
+            set_peep_word(person,12,42); core_set_town(person,0);
+            map_who[person==1 ? 1300 : 2600]=person+1;
+        }
+        if (terminal) set_peep_word(2,4,0);
+        core_leader(0)=core_leader(1)=view_who=0;
+        game_mode=0; A4_LONG(0x848a)=10;
+        for (int row=0; row<=64; ++row) for (int column=0; column<=64; ++column) core_set_vertex(column,row,1);
+        for (int side=0; side<2; ++side) {
+            A4_WORD(0x82bc+side*46)=1; A4_WORD(0x82c6+side*46)=clocks[clock].divisor;
+            memset(A4_DISP(0x82b6+side*46),0,3);
+        }
+        if (pending) { A4_DISP(0x82b6+owner*46)[0]=1; A4_DISP(0x82b7+owner*46)[0]=50; A4_DISP(0x82b8+owner*46)[0]=50; }
+        game_turn=(uint16_t)(clocks[clock].turn-1u);
+        game_tick();
+        assert(peep_word(0,4)==163 && peep_word(1,4)==317);
+        assert(peep_word(terminal ? 2 : 3,4)==154);
+        if (!terminal) assert(peep_word(2,4)==163 && peep_word(4,4)==154);
+        assert(A4_WORD(0x82be + owner*46)==(terminal ? 1 : clocks[clock].latch));
+        assert(A4_WORD(0x82be + (1-owner)*46)==(terminal ? 0 : clocks[clock].latch));
+        int raised=pending && !terminal && clocks[clock].divisor!=0;
+        assert(core_vertex(50,50)==1+raised);
+        assert(A4_LONG(0x9a02+owner*16)==(owner ? 23490u : 12379u)-14u*raised);
+        for (int side=0; side<2; ++side) for (int byte=0; byte<3; ++byte) assert(!A4_DISP(0x82b6+side*46)[byte]);
+        assert(core_result==(terminal ? (owner ? 2 : 1) : 0));
+    }
+}
+
+static void test_town_capacity(void)
+{
+    test_town_capacity_words(); test_town_capacity_order_and_economy();
+    test_town_capacity_records(); test_town_capacity_evacuation(); test_town_capacity_mailbox();
+}
+
 static void test_near_town_sculpt(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
@@ -3555,10 +3829,11 @@ static void test_split_leader_and_occupancy(void)
         map_who[position]=occupant;
         core_leader(owner)=1; core_leader(1-owner)=2;
         game_turn=8;
-        /* Flat capacity 3050: original split leaves half in town, releases
-         * 3100-1525, and transfers only that owner's leader (asm:3901-3929). */
+        /* Flat capacity is 3050; reset's owner-1 controller instead uses 305.
+         * Both transfer only that owner's leader (asm:3818-3929). */
         core_settle_tick(0);
-        assert(no_peeps==3 && peep_word(2,4)==1575 && peeps[44]==2);
+        assert(no_peeps==3 && peep_word(2,4)==(owner ? 2948 : 1575) && peeps[44]==2);
+        assert(A4_WORD(0x82be + owner*46)==1);
         assert(core_leader(owner)==3 && core_leader(1-owner)==2);
         assert(map_who[position]==(occupant==2 ? 2 : 3)); /* asm:3964-3983 */
         game_turn=9;
@@ -8065,6 +8340,10 @@ static void test_battle_frame_render_and_entry(void)
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--town-capacity")) {
+        test_town_capacity();
+        puts("focused town capacity regression: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--town-split")) {
         test_town_split(); test_town_economy(); test_town_footprint();
         puts("focused ordinary town split: PASS"); return 0;
@@ -8255,6 +8534,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_town_capacity();
     test_town_split();
     test_town_footprint(); test_town_economy();
     test_water_remnant(); test_water_remnant_rescue();

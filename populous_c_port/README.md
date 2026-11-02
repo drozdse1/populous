@@ -99,8 +99,8 @@ split attempt. The ordinary completion checks the signed population and removes
 nonpositive towns, including on non-economy turns. Evacuation remains an immediate
 return that bypasses this check. Thus an eligible direct town update can revive
 a nonpositive population through growth; the resident-loop entry still skips
-initially nonpositive records. AI selection/capacity overrides and dry `0x11`
-town recovery remain separate work.
+initially nonpositive records. AI selection/terrain work and dry `0x11` town
+recovery remain separate work.
 This is not full town-consumer or original cleanup parity. `--town-economy`
 checks literal word/longword boundaries, cadence, low-byte weapons, direct revival
 and evacuation bypass, split/full-slot behavior, and resident-pass death bookkeeping.
@@ -132,6 +132,20 @@ Full-slot special-figure creation and original phased movement remain deferred.
 view/leader transfer, radius boundaries, occupancy and uninterrupted birth-to-walk
 progression with inherited navigation history. Focused/full normal and sanitized
 suites, original-data matches and all 495 starts passed; match outcomes are unchanged.
+
+Eligible town-economy turns apply the original local capacity overrides before
+splitting (`src/populous_prg.asm:3818-3862`). A reframed city with population above
+305, controller word exactly 1 and a zero controller latch uses capacity 305 and
+sets the latch. The existing internal cheat word can then select capacity 50 for
+its owner; no new cheat control is exposed. Neither override changes the real
+terrain-derived frame or economy table index. The latch does not queue terrain
+work, and remains set even if no normal peep slot is available. Shared-owner
+ordering and the existing post-pass latch cadence remain in effect. AI terrain
+work, candidate selection and full-pool special figures are still deferred.
+`--town-capacity` covers literal predicates, ordering, table-index preservation,
+reused/full slots, shared latches and mailbox cadence. Focused/full normal and
+sanitized suites, original-data matches and all 495 starts passed. Earlier enemy
+splits change match timing; original winner assertions and test budgets remain intact.
 
 Ordinary magnet navigation uses the original nine-entry direction table: arriving
 at the target attempts north rather than switching to exploration. A new leader
@@ -492,9 +506,9 @@ terrain/overlay/occupant pixels, transactional load failure, scaled isometric
 sculpt/magnet input, minimap navigation, pause, and reset. Its original top-down
 match regression remains available through an explicit diagnostic toggle. A
 second end-to-end match uses actual isometric clicks and minimap navigation only.
-With delayed water entry and supplied real data the isometric sequence reaches
-victory at tick 7516 (263 battles, 164 settlement formations, population 27250/0),
-and legal self-sculpt reaches defeat at tick 695. Normal and sanitizer
+With original capacity overrides and supplied real data the isometric sequence
+reaches victory at tick 11938 (125 battles, 392 settlement formations, population
+192496/0), and legal self-sculpt reaches defeat at tick 695. Normal and sanitizer
 suites cover these paths; no outcome, population or camera patches are used in
 the match sequence.
 
@@ -808,10 +822,11 @@ The fixed scenario-0 sequence selects fight tendency, simulates settlement and
 combat, then after tick 6000 sends legal right-clicks to the four corners of
 visible hostile plots every eight ticks. Budget: 12000 ticks, no teleportation
 or population/result edits. With the supplied original grass LAND it reached
-victory at tick 7516 after 263 engagements and 164 settlement formations, with
-27250 friendly population remaining. Normal and ASan/UBSan runs agreed. Delayed
-water entry changes the earlier 7515/263/163/27636 result without changing the
-input script or winning-state assertion. A
+victory at tick 11953 after 125 engagements and 402 settlement formations, with
+212387 friendly population remaining in the diagnostic-view sequence. Normal and
+ASan/UBSan runs agreed. Original capacity overrides change the earlier
+7516/263/164/27250 result without changing the input script, 12000-tick budget or
+winning-state assertion. The separate isometric sequence finishes at tick 11938. A
 separate legal self-sculpt sequence verifies defeat and reset/quit. The synthetic
 rule fixture may reach defeat sooner; it is not a balance/authenticity fixture.
 At 20 simulation ticks/sec this represents minutes of gameplay, not a claim
