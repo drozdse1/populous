@@ -1170,6 +1170,176 @@ static void test_wait_water_and_death(void)
     assert(peep_word(0,4)==89 && peep_word(16,4)==89);
 }
 
+/* Seed only the simulation consumer: battle production and visible sprite-art
+ * parity remain deferred. Nonzero metadata must not trigger a leader prepass. */
+static void setup_celebration(int owner)
+{
+    setup_blocked_walker();
+    peeps[0]=6; peeps[1]=owner;
+    set_peep_word(0,6,123); set_peep_word(0,10,-64); set_peep_word(0,12,85);
+    for (int byte=14; byte<22; ++byte) peeps[byte]=byte;
+    core_leader(0)=core_leader(1)=0;
+    core_target(0)=1234; core_target(1)=2345;
+    A4_LONG(0x9a02)=12345; A4_LONG(0x9a12)=23456;
+    seed=123; core_result=0; prg_quit=0;
+}
+
+static void celebration_expected(uint8_t *expected, int flags, int16_t frame)
+{
+    memcpy(expected,prg_a4_area,sizeof prg_a4_area);
+    size_t offset=(size_t)(peeps-prg_a4_area);
+    expected[offset]=(uint8_t)flags;
+    memcpy(expected+offset+12,&frame,sizeof frame);
+}
+
+static void test_celebration_frames(void)
+{
+    /* Literal signed postincrement boundaries catch reset-in-helper, unsigned
+     * comparisons, missing word wrap, and testing the old rather than new frame. */
+    const struct { int before, after, complete, consumed; } cases[] = {
+        {-32768,-32767,1,-32766}, {-2,-1,1,0}, {-1,0,1,1},
+        {0,1,1,2}, {6,7,1,0}, {7,8,1,0}, {83,84,1,0},
+        {84,85,0,85}, {85,86,0,86}, {86,87,0,87}, {87,88,1,0},
+        {88,89,1,0}, {32766,32767,1,0}, {32767,-32768,1,-32767}
+    };
+    const int populations[]={1,-1,-32768,0};
+    for (int owner=0; owner<2; ++owner)
+        for (unsigned sample=0; sample<sizeof cases/sizeof cases[0]; ++sample) {
+            for (unsigned pop=0; pop<sizeof populations/sizeof populations[0]; ++pop) {
+                setup_celebration(owner);
+                set_peep_word(0,4,populations[pop]); set_peep_word(0,12,cases[sample].before);
+                uint8_t expected[sizeof prg_a4_area];
+                celebration_expected(expected,6,populations[pop] ? cases[sample].after : cases[sample].before);
+                assert(core_frame_walker(0)==(populations[pop] ? cases[sample].complete : 0));
+                assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            }
+            setup_celebration(owner); set_peep_word(0,12,cases[sample].before);
+            uint8_t expected[sizeof prg_a4_area];
+            celebration_expected(expected,cases[sample].complete ? 2 : 6,cases[sample].consumed);
+            _move_peeps();
+            assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            assert(!core_battles && !core_settlements && !core_result);
+        }
+    /* Direct tick retains its stricter nonpositive-population skip. */
+    const int skipped[]={0,-1,-32768};
+    for (int owner=0; owner<2; ++owner)
+        for (unsigned sample=0; sample<sizeof skipped/sizeof skipped[0]; ++sample) {
+            setup_celebration(owner); set_peep_word(0,4,skipped[sample]);
+            uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+            _move_peeps();
+            assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        }
+}
+
+static void test_celebration_ticks(void)
+{
+    for (int owner=0; owner<2; ++owner) {
+        setup_celebration(owner); set_peep_word(0,4,1); A4_WORD(0x2fb0)=30000;
+        const int frames[]={86,87,0};
+        for (int tick=0; tick<3; ++tick) {
+            uint8_t expected[sizeof prg_a4_area];
+            celebration_expected(expected,tick==2 ? 2 : 6,frames[tick]);
+            _move_peeps();
+            /* Full A4 checks population, timers, metadata, mana, RNG, position,
+             * occupancy and every other resident; completion never moves/loses. */
+            assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            assert(!core_battles && !core_settlements && !core_result);
+        }
+        /* Walking resumes only when its later ordinary eight-frame cycle ends. */
+        A4_WORD(0x2fb0)=0; assert(set_peep_reference(0,-1));
+        core_tendency(owner)=0; core_leader(owner)=1; core_target(owner)=651;
+        map_blk[651]=1;
+        for (int tick=1; tick<8; ++tick) {
+            uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,2,tick);
+            _move_peeps();
+            assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        }
+        _move_peeps();
+        assert(peeps[0]==2 && peep_word(0,12)==0 && peep_word(0,8)==651);
+        assert(peep_word(0,4)==1 && peep_word(0,10)==1 && !map_who[650] && map_who[651]==1);
+    }
+}
+
+static void test_celebration_tick_gates(void)
+{
+    for (int owner=0; owner<2; ++owner) {
+        setup_celebration(owner); set_peep_word(0,4,1); A4_WORD(0x2fb0)=30000;
+        no_peeps=2; peeps[22]=5; peeps[23]=1-owner;
+        set_peep_word(1,4,1); set_peep_word(1,8,651); map_blk[651]=1; map_who[651]=2;
+        for (int gate=0; gate<4; ++gate) {
+            pause=gate==0; core_result=gate;
+            uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+            game_tick();
+            assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            assert(core_result==gate && !core_battles && !core_settlements);
+        }
+        pause=0; core_result=0; prg_quit=1;
+        uint8_t stopped[sizeof prg_a4_area]; memcpy(stopped,prg_a4_area,sizeof stopped);
+        game_tick();
+        assert(!memcmp(stopped,prg_a4_area,sizeof stopped) && !core_result);
+        prg_quit=0;
+        /* A later ordinary resident must still receive its own frame update. */
+        peeps[22]=2; set_peep_word(1,12,0);
+        const int frames[]={86,87,0};
+        for (int tick=0; tick<3; ++tick) {
+            game_tick();
+            assert(game_turn==tick+1 && !core_result);
+            assert(peeps[0]==(tick==2 ? 2 : 6) && peep_word(0,12)==frames[tick]);
+            assert(peeps[22]==2 && peep_word(1,12)==tick+1);
+            assert(peep_word(0,4)==1 && peep_word(1,4)==1);
+            assert(A4_LONG(0x99fe)==1 && A4_LONG(0x9a0e)==1);
+            assert(peep_word(0,8)==650 && map_who[650]==1 && map_who[651]==2);
+        }
+    }
+}
+
+static void test_celebration_dispatch(void)
+{
+    /* Mixed mask-0x04 states must not gain the assembly's broader interception. */
+    const int mixed[]={5,0xc,0xe,0x26,0x46,0x66,0x84,0x86};
+    for (int owner=0; owner<2; ++owner)
+        for (unsigned sample=0; sample<sizeof mixed/sizeof mixed[0]; ++sample) {
+            setup_celebration(owner); peeps[0]=mixed[sample];
+            set_peep_word(0,6,7); set_peep_word(0,12,87);
+            uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+            assert(!core_frame_walker(0));
+            assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            /* Existing waits still lose population and advance their timer. */
+            if (mixed[sample]&0x60) {
+                int16_t population=99, timer=8;
+                size_t offset=(size_t)(peeps-prg_a4_area);
+                memcpy(expected+offset+4,&population,2); memcpy(expected+offset+6,&timer,2);
+            }
+            _move_peeps();
+            assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            assert(!core_battles && !core_settlements);
+        }
+    for (int owner=0; owner<2; ++owner)
+        for (int fatal=0; fatal<=1; ++fatal)
+            for (int old_water=0; old_water<=1; ++old_water)
+                for (int population=1; population<=3; population+=2) {
+                    setup_celebration(owner); peeps[0]=old_water ? 0x16 : 6;
+                    set_peep_word(0,4,population); map_blk[650]=0; game_mode=fatal;
+                    _move_peeps();
+                    int survives=!fatal && population==3;
+                    assert(peeps[0]==(survives ? 18 : 0) && peep_word(0,4)==survives);
+                    assert(peep_word(0,12)==85 && peep_word(0,6)==123);
+                    assert(map_who[650]==survives && peep_word(0,8)==650 && seed==123);
+                }
+    for (int owner=0; owner<2; ++owner) {
+        setup_celebration(owner); peeps[0]=0x16; set_peep_word(0,12,87);
+        uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,2,1);
+        _move_peeps(); /* Land recovery clears water first, then ordinary framing. */
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+}
+
+static void test_celebration(void)
+{
+    test_celebration_frames(); test_celebration_ticks();
+    test_celebration_tick_gates(); test_celebration_dispatch();
+}
+
 /* Synthetic consumer fixtures only: heading-winner production is not enabled. */
 static void setup_remnant(int owner, int counter)
 {
@@ -4436,6 +4606,9 @@ static void test_heading_navigation(void)
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--celebration")) {
+        test_celebration(); puts("focused celebration consumer: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--heading-navigation")) {
         test_heading_navigation();
         prepare_rule_data(); test_heading_seeded_encounter(); cleanup_rule_data();
@@ -4548,6 +4721,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_celebration();
     test_heading(); test_heading_navigation();
     test_armageddon_input_smoke(); test_armageddon_cast(); test_armageddon_delayed(); test_armageddon_islands();
     test_war_terrain();

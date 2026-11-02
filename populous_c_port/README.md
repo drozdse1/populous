@@ -55,6 +55,18 @@ state dispatch remain bounded host behavior, not original drowning/phase parity.
 boundaries, occupancy, cleanup and stopped ticks. Normal/ASan/UBSan suites, all
 495 original starts and original-data match regressions passed for this milestone.
 
+The exact walking-victory state `6` consumes the source-derived celebration
+frames (`src/populous_prg.asm:3584-3599,5833-5845`): 85 -> 86 -> 87, then the
+completion update clears flag `0x04` and advances the ordinary walker frame to zero.
+No navigation, walking loss or RNG occurs during these three updates. Frame
+increments wrap as 16-bit words and completion compares the signed result; the
+second frame call is retained rather than replaced with an unconditional reset.
+Water handling still precedes this bounded consumer. Mixed flags, town-victory
+state `5`, the battle producer and visible celebration art remain separate work.
+The focused `--celebration` tests cover signed frame boundaries, full-A4 state
+preservation, later-resident progress, pause/result/quit gates and water precedence.
+Normal and sanitized full suites, original-data matches and all 495 starts passed.
+
 An already-set war state resets both destinations and displayed magnets to
 cell `0x0820` on each resident update. Exact peaceful towns evacuate when their
 land has no capacity, their four-byte heading metadata is nonzero, or war is set

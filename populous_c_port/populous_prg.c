@@ -2207,6 +2207,14 @@ static int core_frame_walker(int person)
         set_peep_word(person,12,previous >= 7 ? 0 : previous+1);
         return previous >= 7;
     }
+    /* asm:5833-5845: exact-6 simulation consumer only, not general mask 0x04.
+     * Keep the signed incremented word even on completion; no sprite-art
+     * parity is claimed and the battle celebration producer remains deferred. */
+    if (flags == 6) {
+        int frame = (int16_t)(previous+1);
+        set_peep_word(person,12,frame);
+        return frame < 85 || frame >= 88;
+    }
     if ((flags&0x60) && !(flags&0x1c)) {
         int frame = (int16_t)(previous+1);
         int complete = frame < 101 || frame > 102;
@@ -2254,6 +2262,16 @@ static void _move_peeps(void)
             continue;
         }
         if (flags&16) { peeps[person*22] = 2; set_peep_word(person,12,0); flags = 2; }
+        /* asm:3584-3599, scoped to exact 6 after existing water handling.
+         * Completion clears only mask 0x04, then lets ordinary framing consume
+         * the transient frame (normally 88). Always end this person's tick. */
+        if (flags == 6) {
+            if (core_frame_walker(person)) {
+                peeps[person*22] &= 0xfb;
+                core_frame_walker(person);
+            }
+            continue;
+        }
         if (flags&8) {
             int other = peep_word(person,6);
             if (other > person && other < no_peeps && peep_word(other,4)>0) core_battle(person,other);
