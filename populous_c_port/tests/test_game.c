@@ -651,6 +651,187 @@ static void test_blocked_reinforcement_retry(void)
     assert(core_battles==17 && !core_settlements);
 }
 
+static void setup_friendly_merge(int source, int owner)
+{
+    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(map_blk,1,4096);
+    no_peeps=3; core_result=core_battles=core_settlements=0; prg_quit=0;
+    int target=1-source;
+    for (int person=0; person<3; ++person) {
+        peeps[person*22]=2; peeps[person*22+1]=owner;
+        peeps[person*22+2]=3; peeps[person*22+3]=5;
+        set_peep_word(person,4,200); set_peep_word(person,6,23);
+        set_peep_word(person,8,person==source ? 649 : 650);
+        set_peep_word(person,10,-64); set_peep_word(person,12,101);
+        for (int byte=14; byte<22; ++byte) peeps[person*22+byte]=byte;
+    }
+    memset(peeps+source*22+14,0,4);
+    set_peep_word(source,4,100); peeps[source*22+21]=1;
+    set_peep_word(2,8,900); peeps[45]=1-owner;
+    map_who[649]=source+1; map_who[650]=target+1; map_who[900]=3;
+    core_leader(owner)=source+1; core_leader(1-owner)=3;
+    core_target(owner)=650; view_who=source+1;
+    A4_LONG(0x99fe)=12345; A4_LONG(0x9a0e)=23456;
+    seed=123;
+}
+
+static void test_friendly_merge_state(void)
+{
+    /* Catch missing wait/frame resets, signed weapons, metadata overcopy,
+     * index-dependent totals, lost references and unrelated occupancy cleanup. */
+    const int flags[]={2,0x22,0x42,0x62,0x61,1};
+    const int populations[][3]={{100,200,300},{16000,16000,32000},{32000,1,32000}};
+    for (int source=0; source<2; ++source) for (int owner=0; owner<2; ++owner)
+    for (unsigned state=0; state<sizeof flags/sizeof flags[0]; ++state)
+    for (int variant=0; variant<3; ++variant) {
+        setup_friendly_merge(source,owner);
+        int target=1-source;
+        peeps[target*22]=flags[state];
+        set_peep_word(source,4,populations[variant][0]);
+        set_peep_word(target,4,populations[variant][1]);
+        peeps[(variant==1 ? source : target)*22+3]=200;
+        if (variant==1 && flags[state]!=1) {
+            const uint8_t metadata[4]={0x81,0,0xff,0x37};
+            memcpy(peeps+source*22+14,metadata,4);
+        }
+        if (variant==2) {
+            core_leader(owner)=target+1; view_who=3;
+            peeps[45]=owner; set_peep_word(2,8,649); map_who[649]=3;
+        }
+        uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+        /* Build the complete expected state without using merge logic. */
+        set_peep_word(target,4,populations[variant][2]);
+        peeps[target*22+3]=200;
+        if (variant==1 && flags[state]!=1) memcpy(peeps+target*22+14,peeps+source*22+14,4);
+        peeps[target*22]=(flags[state]&1) ? 1 : 2; set_peep_word(target,12,0);
+        core_leader(owner)=target+1; if (variant!=2) view_who=target+1;
+        set_peep_word(source,4,0); peeps[source*22]=0;
+        if (variant!=2) map_who[649]=0;
+        uint8_t wanted[sizeof prg_a4_area]; memcpy(wanted,prg_a4_area,sizeof wanted);
+        memcpy(prg_a4_area,expected,sizeof expected);
+        core_move(source);
+        assert(!memcmp(wanted,prg_a4_area,sizeof wanted));
+        assert(!core_battles && !core_settlements);
+    }
+}
+
+static void test_friendly_merge_metadata_rejection(void)
+{
+    for (int source=0; source<2; ++source) for (int owner=0; owner<2; ++owner)
+    for (int byte=14; byte<18; ++byte) {
+        setup_friendly_merge(source,owner);
+        peeps[(1-source)*22]=1;
+        peeps[source*22+byte]=0x80; peeps[source*22+3]=200;
+        uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
+        core_move(source);
+        assert(!memcmp(saved,prg_a4_area,sizeof saved));
+        assert(!core_battles && !core_settlements);
+    }
+}
+
+static void test_friendly_merge_dead_target(void)
+{
+    const int populations[]={0,-1};
+    for (int source=0; source<2; ++source) for (int owner=0; owner<2; ++owner)
+    for (unsigned index=0; index<sizeof populations/sizeof populations[0]; ++index) {
+        setup_friendly_merge(source,owner);
+        set_peep_word(1-source,4,populations[index]);
+        uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
+        core_move(source);
+        assert(!memcmp(saved,prg_a4_area,sizeof saved));
+    }
+}
+
+static void test_friendly_merge_helper_guards(void)
+{
+    const int invalid_indices[]={-1,3,208,32767};
+    for (unsigned index=0; index<sizeof invalid_indices/sizeof invalid_indices[0]; ++index) {
+        setup_friendly_merge(0,0);
+        uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
+        core_join_forces(invalid_indices[index],1);
+        core_join_forces(0,invalid_indices[index]);
+        core_join_forces(0,0);
+        assert(!memcmp(saved,prg_a4_area,sizeof saved));
+    }
+    for (int invalid=0; invalid<11; ++invalid) {
+        setup_friendly_merge(0,0);
+        switch (invalid) {
+        case 0: set_peep_word(0,4,0); break;
+        case 1: set_peep_word(0,4,-1); break;
+        case 2: peeps[0]=1; break;
+        case 3: peeps[0]=8; break;
+        case 4: peeps[0]=0x22; break;
+        case 5: peeps[0]=0x42; break;
+        case 6: peeps[1]=peeps[23]=2; break;
+        case 7: set_peep_word(1,4,0); break;
+        case 8: set_peep_word(1,4,-1); break;
+        case 9: peeps[23]=1; break;
+        case 10: peeps[22]=10; break;
+        }
+        uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
+        core_join_forces(0,1);
+        assert(!memcmp(saved,prg_a4_area,sizeof saved));
+    }
+    /* The helper does not navigate or replace unrelated leader/view references. */
+    setup_friendly_merge(0,0); core_leader(0)=3; view_who=3; peeps[21]=0xab;
+    core_join_forces(0,1);
+    assert(core_leader(0)==3 && view_who==3 && peeps[21]==0xab);
+    assert(peep_word(1,4)==300 && peep_word(1,12)==0 && !peep_word(0,4));
+}
+
+static void test_friendly_merge_tick_totals(void)
+{
+    for (int source=0; source<2; ++source) for (int owner=0; owner<2; ++owner) {
+        setup_friendly_merge(source,owner);
+        set_peep_word(source,12,7); set_peep_word(1-source,12,0);
+        set_peep_word(2,12,0);
+        game_tick();
+        assert(!peep_word(source,4) && peep_word(1-source,4)==300);
+        assert(A4_LONG(0x99fe + owner*16)==300 && A4_LONG(0x99fe + (1-owner)*16)==200);
+        assert(!core_result && !core_battles && !core_settlements);
+    }
+}
+
+static void test_friendly_merge_town_and_split(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    for (int owner=0; owner<2; ++owner) {
+        assert(game_reset(0));
+        memset(peeps,0,208*22); memset(map_who,0,4096); no_peeps=3;
+        int position=50*64+50;
+        for (int person=0; person<3; ++person) {
+            peeps[person*22]=2; peeps[person*22+1]=owner;
+            peeps[person*22+2]=1;
+            set_peep_word(person,4,100); set_peep_word(person,8,position);
+        }
+        peeps[22]=1; set_peep_word(1,12,42); core_set_town(1,0);
+        map_who[position]=2; core_tendency(owner)=0; core_leader(owner)=1; core_target(owner)=position+1;
+        /* A split child sharing its town's cell must depart, not merge back. */
+        core_move(0);
+        assert(peep_word(0,4)==100 && peep_word(1,4)==100 && peeps[22]==1);
+        assert(peep_word(0,8)==position+1 && map_bk2[position]==42);
+        map_who[position]=2;
+        /* A nearby return uses the existing destination encounter. */
+        core_target(owner)=position; peeps[22]=0x61; set_peep_word(1,12,101);
+        uint8_t terrain[4096], buildings[4096], split[22];
+        memcpy(terrain,map_blk,sizeof terrain); memcpy(buildings,map_bk2,sizeof buildings);
+        memcpy(split,peeps+44,sizeof split);
+        core_move(0);
+        assert(!peep_word(0,4) && peep_word(1,4)==200 && peeps[22]==1);
+        assert(peep_word(1,12)==0 && map_who[position]==2 && !map_who[position+1]);
+        assert(!memcmp(terrain,map_blk,sizeof terrain) && !memcmp(buildings,map_bk2,sizeof buildings));
+        assert(!memcmp(split,peeps+44,sizeof split));
+        /* Restoring the frame precedes all town mana/weapon/growth lookups. */
+        game_turn=8; A4_WORD(0x2fb6+20)=17; A4_WORD(0x2fcc+20)=9; A4_WORD(0x2fe2+20)=11;
+        int mana=core_mana(owner);
+        core_settle_tick(1);
+        assert(peep_word(1,12)==42 && peep_word(1,4)==211);
+        assert(core_mana(owner)==mana+17 && peeps[25]==9 && map_bk2[position]==42);
+        assert(!memcmp(split,peeps+44,sizeof split));
+    }
+    _closeall(); SDL_Quit();
+}
+
 static void setup_blocked_walker(void)
 {
     memset(prg_a4_area,0,sizeof prg_a4_area);
@@ -1466,6 +1647,12 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[2], "encounter")) test_colocated_hostile_encounter();
         else if (!strcmp(argv[2], "town")) test_no_hidden_town();
         else if (!strcmp(argv[2], "death")) test_colocated_battle_death();
+        else if (!strcmp(argv[2], "friendly")) test_friendly_merge_state();
+        else if (!strcmp(argv[2], "friendly-reject")) test_friendly_merge_metadata_rejection();
+        else if (!strcmp(argv[2], "friendly-dead")) test_friendly_merge_dead_target();
+        else if (!strcmp(argv[2], "friendly-guards")) test_friendly_merge_helper_guards();
+        else if (!strcmp(argv[2], "friendly-tick")) test_friendly_merge_tick_totals();
+        else if (!strcmp(argv[2], "friendly-town")) test_friendly_merge_town_and_split();
         else if (!strcmp(argv[2], "reinforcement")) test_battle_reinforcement();
         else if (!strcmp(argv[2], "invalid-battle")) test_invalid_battle_blocks_reinforcement();
         else if (!strcmp(argv[2], "reinforcement-guards")) test_reinforcement_helper_guards();
@@ -1500,6 +1687,12 @@ int main(int argc, char **argv)
     test_colocated_hostile_encounter();
     test_no_hidden_town();
     test_colocated_battle_death();
+    test_friendly_merge_state();
+    test_friendly_merge_metadata_rejection();
+    test_friendly_merge_dead_target();
+    test_friendly_merge_helper_guards();
+    test_friendly_merge_tick_totals();
+    test_friendly_merge_town_and_split();
     test_battle_reinforcement();
     test_invalid_battle_blocks_reinforcement();
     test_reinforcement_helper_guards();

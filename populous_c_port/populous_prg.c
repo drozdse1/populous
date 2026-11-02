@@ -925,6 +925,32 @@ static void core_join_battle(int newcomer, int encountered)
     /* game_tick recomputes totals, so no original running-index correction. */
     core_remove(newcomer);
 }
+/* _join_forces asm:5540-5640: ordinary friendly merge, not battle joining. */
+static void core_join_forces(int source, int target)
+{
+    if (source < 0 || source >= no_peeps || source >= 208 ||
+        target < 0 || target >= no_peeps || target >= 208 || source == target ||
+        peep_word(source,4) <= 0 || peeps[source*22] != 2 ||
+        peep_owner(source) > 1 || peep_word(target,4) <= 0 ||
+        peep_owner(target) != peep_owner(source) || (peeps[target*22]&8)) return;
+    /* Opaque Amiga metadata: copy four bytes, never dereference as a pointer. */
+    uint32_t metadata;
+    memcpy(&metadata,peeps+source*22+14,sizeof metadata);
+    if (metadata && peeps[target*22] == 1) return;
+    if (metadata) memcpy(peeps+target*22+14,&metadata,sizeof metadata);
+    int population = peep_word(source,4)+peep_word(target,4);
+    set_peep_word(target,4,population > 32000 ? 32000 : population);
+    int owner = peep_owner(source);
+    if (core_leader(owner) == source+1) core_leader(owner) = target+1;
+    if (view_who == source+1) view_who = target+1;
+    if (peeps[source*22+3] > peeps[target*22+3])
+        peeps[target*22+3] = peeps[source*22+3];
+    peeps[target*22] &= 0x9f;
+    set_peep_word(target,12,0);
+    /* Host cleanup clears only source-owned occupancy; transfer refs first.
+     * game_tick recomputes totals, so omit the original running-index subtract. */
+    core_remove(source);
+}
 static void core_move(int person)
 {
     int owner = peep_owner(person), position = peep_word(person,8);
@@ -969,14 +995,7 @@ static void core_move(int person)
     int destination = position+delta, other = map_who[destination]-1;
     if (other >= 0 && other < no_peeps && other != person) {
         if (peeps[other*22]&8) { core_join_battle(person,other); return; }
-        if (peep_owner(other) == owner) {
-            int sum = peep_word(other,4)+peep_word(person,4);
-            set_peep_word(other,4,sum > 32000 ? 32000 : sum);
-            if (peeps[person*22+3] > peeps[other*22+3]) peeps[other*22+3] = peeps[person*22+3];
-            int leader = core_leader(owner) == person+1;
-            core_remove(person); if (leader) core_leader(owner) = other+1;
-            return;
-        }
+        if (peep_owner(other) == owner) { core_join_forces(person,other); return; }
         if (map_who[position] == person+1) map_who[position] = 0;
         set_peep_word(person,8,destination); peeps[person*22] = 8; peeps[other*22] |= 8;
         set_peep_word(person,6,other); set_peep_word(other,6,person); ++core_battles;
