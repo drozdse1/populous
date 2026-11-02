@@ -99,13 +99,25 @@ split attempt. The ordinary completion checks the signed population and removes
 nonpositive towns, including on non-economy turns. Evacuation remains an immediate
 return that bypasses this check. Thus an eligible direct town update can revive
 a nonpositive population through growth; the resident-loop entry still skips
-initially nonpositive records. Existing footprint timing, split-record differences,
-AI selection/capacity overrides and dry `0x11` town recovery remain separate work.
+initially nonpositive records. Split-record differences, AI selection/capacity
+overrides and dry `0x11` town recovery remain separate work.
 This is not full town-consumer or original cleanup parity. `--town-economy`
 checks literal word/longword boundaries, cadence, low-byte weapons, direct revival
 and evacuation bypass, split/full-slot behavior, and resident-pass death bookkeeping.
 Focused/full normal and sanitized suites, original-data matches and all 495
 original starts passed; existing match outcomes remain unchanged.
+
+Town footprint maintenance follows economy and any split attempt, before ordinary
+death cleanup (`src/populous_prg.asm:3634,4037-4055`). The existing footprint helper
+runs only when the town frame changed, a flat block needs conversion, or a city
+frame has fewer than nine city-overlay cells. Otherwise terrain and overlays stay
+untouched. The incoming frame is captured before ordinary reframing; evacuation
+still removes its footprint and returns separately. This does not add missing
+AI terrain work or change the footprint helper's existing map-boundary behavior.
+`--town-footprint` uses full-A4 coordinate-based expectations for skipped refreshes,
+changed/flat/incomplete-city updates, downgrade, edges, death/revival, splitting
+and later-resident visibility. Focused/full normal and sanitized suites,
+original-data matches and all 495 starts passed; existing outcomes remain unchanged.
 
 Ordinary magnet navigation uses the original nine-entry direction table: arriving
 at the target attempts north rather than switching to exploration. A new leader

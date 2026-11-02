@@ -2904,8 +2904,8 @@ static void test_war_state(void)
     test_war_dispatch(); test_war_tick_totals();
 }
 
-/* Ordinary exact-1 economy only: source capacity overrides, dry 0x11 and
- * conditional footprint timing remain deferred. Controllers stay neutral. */
+/* Ordinary exact-1 economy only: source capacity overrides and dry 0x11
+ * remain deferred. Controllers stay neutral. */
 static void setup_town_economy(int owner, int population)
 {
     setup_war_town(owner,650,1);
@@ -3107,6 +3107,255 @@ static void test_town_economy(void)
 {
     test_town_economy_words(); test_town_economy_evacuation();
     test_town_economy_split(); test_town_economy_ticks();
+}
+
+/* Coordinate-only oracle: the caller supplies the expected refresh decision.
+ * No capacity, frame, city-count or footprint helper from production is used. */
+static void town_footprint_map(uint8_t *expected, int owner, int position,
+                               int frame, int refresh, int dead)
+{
+    uint8_t *blocks=expected+(map_blk-prg_a4_area);
+    uint8_t *buildings=expected+(map_bk2-prg_a4_area);
+    for (int phase=0; phase<2; ++phase) {
+        if ((!phase && !refresh) || (phase && !dead)) continue;
+        int old_city=buildings[position]==42;
+        for (int cell=0; cell<4096; ++cell) {
+            int dx=abs(cell%64-position%64), dy=abs(cell/64-position/64);
+            int inner=dx<=1 && dy<=1;
+            int ordinary=inner || (dx==2 && (dy==0 || dy==2)) || (dy==2 && dx==0);
+            int square=dx<=2 && dy<=2;
+            if ((phase || (old_city && frame!=42)) && (old_city ? square : ordinary)) {
+                if (old_city || inner) buildings[cell]=0;
+                if (blocks[cell]==31+owner) blocks[cell]=15;
+            }
+            if (!phase && (frame==42 ? square : ordinary)) {
+                if (inner) buildings[cell]=frame==42 ? (dx && dy ? 41 : dx ? 43 : dy ? 44 : 42) : 0;
+                if (blocks[cell]==15) blocks[cell]=31+owner;
+            }
+        }
+        if (phase) buildings[position]=0;
+        else if (frame!=42 && blocks[position]==31+owner) buildings[position]=frame;
+    }
+}
+
+static void setup_town_footprint(int owner, int position, int city, int flat)
+{
+    setup_town_economy(owner,100);
+    memset(map_blk,1,4096); memset(map_bk2,55,4096); memset(map_who,0,4096);
+    set_peep_word(0,8,position);
+    for (int cell=0; cell<4096; ++cell) {
+        int dx=abs(cell%64-position%64), dy=abs(cell/64-position/64);
+        int inner=dx<=1 && dy<=1;
+        int ordinary=inner || (dx==2 && (dy==0 || dy==2)) || (dy==2 && dx==0);
+        if (dx<=2 && dy<=2) map_blk[cell]=31+owner;
+        if (!city && position==650 && cell==780) map_blk[cell]=32-owner;
+        if (city && inner) map_bk2[cell]=41;
+        if (ordinary && flat && cell==position) map_blk[cell]=15;
+        map_alt[cell]=cell%8;
+    }
+    map_bk2[position]=city ? 42 : 55;
+}
+
+static void test_town_footprint_predicate(void)
+{
+    /* Sentinel overlays expose unnecessary refreshes even with positive life
+     * and no flat tiles. Edges exercise clipping without allowing row wrap. */
+    const struct { int position, frame; } positions[]={
+        {650,41},{0,37},{63,37},{4032,37},{4095,37},
+        {32,39},{2048,39},{2111,39},{4064,39}
+    };
+    const struct { int city, flat, old_frame, frame, all_city, refresh; } cases[]={
+        {0,0,41,41,0,0}, {0,0,-32768,41,0,1}, {0,1,41,41,0,1},
+        {1,0,42,42,9,0}, {1,0,42,42,8,1}, {1,1,42,42,9,1},
+        {1,0,-1,42,9,1}, {2,0,42,41,9,1}, {2,0,41,41,9,0}
+    };
+    unsigned checked=0;
+    for (int owner=0; owner<2; ++owner)
+    for (unsigned place=0; place<sizeof positions/sizeof positions[0]; ++place)
+    for (unsigned sample=0; sample<sizeof cases/sizeof cases[0]; ++sample) {
+        if (place && cases[sample].city) continue;
+        for (int turn=7; turn<=9; ++turn) for (int occupant=0; occupant<=2; ++occupant)
+        for (int direct=0; direct<=1; ++direct) {
+            int position=positions[place].position;
+            int frame=place ? positions[place].frame : cases[sample].frame;
+            int old_frame=cases[sample].old_frame==41 ? frame : cases[sample].old_frame;
+            setup_town_footprint(owner,position,cases[sample].city!=0,cases[sample].flat);
+            if (cases[sample].city==2) map_blk[780]=32-owner;
+            if (cases[sample].all_city==8) map_bk2[585]=55;
+            set_peep_word(0,12,old_frame); game_turn=turn; map_who[position]=occupant;
+            for (int level=0; level<11; ++level) {
+                A4_WORD(0x2fb6+level*2)=-17;
+                A4_WORD(0x2fcc+level*2)=0xab09;
+                A4_WORD(0x2fe2+level*2)=11;
+            }
+            uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+            celebration_expected_word(expected,0x2ff8,cases[sample].all_city);
+            celebration_expected_word(expected,0x2fb2,cases[sample].flat);
+            celebration_expected_word(expected,0x9c26+12,frame);
+            if (!occupant) expected[map_who-prg_a4_area+position]=1;
+            if (turn==8) {
+                celebration_expected_word(expected,0x9c26+4,111);
+                expected[peeps-prg_a4_area+3]=9;
+                town_expected_long(expected,0x9a02+owner*16,owner ? 23439 : 12328);
+            }
+            town_footprint_map(expected,owner,position,frame,cases[sample].refresh,0);
+            if (direct) core_settle_tick(0); else _move_peeps();
+            assert(peep_word(0,12)==frame);
+            assert(A4_WORD(0x2fb2)==cases[sample].flat && A4_WORD(0x2ff8)==cases[sample].all_city);
+            assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            assert(!core_result && !prg_quit && !core_battles && !core_settlements);
+            ++checked;
+        }
+    }
+    assert(checked==1188);
+}
+
+static void test_town_footprint_completion(void)
+{
+    /* Source framing/claim, economy and split retain the pre-footprint capacity;
+     * growth death must still perform the footprint before signed cleanup. */
+    const struct { int population, growth, result; } cases[]={
+        {100,11,111},{1,32767,-32768},{0,11,11},{-1,11,10},
+        {0,0,0},{-1,0,-1},{-32768,-1,32767}
+    };
+    for (int owner=0; owner<2; ++owner) for (int downgrade=0; downgrade<=1; ++downgrade)
+    for (unsigned sample=0; sample<sizeof cases/sizeof cases[0]; ++sample)
+    for (int turn=7; turn<=9; ++turn) for (int occupant=0; occupant<=2; ++occupant) {
+        setup_town_footprint(owner,650,1,0);
+        if (downgrade) map_blk[780]=32-owner;
+        else map_bk2[585]=55;
+        set_peep_word(0,12,42); set_peep_word(0,4,cases[sample].population);
+        int frame=downgrade ? 41 : 42;
+        A4_WORD(0x2fe2+(frame-32)*2)=cases[sample].growth;
+        game_turn=turn; map_who[650]=occupant;
+        int population=turn==8 ? cases[sample].result : cases[sample].population;
+        uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+        celebration_expected_word(expected,0x2ff8,downgrade ? 9 : 8);
+        celebration_expected_word(expected,0x2fb2,0);
+        celebration_expected_word(expected,0x9c26+12,frame);
+        celebration_expected_word(expected,0x9c26+4,population>0 ? population : 0);
+        if (!occupant) expected[map_who-prg_a4_area+650]=1;
+        if (turn==8) {
+            expected[peeps-prg_a4_area+3]=9;
+            town_expected_long(expected,0x9a02+owner*16,(owner ? 23456u : 12345u)+(downgrade ? 109 : 17));
+        }
+        if (population<=0) {
+            expected[peeps-prg_a4_area]=0;
+            if (occupant<=1) expected[map_who-prg_a4_area+650]=0;
+            celebration_expected_word(expected,0x99f6+owner*16,0);
+            celebration_expected_word(expected,0x99f8+owner*16,650);
+            celebration_expected_word(expected,owner ? 0xae76 : 0xae78,650);
+            celebration_expected_word(expected,0xae68,0);
+        }
+        town_footprint_map(expected,owner,650,frame,1,population<=0);
+        core_settle_tick(0);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(!core_result && !core_battles && !core_settlements);
+    }
+    for (int owner=0; owner<2; ++owner) for (int full=0; full<=1; ++full)
+    for (int occupant=0; occupant<=2; ++occupant) for (int turn=7; turn<=9; ++turn) {
+        setup_town_footprint(owner,650,1,0); map_blk[780]=32-owner;
+        set_peep_word(0,12,42); set_peep_word(0,4,3100); game_turn=turn;
+        A4_WORD(0x2ff4)=11; map_who[650]=occupant;
+        no_peeps=full ? 208 : 2;
+        for (int person=1; person<no_peeps; ++person) {
+            peeps[person*22]=0x80; peeps[person*22+1]=1-owner;
+            set_peep_word(person,4,77); set_peep_word(person,8,650);
+        }
+        if (!full) { memset(peeps+2*22,0xa5,22); set_peep_word(2,4,-1); }
+        uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+        celebration_expected_word(expected,0x2ff8,9); celebration_expected_word(expected,0x2fb2,0);
+        celebration_expected_word(expected,0x9c26+12,41);
+        if (!occupant) expected[map_who-prg_a4_area+650]=1;
+        if (turn==8) {
+            celebration_expected_word(expected,0x9c26+4,full ? 3111 : 156);
+            expected[peeps-prg_a4_area+3]=9;
+            town_expected_long(expected,0x9a02+owner*16,owner ? 23565 : 12454);
+            if (!full) {
+                uint8_t *child=expected+(peeps-prg_a4_area)+44;
+                memset(child,0,22); child[0]=2; child[1]=owner; child[2]=3; child[3]=9;
+                celebration_expected_word(expected,0x9c26+44+4,2955);
+                celebration_expected_word(expected,0x9c26+44+8,650);
+                celebration_expected_word(expected,0x9c26+44+18,650);
+                celebration_expected_word(expected,0xae5e,3);
+                celebration_expected_word(expected,0x99f6+owner*16,3);
+                expected[peeps-prg_a4_area+2]=4;
+                if (occupant<=1) expected[map_who-prg_a4_area+650]=3;
+            }
+        }
+        town_footprint_map(expected,owner,650,41,1,0);
+        core_settle_tick(0);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(!core_result && !core_battles && !core_settlements);
+    }
+}
+
+static void test_town_footprint_pass_and_clock(void)
+{
+    /* The next resident's life scan observes the footprint from this pass,
+     * not a queued end-of-pass update; its scratch then replaces the first's. */
+    for (int owner=0; owner<2; ++owner) {
+        setup_town_footprint(owner,650,0,0); game_turn=7;
+        set_peep_word(0,12,-1); no_peeps=2;
+        memcpy(peeps+22,peeps,22); set_peep_word(1,8,651);
+        core_leader(1-owner)=0; map_who[650]=1; map_who[651]=2;
+        uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+        celebration_expected_word(expected,0x9c26+12,41);
+        celebration_expected_word(expected,0x2fb2,0); celebration_expected_word(expected,0x2ff8,0);
+        town_footprint_map(expected,owner,650,41,1,0);
+        expected[peeps-prg_a4_area+22]=2;
+        celebration_expected_word(expected,0x9c26+22+10,0);
+        celebration_expected_word(expected,0x9c26+22+12,0);
+        town_footprint_map(expected,owner,651,0,0,1);
+        _move_peeps();
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(peeps[0]==1 && peeps[22]==2 && seed==123);
+    }
+    for (int owner=0; owner<2; ++owner) for (int gate=0; gate<6; ++gate)
+    for (int fatal=0; fatal<=1; ++fatal) {
+        setup_town_footprint(owner,650,1,0); map_blk[780]=32-owner;
+        set_peep_word(0,12,42); set_peep_word(0,4,1);
+        A4_WORD(0x2ff4)=fatal ? 32767 : 11; game_turn=6;
+        no_peeps=2; peeps[22]=6; peeps[23]=1-owner;
+        set_peep_word(1,4,77); set_peep_word(1,8,3250); set_peep_word(1,12,85);
+        map_who[650]=1; map_who[3250]=2;
+        pause=gate==1; prg_quit=gate==2; core_result=gate>=3 ? gate-2 : 0;
+        for (int turn=7; turn<=9; ++turn) {
+            uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+            if (!gate && !(fatal && turn==9)) {
+                celebration_expected_word(expected,0xae6a,turn);
+                celebration_expected_word(expected,0x2fb2,0);
+                celebration_expected_word(expected,0x2ff8,turn==7 ? 9 : 0);
+                celebration_expected_word(expected,0x9c26+12,41);
+                celebration_expected_word(expected,0x9c26+22+12,turn==9 ? 0 : turn+79);
+                if (turn==9) expected[peeps-prg_a4_area+22]=2;
+                town_expected_long(expected,0x99fe + owner*16,turn==7 ? 1 : fatal ? 0 : 12);
+                town_expected_long(expected,0x99fe + (1-owner)*16,77);
+                if (turn==8) {
+                    celebration_expected_word(expected,0x9c26+4,fatal ? 0 : 12);
+                    expected[peeps-prg_a4_area+3]=9;
+                    town_expected_long(expected,0x9a02+owner*16,owner ? 23565 : 12454);
+                    if (fatal) {
+                        expected[peeps-prg_a4_area]=0; expected[map_who-prg_a4_area+650]=0;
+                        celebration_expected_word(expected,0x99f6+owner*16,0);
+                        celebration_expected_word(expected,0x99f8+owner*16,650);
+                        celebration_expected_word(expected,owner ? 0xae76 : 0xae78,650);
+                        celebration_expected_word(expected,0xae68,0);
+                    }
+                }
+                town_footprint_map(expected,owner,650,41,turn==7,fatal && turn==8);
+            }
+            game_tick();
+            assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            assert(!core_battles && !core_settlements);
+        }
+    }
+}
+
+static void test_town_footprint(void)
+{
+    test_town_footprint_predicate(); test_town_footprint_completion();
+    test_town_footprint_pass_and_clock();
 }
 
 static void test_near_town_sculpt(void)
@@ -7654,6 +7903,10 @@ static void test_battle_frame_render_and_entry(void)
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--town-footprint")) {
+        test_town_footprint(); test_town_economy(); test_war_state();
+        puts("focused ordinary town footprint: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--town-economy")) {
         test_town_economy(); test_war_state();
         puts("focused ordinary town economy: PASS"); return 0;
@@ -7836,7 +8089,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
-    test_town_economy();
+    test_town_footprint(); test_town_economy();
     test_water_remnant(); test_water_remnant_rescue();
     test_water_wait(); test_water_wait_rescue();
     test_water_celebration(); test_water_celebration_rescue();

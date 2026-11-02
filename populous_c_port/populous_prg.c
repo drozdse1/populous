@@ -1212,36 +1212,39 @@ static void core_settle_tick(int person)
         core_set_town(person,1);
         return;
     }
-    core_frame_town(person,capacity); core_set_town(person,0);
+    int old_frame = peep_word(person,12); /* asm:3634-3636, before reframing. */
+    core_frame_town(person,capacity);
     /* asm:3667-3677: reclaim a departed walker's slot, never another occupant. */
     if (!map_who[position]) map_who[position] = person+1;
-    if ((uint16_t)game_turn&7) {
-        if (peep_word(person,4)<=0) core_remove(person);
-        return;
-    }
-    int level = peep_word(person,12)-32;
-    /* asm:3863-3882: EXT.L signed word then ADD.L, without host mana bounds. */
-    A4_LONG(0x9a02+owner*16)+=(uint32_t)(int32_t)(int16_t)A4_WORD(0x2fb6+level*2);
-    peeps[person*22+3] = A4_WORD(0x2fcc+level*2)&255;
-    if (peep_word(person,4) > capacity) {
-        int child;
-        for (child = 0; child < 208 && peep_word(child,4)>0; ++child) {}
-        if (child < 208) {
-            memset(peeps+child*22,0,22); if (child >= no_peeps) no_peeps = child+1;
-            peeps[child*22] = 2; peeps[child*22+1] = owner;
-            peeps[child*22+2] = peeps[person*22+2]; peeps[child*22+3] = peeps[person*22+3];
-            set_peep_word(child,4,peep_word(person,4)-capacity/2); set_peep_word(person,4,capacity/2);
-            /* asm:3913-3929: the released walker carries the leader. */
-            if (core_leader(owner) == person+1) core_leader(owner) = child+1;
-            set_peep_word(child,8,position); set_peep_word(child,18,position);
-            /* asm:3964-3983: preserve a co-located walker or battle occupant. */
-            if (!map_who[position] || map_who[position] == person+1) map_who[position] = child+1;
-            if (peeps[person*22+2] < 4) ++peeps[person*22+2];
+    if (!((uint16_t)game_turn&7)) {
+        int level = peep_word(person,12)-32;
+        /* asm:3863-3882: EXT.L signed word then ADD.L, without host mana bounds. */
+        A4_LONG(0x9a02+owner*16)+=(uint32_t)(int32_t)(int16_t)A4_WORD(0x2fb6+level*2);
+        peeps[person*22+3] = A4_WORD(0x2fcc+level*2)&255;
+        if (peep_word(person,4) > capacity) {
+            int child;
+            for (child = 0; child < 208 && peep_word(child,4)>0; ++child) {}
+            if (child < 208) {
+                memset(peeps+child*22,0,22); if (child >= no_peeps) no_peeps = child+1;
+                peeps[child*22] = 2; peeps[child*22+1] = owner;
+                peeps[child*22+2] = peeps[person*22+2]; peeps[child*22+3] = peeps[person*22+3];
+                set_peep_word(child,4,peep_word(person,4)-capacity/2); set_peep_word(person,4,capacity/2);
+                /* asm:3913-3929: the released walker carries the leader. */
+                if (core_leader(owner) == person+1) core_leader(owner) = child+1;
+                set_peep_word(child,8,position); set_peep_word(child,18,position);
+                /* asm:3964-3983: preserve a co-located walker or battle occupant. */
+                if (!map_who[position] || map_who[position] == person+1) map_who[position] = child+1;
+                if (peeps[person*22+2] < 4) ++peeps[person*22+2];
+            }
         }
+        /* asm:4007-4014: ADD.W can revive or kill; store before maintenance. */
+        set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)+(uint16_t)A4_WORD(0x2fe2+level*2)));
     }
-    /* asm:4007-4014,4308-4315: ADD.W can revive or kill; test after storing.
-     * Evacuation above bypasses this completion (asm:3633). */
-    set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)+(uint16_t)A4_WORD(0x2fe2+level*2)));
+    /* asm:4037-4055: use this resident's life-scan scratch after economy.
+     * Evacuation bypasses both maintenance and signed cleanup (asm:3633). */
+    int frame = peep_word(person,12);
+    if (frame != old_frame || A4_WORD(0x2fb2) || (frame == 42 && (int16_t)A4_WORD(0x2ff8) < 9))
+        core_set_town(person,0);
     if (peep_word(person,4)<=0) core_remove(person);
 }
 /* _raise_point/_lower_point: the same 8-neighbour slope constraint, bounded work. */
