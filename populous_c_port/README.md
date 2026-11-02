@@ -34,7 +34,7 @@ ordinary `_where_do_i_go`/magnet navigation, settlement growth/mana/splitting,
 ordinary `_do_battle`/`_battle_over`, joining, water loss and vertex sculpting.
 Source labels and assembly ranges appear beside each implementation. The
 opponent uses the same settlement/exploration rules, not timer-created units.
-Special powers other than swamp, earthquake and flood, knights, original computer
+Knight creation, Armageddon, original computer
 power/auto-level logic, celebration animations and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
@@ -360,6 +360,26 @@ Those rules still use the port's immediate movement model, including its battle
 water exemption, not full original drowning/tick parity. Sound, editor bypass,
 original toolbar and AI power selection remain deferred. `P` never makes it free.
 
+## Volcano power
+
+`V` casts immediately at the viewport origin, not the mouse. Gameplay admission
+requires active permission `0x40`, at least 10000 mana and no pause/war/finished
+match. It charges 10000, awards the player-caster 100 score and records effect 75.
+There is no diagnostic/editor bypass, clicked-target mode or automatic crater.
+
+Five nested vertex-square passes consume 165 draws, raising on residues 1, 2 or
+4 modulo 5. The following 8x8 lava scan consumes 64 further draws for a valid
+viewport: residue zero writes block 47 and clears its overlay unless protected.
+Literal original behavior protects owner 0's leader twice, not both leaders,
+and both magnet targets. With no owner-0 leader, cell zero is protected. Lava
+selection consumes its draw even when protection prevents writing. Invalid or
+stale owner-0 leader references are rejected before payment as a host-safety guard.
+
+Only actual height changes expand dirty bounds; lava writes do not. The original
+clamped bounds rectangle is rebuilt rather than unconditionally rebuilding the
+whole footprint. No residents or occupancy are changed directly by casting.
+Original toolbar, audio, editor mode and exact queued-command timing remain open.
+
 ## Controls
 
 - Blue is your population; red is the opponent. Original houses/castles show
@@ -373,6 +393,7 @@ original toolbar and AI power selection remain deferred. `P` never makes it free
 - `0`: gather walkers at the initial magnet (32,32). After a leader reaches it,
   `m` selects magnet placement; left-click moves the target for 200 mana. `m`
   again returns to terrain. Settlements release walkers when over capacity.
+- `v`: volcano on the current viewport, if allowed, for 10000 mana.
 - `f`: global flood, if allowed, for 40000 mana.
 - `q`: earthquake on the current viewport, if allowed, for 2500 mana.
 - `s`: select one-shot swamp targeting when allowed and mana exceeds 5000;
@@ -387,7 +408,7 @@ original toolbar and AI power selection remain deferred. `P` never makes it free
 The opponent independently settles, grows, explores, merges and fights. Flatten
 plots to encourage settlement, wait for population/mana, and lower the four
 corners of hostile plots to deny land. The goal is to remove the opposing living
-population, including settlements. `v`, `a` and unported special powers are
+population, including settlements. `a` and unported special powers are
 inactive. No timer or population target declares a winner.
 
 ## Verification

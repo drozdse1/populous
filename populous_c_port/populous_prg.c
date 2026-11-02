@@ -1203,6 +1203,53 @@ static int core_quake(int owner, int column, int row, WorldRandom random)
                          A4_WORD(0x2f8c),A4_WORD(0x2f90));
     return 1;
 }
+/* _do_volcano asm:8046-8267, gameplay only: P is not the editor. */
+static int core_volcano(int owner, int column, int row, WorldRandom random)
+{
+    if (owner < 0 || owner > 1 || column < 0 || column > 56 || row < 0 || row > 56 ||
+        pause || A4_WORD(0xae80) || core_result ||
+        core_mana(owner) < (int32_t)A4_LONG(0x849e) ||
+        !(A4_WORD(0x82c4+owner*46)&0x40)) return 0;
+    /* asm:8141-8157 reads blue twice. Zero protects cell zero, not no cell.
+     * Reject unsupported stale references before payment or terrain mutation. */
+    int leader = core_leader(0), protected_cell = 0;
+    if (leader) {
+        if (leader < 1 || leader > 208 || leader > no_peeps ||
+            peep_word(leader-1,4) <= 0) return 0;
+        protected_cell = peep_word(leader-1,8);
+        if (protected_cell < 0 || protected_cell >= 4096) return 0;
+    }
+    A4_LONG(0x9a02+owner*16) -= A4_LONG(0x849e);
+    if (owner == player) A4_LONG(0xae72) += 100;
+    A4_WORD(0x2f8a) = A4_WORD(0x2f8c) = column;
+    A4_WORD(0x2f8e) = A4_WORD(0x2f90) = row;
+    A4_WORD(0x2fac) = 75;
+    for (int pass = 0; pass < 5; ++pass)
+        for (int x = column+pass; x <= column+8-pass; ++x)
+            for (int y = row+pass; y <= row+8-pass; ++y) {
+                int action = random()%5;
+                if (action == 1 || action == 2 || action == 4) original_raise_point(x,y);
+            }
+    for (int x = column; x < column+8; ++x)
+        for (int y = row; y < row+8; ++y) {
+            if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
+            int cell = y*64+x;
+            if (random()%5 || cell == protected_cell ||
+                cell == core_target(0) || cell == core_target(1)) continue;
+            map_blk[cell] = 47;
+            map_bk2[cell] = 0;
+        }
+    /* Lava never expands these source bounds, even when no point was raised. */
+    if (A4_WORD(0x2f8a) < 1) A4_WORD(0x2f8a) = 1;
+    if (A4_WORD(0x2f8c) > 63) A4_WORD(0x2f8c) = 63;
+    if (A4_WORD(0x2f8e) < 1) A4_WORD(0x2f8e) = 1;
+    if (A4_WORD(0x2f90) > 63) A4_WORD(0x2f90) = 63;
+    core_make_map_region(A4_WORD(0x2f8a)-1,A4_WORD(0x2f8e)-1,
+                         A4_WORD(0x2f8c),A4_WORD(0x2f90));
+    A4_WORD(0x2fac) = 75;
+    return 1;
+}
+
 /* _do_swamp asm:8295-8387, gameplay only: P is not the original editor.
  * Byte target coordinates can be outside the map; still consume all 60 draws. */
 static int core_swamp(int owner, int column, int row, WorldRandom random)
@@ -1872,7 +1919,8 @@ static void draw_original(int view_x, int view_y)
         "S SWAMP ARMED 5000 / LMB TARGET / RMB INERT" :
         "LMB RAISE / RMB LOWER / ARROWS SCROLL / MAP CLICK");
     hud_text(4,222,"0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET / S SWAMP 5000");
-    hud_text(4,231,"Q QUAKE 2500 / F FLOOD 40000 / SPACE PAUSE / R RESET / ESC QUIT / D VIEW");
+    hud_text(4,231,"Q QUAKE 2500 / F FLOOD 40000 / V VOLCANO 10000 / SPACE PAUSE / R RESET");
+    hud_text(4,249,"ESC QUIT / D VIEW");
     hud_text(4,240,core_swamp_selected ?
         (core_tool ? "AFTER TARGET: MAGNET / ORIGINAL TOOLBAR DECORATIVE" :
                      "AFTER TARGET: TERRAIN / ORIGINAL TOOLBAR DECORATIVE") :
@@ -1932,7 +1980,7 @@ static void _draw_it(int16_t y, int16_t x)
     }
     } else draw_original(x,y);
     char title[512];
-    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; Q quake 2500; F flood 40000; mouse raise/lower; Space pause R reset Esc quit",
+    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; Q quake 2500; F flood 40000; V volcano 10000; mouse raise/lower; Space pause R reset Esc quit",
         core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : "RUNNING",
         core_population(0),core_population(1),core_mana(0),core_swamp_selected ?
         (core_tool ? "SWAMP ARMED (5000) LMB target then MAGNET / RMB inert" :
@@ -1943,6 +1991,7 @@ static void _draw_it(int16_t y, int16_t x)
 
 static void _do_flood(void) { core_flood(player); }
 static void _do_quake(void) { core_quake(player,xoff,yoff,___newrand); }
+static void _do_volcano(void) { core_volcano(player,xoff,yoff,___newrand); }
 static void _do_funny(void) {}
 /* Ordinary _set_frame branches, asm:5728-5743,5846-5861. */
 static int core_frame_walker(int person)
@@ -2088,6 +2137,7 @@ static void game_handle_event(const SDL_Event *event)
             if (key == SDLK_m) core_tool = !core_tool;
             if (key == SDLK_q) _do_quake();
             if (key == SDLK_f) _do_flood();
+            if (key == SDLK_v) _do_volcano();
             /* Host S mapping for source selection asm:2021-2042 (> cost). */
             if (key == SDLK_s && player >= 0 && player <= 1 &&
                 core_mana(player) > (int32_t)A4_LONG(0x8496) &&
@@ -2154,7 +2204,7 @@ static void game_handle_event(const SDL_Event *event)
         } else if (event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT)
             core_sculpt(0,column,row,event->button.button == SDL_BUTTON_LEFT ? 1 : -1);
     }
-    /* V and unsupported special powers remain inert. */
+    /* Unsupported special powers remain inert. */
 }
 static void ___setup_mouse(void){printf("[SDL] setup_mouse\n");}
 static void ___AddIntServer(int16_t l,void *is){printf("[PRG] AddIntServer %d\n",l);}

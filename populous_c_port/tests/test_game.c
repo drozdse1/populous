@@ -135,6 +135,8 @@ static void test_reset_and_input(void)
         game_handle_event(&motion);
         assert(mousex == 100 && mousey == 50);
         memcpy(before, prg_a4_area, sizeof before);
+        /* Both viewport powers reject while paused, not because V is inert. */
+        assert(pause);
         key.key.keysym.sym = SDLK_q; game_handle_event(&key);
         key.key.keysym.sym = SDLK_v; game_handle_event(&key);
         assert(memcmp(before, prg_a4_area, sizeof before) == 0);
@@ -2348,8 +2350,251 @@ static void test_flood_input_smoke(void)
     assert(core_vertex(64,64)==0);
 }
 
+static unsigned volcano_draws;
+static uint16_t volcano_values[229];
+static uint16_t volcano_random(void)
+{
+    assert(volcano_draws<229);
+    assert(A4_WORD(0x2fac)==75);
+    return volcano_values[volcano_draws++];
+}
+static void volcano_fixture(int height)
+{
+    quake_fixture(height);
+    A4_LONG(0x849e)=10000;
+    A4_WORD(0x82c4)=A4_WORD(0x82c4+46)=0x40;
+    A4_WORD(0x2f8a)=7; A4_WORD(0x2f8c)=13;
+    A4_WORD(0x2f8e)=23; A4_WORD(0x2f90)=29;
+    core_battles=core_settlements=core_tool=core_swamp_selected=0;
+    volcano_draws=0;
+    for (int draw=0;draw<229;++draw) volcano_values[draw]=3;
+}
+static void test_volcano_cast(void)
+{
+    for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint)
+    for (int gate=0;gate<19;++gate) {
+        volcano_fixture(0); paint_map=paint;
+        int side=owner,x=20,y=30;
+        if (gate==0) side=-1;
+        if (gate==1) side=2;
+        if (gate==2) x=-1;
+        if (gate==3) x=57;
+        if (gate==4) y=-1;
+        if (gate==5) y=57;
+        if (gate==6) A4_LONG(0x9a02+owner*16)=9999;
+        if (gate==7) A4_WORD(0x82c4+owner*46)=0xffbf;
+        if (gate==8) pause=1;
+        if (gate==9) A4_WORD(0xae80)=1;
+        if (gate>=10 && gate<=12) core_result=gate-9;
+        if (gate==13) core_leader(0)=-1;
+        if (gate==14) { no_peeps=208; core_leader(0)=209; }
+        if (gate==15) { no_peeps=1; core_leader(0)=2; }
+        if (gate==16) { no_peeps=1; core_leader(0)=1; } /* Dead reference. */
+        if (gate>=17) {
+            no_peeps=1; core_leader(0)=1; set_peep_word(0,4,10);
+            set_peep_word(0,8,gate==17 ? -1 : 4096);
+        }
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(!core_volcano(side,x,y,volcano_random));
+        assert(!volcano_draws && seed==321 && !memcmp(before,prg_a4_area,sizeof before));
+    }
+    for (int owner=0;owner<2;++owner) for (int local=0;local<2;++local)
+    for (int paint=0;paint<2;++paint) for (int height=0;height<=8;height+=8)
+    for (int extra=0;extra<2;++extra) {
+        volcano_fixture(height); player=local; paint_map=paint;
+        A4_LONG(0x9a02+owner*16)=10000+extra; A4_LONG(0xae72)=17;
+        for (int draw=0;draw<165;++draw) volcano_values[draw]=height ? 1 : draw%2 ? 3 : 0;
+        assert(core_volcano(owner,20,30,volcano_random));
+        assert(core_mana(owner)==extra && core_mana(1-owner)==10000);
+        assert(A4_LONG(0xae72)==(owner==local ? 117u : 17u));
+        assert(volcano_draws==229 && seed==321 && A4_WORD(0x2f88)==123 && A4_WORD(0x2fac)==75);
+        assert(A4_WORD(0x2f8a)==20 && A4_WORD(0x2f8c)==20);
+        assert(A4_WORD(0x2f8e)==30 && A4_WORD(0x2f90)==30);
+        for (int row=0;row<=64;++row) for (int column=0;column<=64;++column)
+            assert(core_vertex(column,row)==height);
+    }
+    /* 81+49+25+9+1 = 165 raises, not five fixed 9x9 passes or a crater. */
+    static const int origins[][2]={{20,30},{0,0},{56,0},{0,56},{56,56}};
+    for (unsigned origin=0;origin<sizeof origins/sizeof origins[0];++origin) {
+        volcano_fixture(0);
+        for (int draw=0;draw<165;++draw) volcano_values[draw]=1;
+        int x=origins[origin][0],y=origins[origin][1];
+        assert(core_volcano(0,x,y,volcano_random));
+        assert(volcano_draws==229 && A4_WORD(0x2f88)==288);
+        assert(A4_WORD(0x2f8a)==(x ? x : 1) && A4_WORD(0x2f8c)==(x==56 ? 63 : x+8));
+        assert(A4_WORD(0x2f8e)==(y ? y : 1) && A4_WORD(0x2f90)==(y==56 ? 63 : y+8));
+        for (int row=0;row<=64;++row) for (int column=0;column<=64;++column) {
+            int distance=abs(column-x-4)>abs(row-y-4) ? abs(column-x-4) : abs(row-y-4);
+            assert(core_vertex(column,row)==(distance<=4 ? 5-distance : 0));
+        }
+    }
+    /* Distinct coordinates identify x-outer/y-inner order and each pass start;
+     * the last 64 draws must begin only after all 165 height decisions. */
+    volcano_fixture(0);
+    volcano_values[2]=1; volcano_values[9]=2; volcano_values[81]=4;
+    volcano_values[130]=1; volcano_values[155]=2; volcano_values[164]=4;
+    volcano_values[167]=0; volcano_values[173]=0;
+    assert(core_volcano(0,20,30,volcano_random));
+    assert(volcano_draws==229 && A4_WORD(0x2f88)==129);
+    assert(core_vertex(20,32)==1 && core_vertex(21,30)==1 && core_vertex(21,31)==1);
+    assert(core_vertex(22,32)==1 && core_vertex(23,33)==1 && core_vertex(24,34)==1);
+    assert(core_vertex(20,31)==0 && core_vertex(22,30)==0);
+    assert(map_blk[32*64+20]==47 && map_blk[30*64+21]==47);
+    assert(map_bk2[32*64+20]==0 && map_bk2[30*64+21]==0);
+}
+static void test_volcano_lava(void)
+{
+    /* The two assembly leader locals both read blue, not red. The independently
+     * protected targets do not imply height, owner, occupancy or block filters. */
+    for (int height=0;height<=1;++height) for (int red_target=0;red_target<2;++red_target) {
+        volcano_fixture(height); no_peeps=3;
+        static const int positions[]={31*64+21,32*64+22,33*64+23};
+        for (int person=0;person<3;++person) {
+            peeps[person*22]=person==2 ? 1 : 2; peeps[person*22+1]=person&1;
+            set_peep_word(person,4,100); set_peep_word(person,8,positions[person]);
+            map_who[positions[person]]=person+1;
+        }
+        core_leader(0)=1; core_leader(1)=2;
+        core_target(0)=34*64+24;
+        core_target(1)=red_target ? positions[1] : 35*64+25;
+        game_mode=GAME_MODE_NO_BUILD|GAME_MODE_BUILD_ONLY_UP|GAME_MODE_BUILD_NEAR_TOWNS;
+        for (int cell=0;cell<4096;++cell) map_blk[cell]=(uint8_t)(cell%70);
+        uint8_t people[208*22],occupancy[4096],blocks[4096];
+        memcpy(people,peeps,sizeof people); memcpy(occupancy,map_who,sizeof occupancy);
+        memcpy(blocks,map_blk,sizeof blocks);
+        for (int draw=165;draw<229;++draw) volcano_values[draw]=0;
+        assert(core_volcano(1,20,30,volcano_random));
+        assert(volcano_draws==229 && A4_WORD(0x2f88)==123 && core_mana(1)==0);
+        assert(!memcmp(people,peeps,sizeof people) && !memcmp(occupancy,map_who,sizeof occupancy));
+        assert(no_peeps==3 && !core_battles && !core_settlements);
+        assert(core_leader(0)==1 && core_leader(1)==2 && core_target(0)==34*64+24);
+        for (int row=0;row<64;++row) for (int column=0;column<64;++column) {
+            int cell=row*64+column;
+            int lava=column>=20 && column<28 && row>=30 && row<38 &&
+                cell!=positions[0] && cell!=core_target(0) && cell!=core_target(1);
+            int rebuilt=column>=19 && column<=20 && row>=29 && row<=30;
+            if (rebuilt) {
+                assert(!A4_WORD(0xff88+cell*2));
+                assert(map_alt[cell]==(height && (lava || blocks[cell]==47) ? 1 : 0));
+                assert(map_blk[cell]==(height ? (lava || blocks[cell]==47 ? 47 : 15) : 0));
+                assert(map_bk2[cell]==(height && !lava ? 42 : 0));
+            } else {
+                assert(map_blk[cell]==(lava ? 47 : blocks[cell]));
+                assert(map_bk2[cell]==(lava ? 0 : 42));
+                assert(map_alt[cell]==2 && A4_WORD(0xff88+cell*2)==91);
+            }
+        }
+    }
+    /* Absent blue leader protects cell zero. Protection prevents the lava
+     * write only: existing rock still submerges in the tiny rebuild rectangle. */
+    for (int height=0;height<=1;++height) {
+        volcano_fixture(height); core_target(0)=1000; core_target(1)=2000;
+        map_blk[0]=47;
+        for (int draw=165;draw<229;++draw) volcano_values[draw]=0;
+        assert(core_volcano(0,0,0,volcano_random));
+        assert(volcano_draws==229 && map_blk[0]==(height ? 47 : 0));
+        assert(map_bk2[0]==(height ? 42 : 0));
+        assert(map_blk[1]==47 && map_bk2[1]==0 && A4_WORD(0xff88+2)==91);
+        assert(A4_WORD(0x2f8a)==1 && A4_WORD(0x2f8c)==0);
+        assert(A4_WORD(0x2f8e)==1 && A4_WORD(0x2f90)==0);
+    }
+}
+static void test_volcano_input(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_v;
+    for (int owner=0;owner<2;++owner) for (int diagnostic=0;diagnostic<2;++diagnostic)
+    for (int tool=0;tool<2;++tool) for (int paint=0;paint<2;++paint)
+    for (int view=0;view<2;++view) {
+        volcano_fixture(0); player=owner; diagnostic_view=diagnostic; paint_map=paint;
+        core_tool=tool; core_swamp_selected=1;
+        xoff=view ? 40 : 10; yoff=view ? 40 : 20; mousex=319; mousey=255;
+        uint16_t expected_seed=321;
+        for (int draw=0;draw<229;++draw) expected_seed=(expected_seed*0x24a1u+0x24dfu)&0x7fff;
+        game_handle_event(&key);
+        assert(core_mana(owner)==0 && seed==expected_seed && A4_LONG(0xae72)==100);
+        assert(A4_WORD(0x2fac)==75 && core_swamp_selected==1 && core_tool==tool);
+        assert(xoff==(view ? 40 : 10) && yoff==(view ? 40 : 20));
+        assert(mousex==319 && mousey==255 && core_vertex(xoff+4,yoff+4)>0);
+        assert(core_vertex(view ? 14 : 44,view ? 24 : 44)==0);
+    }
+    for (int gate=0;gate<11;++gate) for (int paint=0;paint<2;++paint) {
+        volcano_fixture(0); paint_map=paint; xoff=20; yoff=30;
+        core_tool=core_swamp_selected=1;
+        if (gate==0) key.key.repeat=1;
+        if (gate==1) pause=1;
+        if (gate==2) A4_WORD(0xae80)=1;
+        if (gate>=3 && gate<=5) core_result=gate-2;
+        if (gate==6) A4_WORD(0x82c4)=0xffbf;
+        if (gate==7) A4_LONG(0x9a02)=9999;
+        if (gate==8) player=-1;
+        if (gate==9) player=2;
+        if (gate==10) core_leader(0)=209;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        game_handle_event(&key); key.key.repeat=0;
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(core_tool==1 && core_swamp_selected==1);
+    }
+    assert(game_reset(0)); game_render();
+    assert(strstr(SDL_GetWindowTitle(prg_screen->window),"V volcano 10000"));
+    uint32_t line[320*7]; memcpy(line,prg_screen->chunky_buffer+231*320,sizeof line);
+    hud_text(128,231,"V VOLCANO 10000");
+    assert(!memcmp(line,prg_screen->chunky_buffer+231*320,sizeof line));
+    _closeall(); SDL_Quit();
+}
+
+static void test_volcano_render(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    volcano_fixture(1); _make_map();
+    memset(map_bk2,0,4096);
+    core_tendency(0)=core_tendency(1)=1;
+    diagnostic_view=0; xoff=yoff=6; mousex=mousey=0;
+    /* Use a private sheet copy so real loaded assets remain untouched. Mark an
+     * opaque interior pixel in frames 15 and 47 with distinguishable indices. */
+    GraphicsAssets *loaded=game_assets, *fixture=malloc(sizeof *fixture);
+    assert(fixture); memcpy(fixture,loaded,sizeof *fixture); game_assets=fixture;
+    const int frame_pixel=12*32+16;
+    fixture->land_indices[15*768+frame_pixel]=2;
+    fixture->land_keep[15*768+frame_pixel]=0;
+    fixture->land_indices[47*768+frame_pixel]=14;
+    fixture->land_keep[47*768+frame_pixel]=0;
+    /* Last tile (u=v=7), altitude zero: left=176, top=176. No later
+     * terrain, people, magnet, cursor or front face covers this pixel. */
+    const int screen_pixel=188*320+192, cell=13*64+13;
+    game_render();
+    assert(game_pixels[screen_pixel]==2);
+    volcano_values[228]=0; /* Last of 64 lava draws, after 165 no-op raises. */
+    assert(core_volcano(0,6,6,volcano_random));
+    assert(volcano_draws==229 && map_blk[cell]==47 && !map_bk2[cell] && !map_alt[cell]);
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    game_render();
+    assert(game_pixels[screen_pixel]==14);
+    assert(prg_screen->chunky_buffer[screen_pixel]==prg_screen->palette[14]);
+    assert(!memcmp(before,prg_a4_area,sizeof before));
+    game_assets=loaded; free(fixture);
+    _closeall(); SDL_Quit();
+}
+
+static void test_volcano_input_smoke(void)
+{
+    quake_fixture(0);
+    A4_LONG(0x849e)=10000; A4_WORD(0x82c4)=0x40;
+    xoff=20; yoff=30;
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_v;
+    game_handle_event(&key);
+    assert(core_mana(0)==0 && A4_WORD(0x2fac)==75 && A4_LONG(0xae72)==100);
+    assert(seed!=321);
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--volcano")) {
+        test_volcano_input_smoke(); test_volcano_cast(); test_volcano_lava();
+        prepare_rule_data(); test_volcano_input(); test_volcano_render(); cleanup_rule_data();
+        puts("focused volcano regression: PASS");
+        return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--flood")) {
         test_flood_input_smoke(); test_flood_cast(); test_flood_delayed_hazards();
         prepare_rule_data(); test_flood_input(); cleanup_rule_data();
@@ -2410,6 +2655,7 @@ int main(int argc, char **argv)
     test_flood_input_smoke(); test_flood_cast(); test_flood_delayed_hazards();
     test_original_lower();
     test_quake_cast();
+    test_volcano_input_smoke(); test_volcano_cast(); test_volcano_lava();
     test_swamp_cast();
     test_swamp_hazard();
     test_blocked_entry();
@@ -2420,6 +2666,7 @@ int main(int argc, char **argv)
     test_original_generator();
     test_original_placement();
     prepare_rule_data();
+    test_volcano_input(); test_volcano_render();
     test_flood_input();
     test_quake_input();
     test_swamp_input();
