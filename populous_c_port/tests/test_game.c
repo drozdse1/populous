@@ -1192,6 +1192,30 @@ static void celebration_expected(uint8_t *expected, int flags, int16_t frame)
     memcpy(expected+offset+12,&frame,sizeof frame);
 }
 
+static void celebration_expected_word(uint8_t *expected, int displacement, int16_t value)
+{
+    memcpy(expected+(A4_DISP(displacement)-prg_a4_area),&value,sizeof value);
+}
+
+static void setup_town_celebration(int owner, int fertile, int city)
+{
+    setup_celebration(owner); peeps[0]=5;
+    memset(peeps+14,0,4); /* Ordinary town; opaque trailing metadata stays seeded. */
+    memset(map_blk,1,4096);
+    for (int index=0; index<fertile; ++index) map_blk[650+core_offsets[index]]=31+owner;
+    if (fertile) map_blk[650]=15;
+    map_bk2[650]=37;
+    if (city) for (int index=0; index<9; ++index)
+        map_bk2[650+core_offsets[index]]=core_city[index];
+    for (int cell=0; cell<4096; ++cell) A4_WORD(0xff88+cell*2)=cell+17;
+    A4_WORD(0x2ff8)=1234; A4_WORD(0x2fb2)=2345;
+    game_turn=8; A4_WORD(0x2fb0)=30000;
+    for (int level=0; level<11; ++level) {
+        A4_WORD(0x2fb6+level*2)=17; A4_WORD(0x2fcc+level*2)=9;
+        A4_WORD(0x2fe2+level*2)=11;
+    }
+}
+
 static void test_celebration_frames(void)
 {
     /* Literal signed postincrement boundaries catch reset-in-helper, unsigned
@@ -1203,28 +1227,35 @@ static void test_celebration_frames(void)
         {88,89,1,0}, {32766,32767,1,0}, {32767,-32768,1,-32767}
     };
     const int populations[]={1,-1,-32768,0};
-    for (int owner=0; owner<2; ++owner)
+    for (int owner=0; owner<2; ++owner) for (int flags=5; flags<=6; ++flags)
         for (unsigned sample=0; sample<sizeof cases/sizeof cases[0]; ++sample) {
             for (unsigned pop=0; pop<sizeof populations/sizeof populations[0]; ++pop) {
-                setup_celebration(owner);
+                if (flags==5) setup_town_celebration(owner,17,1); else setup_celebration(owner);
                 set_peep_word(0,4,populations[pop]); set_peep_word(0,12,cases[sample].before);
                 uint8_t expected[sizeof prg_a4_area];
-                celebration_expected(expected,6,populations[pop] ? cases[sample].after : cases[sample].before);
+                celebration_expected(expected,flags,populations[pop] ? cases[sample].after : cases[sample].before);
                 assert(core_frame_walker(0)==(populations[pop] ? cases[sample].complete : 0));
                 assert(!memcmp(expected,prg_a4_area,sizeof expected));
             }
-            setup_celebration(owner); set_peep_word(0,12,cases[sample].before);
+            if (flags==5) setup_town_celebration(owner,17,1); else setup_celebration(owner);
+            set_peep_word(0,12,cases[sample].before);
             uint8_t expected[sizeof prg_a4_area];
-            celebration_expected(expected,cases[sample].complete ? 2 : 6,cases[sample].consumed);
+            int complete=cases[sample].complete;
+            celebration_expected(expected,complete ? flags-4 : flags,
+                                 flags==5 && complete ? 42 : cases[sample].consumed);
+            if (flags==5 && complete) {
+                celebration_expected_word(expected,0x2ff8,9);
+                celebration_expected_word(expected,0x2fb2,1);
+            }
             _move_peeps();
             assert(!memcmp(expected,prg_a4_area,sizeof expected));
             assert(!core_battles && !core_settlements && !core_result);
         }
     /* Direct tick retains its stricter nonpositive-population skip. */
     const int skipped[]={0,-1,-32768};
-    for (int owner=0; owner<2; ++owner)
+    for (int owner=0; owner<2; ++owner) for (int flags=5; flags<=6; ++flags)
         for (unsigned sample=0; sample<sizeof skipped/sizeof skipped[0]; ++sample) {
-            setup_celebration(owner); set_peep_word(0,4,skipped[sample]);
+            setup_celebration(owner); peeps[0]=flags; set_peep_word(0,4,skipped[sample]);
             uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
             _move_peeps();
             assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -1258,6 +1289,85 @@ static void test_celebration_ticks(void)
         assert(peeps[0]==2 && peep_word(0,12)==0 && peep_word(0,8)==651);
         assert(peep_word(0,4)==1 && peep_word(0,10)==1 && !map_who[650] && map_who[651]==1);
     }
+}
+
+static void test_town_celebration_ticks(void)
+{
+    /* Literal capacities 0,65,185,290,3050 exercise zero, ordinary and city
+     * reframing. An old city must not be dismantled on celebration expiry. */
+    const struct { int fertile, frame; } cases[]={{0,32},{1,34},{9,38},{16,41},{17,42}};
+    for (int owner=0; owner<2; ++owner) for (int city=0; city<=1; ++city)
+        for (unsigned sample=0; sample<sizeof cases/sizeof cases[0]; ++sample)
+            for (int trigger=0; trigger<6; ++trigger) for (int overflow=0; overflow<=1; ++overflow) {
+                setup_town_celebration(owner,cases[sample].fertile,city);
+                set_peep_word(0,4,overflow ? 3200 : 1);
+                if (trigger==1) A4_WORD(0xae80)=1;
+                else if (trigger>=2) peeps[14+trigger-2]=0x80;
+                /* No occupancy reclamation until ordinary town maintenance. */
+                map_who[650]=0;
+                for (int tick=0; tick<3; ++tick) {
+                    uint8_t expected[sizeof prg_a4_area];
+                    celebration_expected(expected,tick==2 ? 1 : 5,tick==2 ? cases[sample].frame : 86+tick);
+                    if (tick==2) {
+                        celebration_expected_word(expected,0x2ff8,cases[sample].fertile && city ? 9 : 0);
+                        celebration_expected_word(expected,0x2fb2,cases[sample].fertile ? 1 : 0);
+                    }
+                    if (trigger==1) {
+                        celebration_expected_word(expected,0x99f8,0x820);
+                        celebration_expected_word(expected,0x9a08,0x820);
+                        celebration_expected_word(expected,0xae78,0x820);
+                        celebration_expected_word(expected,0xae76,0x820);
+                    }
+                    _move_peeps();
+                    /* Includes all records, footprint, map history, scratch,
+                     * mana, growth/split tables, metadata, RNG and turn eight. */
+                    assert(!memcmp(expected,prg_a4_area,sizeof expected));
+                    assert(!core_battles && !core_settlements && !core_result);
+                }
+                game_turn=9; _move_peeps();
+                assert(peep_word(0,4)==(overflow ? 3200 : 1) && no_peeps==1);
+                assert(core_mana(owner)==(owner ? 23456 : 12345) && seed==123);
+                if (trigger || !cases[sample].fertile) {
+                    assert(peeps[0]==2 && peep_word(0,12)==0 && peep_word(0,10)==0);
+                    assert(!map_bk2[650] && !map_who[650]);
+                } else {
+                    assert(peeps[0]==1 && peep_word(0,12)==cases[sample].frame);
+                    assert(map_bk2[650]==cases[sample].frame && map_who[650]==1);
+                    /* The next eligible ordinary town tick really grows/pays. */
+                    set_peep_word(0,4,1); game_turn=16; _move_peeps();
+                    assert(peep_word(0,4)==12 && peeps[3]==9 && no_peeps==1);
+                    assert(core_mana(owner)==(owner ? 23473 : 12362));
+                }
+                for (int cell=0; cell<4096; ++cell) assert(A4_WORD(0xff88+cell*2)==cell+17);
+            }
+}
+
+static void test_town_celebration_water(void)
+{
+    for (int owner=0; owner<2; ++owner) for (int city=0; city<=1; ++city)
+        for (int fatal=0; fatal<=1; ++fatal) for (int population=1; population<=3; population+=2) {
+            setup_town_celebration(owner,17,city);
+            set_peep_word(0,4,population); set_peep_word(0,12,87);
+            map_blk[650]=0; game_mode=fatal; A4_WORD(0x2fb0)=1;
+            uint8_t expected[sizeof prg_a4_area];
+            int survives=!fatal && population==3;
+            celebration_expected(expected,survives ? 18 : 0,87);
+            int16_t remaining=survives;
+            memcpy(expected+(peeps-prg_a4_area)+4,&remaining,2);
+            expected[map_who-prg_a4_area+650]=survives;
+            /* Independent coordinates: ordinary omits the eight (2,1)/(1,2)
+             * offsets, whereas a city covers the entire five-by-five square. */
+            for (int row=-2; row<=2; ++row) for (int column=-2; column<=2; ++column) {
+                if (!city && ((abs(row)==2 && abs(column)==1) ||
+                              (abs(row)==1 && abs(column)==2))) continue;
+                int cell=650+row*64+column;
+                if (map_blk[cell]==31+owner) expected[map_blk-prg_a4_area+cell]=15;
+                if (city || (abs(row)<=1 && abs(column)<=1)) expected[map_bk2-prg_a4_area+cell]=0;
+            }
+            _move_peeps();
+            assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            assert(!core_battles && !core_settlements);
+        }
 }
 
 static void test_celebration_tick_gates(void)
@@ -1296,7 +1406,7 @@ static void test_celebration_tick_gates(void)
 static void test_celebration_dispatch(void)
 {
     /* Mixed mask-0x04 states must not gain the assembly's broader interception. */
-    const int mixed[]={5,0xc,0xe,0x26,0x46,0x66,0x84,0x86};
+    const int mixed[]={7,0xc,0xe,0x26,0x46,0x66,0x84,0x86};
     for (int owner=0; owner<2; ++owner)
         for (unsigned sample=0; sample<sizeof mixed/sizeof mixed[0]; ++sample) {
             setup_celebration(owner); peeps[0]=mixed[sample];
@@ -1337,6 +1447,7 @@ static void test_celebration_dispatch(void)
 static void test_celebration(void)
 {
     test_celebration_frames(); test_celebration_ticks();
+    test_town_celebration_ticks(); test_town_celebration_water();
     test_celebration_tick_gates(); test_celebration_dispatch();
 }
 
@@ -1659,6 +1770,9 @@ static void test_war_dispatch(void)
         uint8_t record[22], blocks[4096], buildings[4096];
         memcpy(record,peeps,sizeof record); memcpy(blocks,map_blk,sizeof blocks);
         memcpy(buildings,map_bk2,sizeof buildings);
+        /* Exact 5 expires from frame 42 and reframes to 42 despite war/heading;
+         * unsupported mixed towns remain inert. Neither maintains the map. */
+        if (mixed[sample]==5) record[0]=1;
         _move_peeps();
         assert(!memcmp(record,peeps,sizeof record));
         assert(!memcmp(blocks,map_blk,sizeof blocks) && !memcmp(buildings,map_bk2,sizeof buildings));

@@ -61,8 +61,13 @@ completion update clears flag `0x04` and advances the ordinary walker frame to z
 No navigation, walking loss or RNG occurs during these three updates. Frame
 increments wrap as 16-bit words and completion compares the signed result; the
 second frame call is retained rather than replaced with an unconditional reset.
-Water handling still precedes this bounded consumer. Mixed flags, town-victory
-state `5`, the battle producer and visible celebration art remain separate work.
+Water handling still precedes these bounded consumers. Town-victory state `5`
+uses the same celebration frames, but completion clears `0x04` and recalculates
+its town frame from current capacity instead of switching to a walker frame.
+It does not repaint the footprint or run growth, mana, splitting or evacuation
+in that update; ordinary town processing resumes on the following update.
+Broader mixed flags, the battle producer and visible celebration art remain
+separate work.
 The focused `--celebration` tests cover signed frame boundaries, full-A4 state
 preservation, later-resident progress, pause/result/quit gates and water precedence.
 Normal and sanitized full suites, original-data matches and all 495 starts passed.
