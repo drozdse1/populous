@@ -127,8 +127,8 @@ bit `0x10` queue before the port's water loss or land recovery, unless fatal-wat
 mode or the existing battle exemption applies. Newly assigned water flags do not
 produce in that same pass. Later residents overwrite earlier same-owner commands;
 no terrain changes until the consumer runs. Nonwar AI and swamp-target command
-production remain disabled. Dry recovery and combat-water differences remain
-unchanged; entry and still-submerged non-combat processing are described below.
+production remain disabled. Mixed-water recovery and combat-water differences
+remain; canonical entry, submerged loss and dry recovery are described below.
 A controlled two-island fixture raises a route solely through movement-produced
 commands, enters combat at tick 41 and reaches mutual extinction at tick 45 in
 normal and sanitized builds. This is a prerequisite integration test, not an
@@ -139,7 +139,7 @@ Newly submerged non-combat residents follow the original entry transition
 and clear the stored frame only if its signed word is at least 8. The entry update
 preserves population, timers and occupancy; it does not move, queue rescue, apply
 fatal-water removal or deduct drowning loss. Those water effects begin on the
-next update carrying bit `0x10`. Dry-land recovery, combat exemption and broader
+next update carrying bit `0x10`. Mixed-water recovery, combat exemption and broader
 mixed-state dispatch remain separate work.
 This is not full drowning or original movement-phase parity. `--water-entry`
 checks full-A4 transitions, town/city footprints at map boundaries, opaque heading
@@ -156,13 +156,27 @@ up to 32767 population; this path does not apply the ordinary 32000 helper cap.
 Survivors preserve their flags, frames, timers, metadata and town footprints.
 Fatal mode removes them without producing a rescue command; nonfatal war rescue
 is queued before loss, even for a dying producer. Cleanup retains the host's
-existing leader/view and occupancy policy. No drowning frame, waiting timer or movement advances while
-still submerged. Recovery on dry land, including its fatal-mode difference,
-remains unchanged and is not covered by this source-parity claim. `--water-loss`
+existing leader/view and occupancy policy. No drowning frame, waiting timer or
+movement advances while still submerged. `--water-loss`
 checks signed loss boundaries, all 65,536 loss words per owner, state/footprint
 preservation, death bookkeeping and deferred rescue. Full normal/sanitized suites,
 original-data matches and all 495 starts passed; match outcomes remain unchanged
 from the delayed-entry milestone.
+
+Exact water state `0x12` returning to nonzero terrain also pays the wrapped doubled
+water loss before recovering (`src/populous_prg.asm:3481-3561`). Fatal mode removes
+it even though the terrain is now dry. Otherwise it becomes walker state `2`,
+receives one frame call, and only a positive remaining population proceeds to
+normal walker processing and its second frame call. Zero population skips that
+first frame update; a negative result still advances it before cleanup. Thus a
+survivor at frame 6 can move in this update, whereas frame 7 or 93 ends at frame 1
+without moving. Rescue terrain does not guarantee survival of the following
+recovery update. Mixed-water states retain the previous host recovery behavior;
+this change does not establish full drowning, movement or cleanup parity.
+`--water-recovery` covers literal full-A4 frame/loss outcomes, negative-population
+encounter prevention, swamp ordering, stopped ticks and rescue-to-death sequences.
+Full normal/sanitized suites, original-data matches and all 495 starts passed;
+the original-data match and war-fixture outcomes remain unchanged.
 
 Heading target selection (`_get_heading`) now has a bounded implementation:
 self when no enemy qualifies, otherwise the first nearest living different-owner

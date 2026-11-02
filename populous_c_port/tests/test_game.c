@@ -1569,9 +1569,18 @@ static void test_water_entry_second_tick(void)
         assert(!core_battles && !core_settlements && seed==123);
     }
     for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal) {
-        /* Old-water land recovery retains the host's no-loss/frame-1 behavior. */
+        /* Exact-18 dry recovery still loses or dies; fatal preserves frame. */
         setup_water_entry(owner,18,87,0); map_blk[650]=1; game_mode=fatal;
-        uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,2,1);
+        uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,fatal ? 0 : 2,fatal ? 87 : 1);
+        int16_t population=fatal ? 0 : 98;
+        memcpy(expected+(peeps-prg_a4_area)+4,&population,2);
+        if (fatal) {
+            expected[map_who-prg_a4_area+650]=0;
+            celebration_expected_word(expected,0x99f6+owner*16,0);
+            celebration_expected_word(expected,0x99f8+owner*16,650);
+            celebration_expected_word(expected,owner ? 0xae76 : 0xae78,650);
+            celebration_expected_word(expected,0xae68,0);
+        }
         _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         /* Battle exemption: no valid partner, so no combat or water side effects. */
         const int combat[]={8,9,10,0x88};
@@ -1868,6 +1877,172 @@ static void test_water_loss_gates(void)
         uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,2,1);
         _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
     }
+}
+
+/* Dry exact-18 recovery: catch missing doubled loss, resetting instead of
+ * framing twice, removing before the first frame, and dead navigation/battle.
+ * Literal outcomes come from asm:3544-3557,4056-4067,5728-5743. */
+static void test_water_recovery_state(void)
+{
+    const struct { int population, loss, frame, remaining, after; } cases[]={
+        {100,1,7,98,1},{100,1,93,98,1},{100,1,-1,98,1},
+        {100,1,-32768,98,-32766},{100,1,0,98,2},
+        {2,1,6,0,6},{1,1,6,0,7},{1,1,7,0,0},
+        {2,1,93,0,93},{1,1,-32768,0,-32767},
+        {100,32767,7,102,1},{100,16384,6,0,7},
+        {1,16385,7,32767,1},{32767,-1,6,0,7},
+        {100,-32768,7,100,1},{100,30000,7,5636,1}
+    };
+    for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal)
+    for (int war=0; war<2; ++war) for (int swamp=0; swamp<2; ++swamp)
+    for (int occupancy=0; occupancy<3; ++occupancy)
+    for (unsigned sample=0; sample<sizeof cases/sizeof cases[0]; ++sample) {
+        setup_water_entry(owner,18,cases[sample].frame,0);
+        map_blk[650]=swamp ? 53 : 1; map_who[650]=occupancy;
+        game_mode=fatal; A4_WORD(0xae80)=war; A4_WORD(0x2fb0)=cases[sample].loss;
+        set_peep_word(0,4,cases[sample].population);
+        if (sample%2) { core_leader(owner)=0; memcpy(peeps+14,"\x12\x34\x56\x78",4); }
+        /* Preserve a co-located battle resident and its foreign occupancy.
+         * Noncombat encounter ordering is tested separately below. */
+        no_peeps=2; peeps[22]=8; peeps[23]=1-owner;
+        set_peep_word(1,4,100); set_peep_word(1,6,1); set_peep_word(1,8,650);
+        for (int side=0; side<2; ++side) {
+            A4_DISP(0x82b6+side*46)[0]=2;
+            A4_DISP(0x82b7+side*46)[0]=27; A4_DISP(0x82b8+side*46)[0]=31;
+            A4_WORD(0x82be + side*46)=7; A4_WORD(0x82bc+side*46)=1;
+        }
+        uint8_t expected[sizeof prg_a4_area];
+        int remaining=fatal ? 0 : cases[sample].remaining;
+        water_loss_expected(expected,owner,650,remaining);
+        expected[peeps-prg_a4_area]=remaining ? 2 : 0;
+        int16_t frame=fatal ? cases[sample].frame : cases[sample].after;
+        memcpy(expected+(peeps-prg_a4_area)+12,&frame,2);
+        _move_peeps();
+        assert(peep_word(0,4)==remaining && peep_word(0,12)==frame);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(!core_battles && !core_settlements && !core_result && seed==123);
+    }
+}
+
+static void test_water_recovery_dead_noncombat_encounter(void)
+{
+    /* Missing the local signed-population guard would frame 7->0 and call
+     * core_move, which creates a noncombat encounter before its late guard.
+     * A battle-flag occupant takes core_join_battle instead and cannot prove
+     * this ordering. Keep a real ordinary enemy's independent 0->1 tick. */
+    for (int owner=0; owner<2; ++owner) {
+        setup_water_entry(owner,18,6,0);
+        memset(map_blk,1,4096); map_who[650]=2;
+        core_tendency(owner)=0; core_target(owner)=715;
+        A4_WORD(0x2fb0)=1; set_peep_word(0,4,1);
+        no_peeps=2; peeps[22]=2; peeps[23]=1-owner;
+        set_peep_word(1,4,100); set_peep_word(1,6,29);
+        set_peep_word(1,8,650); set_peep_word(1,10,-63); set_peep_word(1,12,0);
+        uint8_t expected[sizeof prg_a4_area];
+        water_loss_expected(expected,owner,650,0);
+        int16_t frame=7; memcpy(expected+(peeps-prg_a4_area)+12,&frame,2);
+        frame=1; memcpy(expected+(peeps-prg_a4_area)+22+12,&frame,2);
+        _move_peeps();
+        assert(!peeps[0] && !peep_word(0,4) && peep_word(0,12)==7);
+        assert(peeps[22]==2 && peep_word(1,4)==100 && peep_word(1,12)==1);
+        assert(peep_word(0,6)==123 && peep_word(1,6)==29);
+        assert(peep_word(0,10)==-64 && peep_word(1,10)==-63 && map_who[650]==2);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(!core_battles && !core_settlements && !core_result && seed==123);
+    }
+}
+
+static void test_water_recovery_movement(void)
+{
+    for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal)
+    for (int war=0; war<2; ++war) for (int swamp=0; swamp<2; ++swamp)
+    for (int deep=0; deep<2; ++deep) for (int low=0; low<2; ++low) {
+        setup_water_entry(owner,18,6,0);
+        memset(map_blk,1,4096); map_blk[650]=swamp ? 53 : 1;
+        core_tendency(owner)=0; core_target(owner)=0x820;
+        game_mode=fatal | (deep ? 2 : 0); A4_WORD(0xae80)=war;
+        set_peep_word(0,4,low ? 3 : 100);
+        int dead=fatal || swamp || low;
+        uint8_t expected[sizeof prg_a4_area];
+        water_loss_expected(expected,owner,650,dead ? 0 : 97);
+        expected[peeps-prg_a4_area]=dead ? 0 : 2;
+        int16_t frame=fatal ? 6 : 0;
+        memcpy(expected+(peeps-prg_a4_area)+12,&frame,2);
+        if (!fatal && swamp) {
+            celebration_expected_word(expected,0x2fac,66);
+            if (!deep) expected[map_blk-prg_a4_area+650]=15;
+        } else if (!fatal) {
+            /* First frame 6->7 is ignored; ordinary 7->0 moves southeast,
+             * then loses once. Population 3 dies only AFTER that move. */
+            int16_t position=715, direction=65;
+            memcpy(expected+(peeps-prg_a4_area)+8,&position,2);
+            memcpy(expected+(peeps-prg_a4_area)+10,&direction,2);
+            expected[peeps-prg_a4_area+21]=65;
+            expected[map_who-prg_a4_area+650]=0;
+            expected[map_who-prg_a4_area+715]=low ? 0 : 1;
+            celebration_expected_word(expected,0xff88+715*2,733);
+            if (low) {
+                celebration_expected_word(expected,0x99f8+owner*16,715);
+                celebration_expected_word(expected,owner ? 0xae76 : 0xae78,715);
+            }
+        }
+        _move_peeps();
+        assert(peep_word(0,4)==(dead ? 0 : 97));
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(!core_battles && !core_settlements && seed==123);
+    }
+}
+
+static void test_water_recovery_gates(void)
+{
+    const int dead[]={0,-1,-32768};
+    for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal) {
+        for (unsigned sample=0; sample<sizeof dead/sizeof dead[0]; ++sample) {
+            setup_water_entry(owner,18,6,0); map_blk[650]=1; game_mode=fatal;
+            set_peep_word(0,4,dead[sample]);
+            uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+            _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        }
+        setup_water_entry(owner,18,6,0); map_blk[650]=1; game_mode=fatal;
+        set_peep_word(0,4,1); no_peeps=18;
+        peeps[17*22]=2; peeps[17*22+1]=1-owner;
+        set_peep_word(17,4,100); set_peep_word(17,8,900);
+        map_blk[900]=1; map_who[900]=18;
+        for (int gate=0; gate<5; ++gate) {
+            pause=gate==0; core_result=gate>=1 && gate<=3 ? gate : 0; prg_quit=gate==4;
+            uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+            game_tick(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        }
+        pause=core_result=prg_quit=0;
+        uint8_t expected[sizeof prg_a4_area]; water_loss_expected(expected,owner,650,0);
+        int16_t frame=fatal ? 6 : 7;
+        memcpy(expected+(peeps-prg_a4_area)+12,&frame,2);
+        frame=1; memcpy(expected+(peeps-prg_a4_area)+17*22+12,&frame,2);
+        int16_t turn=game_turn+1; memcpy(expected+((uint8_t *)&game_turn-prg_a4_area),&turn,2);
+        int32_t friendly=owner ? 100 : 0, enemy=owner ? 0 : 100;
+        memcpy(expected+(A4_DISP(0x99fe)-prg_a4_area),&friendly,4);
+        memcpy(expected+(A4_DISP(0x9a0e)-prg_a4_area),&enemy,4);
+        game_tick(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(core_result==(owner ? 1 : 2) && peep_word(17,12)==1);
+        assert(!core_battles && !core_settlements);
+    }
+    /* General mixed flags, including combat recovery, deliberately retain the
+     * current host no-loss/reset-frame behavior, on both land and swamp. */
+    const int mixed[]={0x10,0x16,0x96,0x18,0x19,0x1e,0x98};
+    for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal)
+    for (int swamp=0; swamp<2; ++swamp)
+    for (unsigned sample=0; sample<sizeof mixed/sizeof mixed[0]; ++sample) {
+        setup_water_entry(owner,mixed[sample],-32768,0); game_mode=fatal;
+        map_blk[650]=swamp ? 53 : 1;
+        uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,2,1);
+        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+}
+
+static void test_water_recovery(void)
+{
+    test_water_recovery_state(); test_water_recovery_dead_noncombat_encounter();
+    test_water_recovery_movement(); test_water_recovery_gates();
 }
 
 static void test_water_loss(void)
@@ -4510,8 +4685,8 @@ static void test_war_terrain_old_water(void)
         peeps[14]=0xff;
         _move_peeps();
         if (war && !fatal) assert_war_command(owner,650); else assert_mailbox_empty();
-        assert(peep_word(0,4)==(land ? 100 : fatal ? 0 : 98));
-        if (land) assert(peeps[0]==2 && peep_word(0,12)==1);
+        assert(peep_word(0,4)==(fatal ? 0 : 98));
+        if (land) assert(peeps[0]==(fatal ? 0 : 2) && peep_word(0,12)==(fatal ? 7 : 1));
         assert(core_vertex(10,10)==0 && seed==123 && core_mana(owner)==-1);
     }
     /* Existing host battle exemption and recovery stay unchanged, even with
@@ -4596,6 +4771,52 @@ static void test_water_loss_rescue(void)
         assert(!core_result && !core_battles && !core_settlements && seed==123);
         assert(core_population(owner)==101 && core_population(1-owner)==100);
         assert_mailbox_empty();
+    }
+}
+
+static void test_water_recovery_rescue(void)
+{
+    /* Real deferred command consumption: exact-18 wet loss -> raised terrain
+     * -> dry loss/frame. No edits between calls; both owners stay alive through
+     * rescue, including the case that dies on the next dry update. */
+    for (int owner=0; owner<2; ++owner) for (int low=0; low<2; ++low) {
+        war_terrain_fixture(); peeps[0]=18; peeps[1]=owner; map_blk[650]=0;
+        set_peep_word(0,4,low ? 3 : 100); set_peep_word(0,12,7);
+        no_peeps=3;
+        for (int person=1; person<3; ++person) {
+            peeps[person*22]=2; peeps[person*22+1]=person-1;
+            set_peep_word(person,4,100);
+            set_peep_word(person,8,900+person); map_who[900+person]=person+1;
+        }
+        game_tick();
+        assert(peeps[0]==18 && peep_word(0,4)==(low ? 1 : 98) && peep_word(0,12)==7);
+        assert(map_blk[650]==17 && core_vertex(10,10)==1 && !core_result);
+        assert(core_population(owner)==(low ? 101 : 198) && core_population(1-owner)==100);
+        assert_mailbox_empty();
+        game_tick();
+        assert(peeps[0]==(low ? 0 : 2) && peep_word(0,4)==(low ? 0 : 96));
+        assert(peep_word(0,12)==(low ? 0 : 1) && peep_word(0,8)==650);
+        assert(map_who[650]==(low ? 0 : 1) && core_vertex(10,10)==2);
+        assert(core_population(owner)==(low ? 100 : 196) && core_population(1-owner)==100);
+        assert(!core_result && !core_battles && !core_settlements && seed==123);
+        assert_mailbox_empty();
+    }
+    /* A previously queued raise can rescue an ordinary new-water entry even
+     * in fatal mode. The next exact-18 update must still remove it on dry land. */
+    for (int owner=0; owner<2; ++owner) {
+        war_terrain_fixture(); peeps[1]=owner; map_blk[650]=0; game_mode=1;
+        no_peeps=2; peeps[22]=2; peeps[23]=1-owner;
+        set_peep_word(1,4,100); set_peep_word(1,8,901);
+        map_who[901]=2;
+        terrain_mailbox_write(owner,1,10,10);
+        game_tick();
+        assert(peeps[0]==18 && peep_word(0,4)==100 && peep_word(0,12)==7);
+        assert(map_blk[650]==17 && core_vertex(10,10)==1 && !core_result);
+        assert(core_population(0)==100 && core_population(1)==100); assert_mailbox_empty();
+        game_tick();
+        assert(!peeps[0] && !peep_word(0,4) && peep_word(0,12)==7 && !map_who[650]);
+        assert(core_result==(owner ? 1 : 2) && peep_word(1,4)==100);
+        assert(core_vertex(10,10)==1 && seed==123 && !core_battles); assert_mailbox_empty();
     }
 }
 
@@ -6640,6 +6861,10 @@ static void test_battle_frame_render_and_entry(void)
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--water-recovery")) {
+        test_water_recovery(); test_water_recovery_rescue(); test_water_loss(); test_water_loss_rescue(); test_water_entry();
+        puts("dry exact-18 water recovery tests passed"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--water-loss")) {
         test_water_loss(); test_water_loss_rescue(); test_water_entry();
         test_celebration_dispatch(); test_flood_delayed_hazards();
@@ -6796,7 +7021,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
-    test_water_loss(); test_water_loss_rescue();
+    test_water_recovery(); test_water_recovery_rescue(); test_water_loss(); test_water_loss_rescue();
     test_water_entry();
     test_battle_entry_state(); test_battle_entry_wait_retry(); test_battle_entry_town_reward();
     test_battle_frame_helper(); test_battle_frame_integration(); test_battle_frame_deaths();

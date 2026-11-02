@@ -2401,7 +2401,17 @@ static void _move_peeps(void)
             if (peep_word(person,12) >= 8) set_peep_word(person,12,0);
             continue;
         }
-        if (flags&16) { peeps[person*22] = 2; set_peep_word(person,12,0); flags = 2; }
+        if (flags == 18 && map_blk[position]) {
+            /* asm:3484-3490,3544-3557: dry exact-18 still loses first.
+             * Frame even a negative word, but never zero; ignore completion.
+             * The signed check must precede ordinary navigation/encounters. */
+            if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
+            uint16_t loss = (uint16_t)(2u*(uint16_t)A4_WORD(0x2fb0));
+            set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)-loss));
+            peeps[person*22] = flags = 2;
+            core_frame_walker(person);
+            if (peep_word(person,4)<=0) { core_remove(person); continue; }
+        } else if (flags&16) { peeps[person*22] = 2; set_peep_word(person,12,0); flags = 2; }
         /* asm:3584-3599, scoped to exact 5/6 after existing water handling.
          * Completion clears only mask 0x04 and reframes without town maintenance,
          * evacuation or walking movement. Always end this person's tick. */
