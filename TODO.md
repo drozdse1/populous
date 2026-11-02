@@ -73,7 +73,8 @@ Belege: `populous_c_port/Makefile:1-35`,
 - [x] Originale Wald-/Felsverteilung mit bedingtem RNG-Verbrauch und bestehenden Terrainregeln verbinden.
 - [x] Block 47 bei Kartenupdates gemaess Original erhalten beziehungsweise bei vollstaendiger Ueberflutung entfernen.
 - [ ] **Pruefen:** Weitere Karten-Sonderfaelle und Wechselwirkungen mit spaeteren Spezialterrainbloecken migrieren.
-- [ ] **Teilweise:** Conquest-Startbewohner nach Originalsuchpfaden implementiert; Custom-/Serial-Spielmodi noch offen. Historischen Zugriff auf Zelle 4096 sicher ausgelassen. Elf mitgelieferte Starts mit ueberlappender bevorzugter Platzierung werden transaktional abgewiesen; deren Original-Belegungssemantik ist noch zu klaeren.
+- [x] Ueberlappende Conquest-Startbelegung gemaess Original zulassen: alle Bewohnerdatensaetze erhalten, letzter Eintrag repraesentiert die Zelle. Feindlichen aktuellen Bewohner vor Gruendung/Abmarsch behandeln; verdeckte/doppelte Stadtgruendung verhindern. Keine Verlegung der Originalstarts.
+- [ ] **Teilweise:** Custom-/Serial-Startmodi sowie originale Warte-/Bewegungsphasen fehlen weiterhin. Conquest-Suchpfade sind implementiert; der historische Zugriff auf Zelle 4096 bleibt sicher ausgelassen.
 - [ ] **Pruefen:** Kartenrotation, Kartenbearbeitung und weitere Welt-/Modusfunktionen aus dem Routineninventar nach tatsaechlicher Originalverwendung zuordnen und migrieren.
 
 **Abhaengigkeiten:** LAND-Lader und RNG sind vorhanden. Conquest benoetigt diesen
@@ -87,16 +88,21 @@ Neue Umsetzung: `populous_c_port/level_data.c` (`level_data_parse`,
 `original_place_people`, `game_reset_start`).
 
 Unabhaengige assemblygestuetzte Vergleichsberechnung: alle 495 Hoehen-/Block-/
-Hoehenstufen-/Overlaykarten stimmen bytegenau ueberein; Seeds und Anfuehrer der
-484 angenommenen Starts ebenfalls. Keine unabhaengige Amiga-Ausfuehrung.
-Abgewiesene Starts: 70, 74, 93, 94, 160, 201, 204, 472, 477, 478, 479.
-Zusaetzlicher ASan/UBSan-Lauf: alle 484 angenommenen Starts mit Original-LAND und
-Grafik geladen, gerendert, 100 Ticks simuliert und per Reset wiederhergestellt.
-Das ist ein kurzer Integrationstest, kein Nachweis vollstaendiger Partien/Kampagne.
-Build, `test`, `test-sanitize` sowie Originaldaten-Matchregressionen bestanden;
-Sieg weiterhin Tick 8353, Niederlage Tick 694. Der exhaustive Originalstart-Test
-`test-level-local` hat wegen Assetladen/Simulation ein separates 120s-Zeitlimit.
-Die Review-Funde zu Testdatenisolation und Ablehnungs-/Rollbackpruefungen sind behoben.
+Hoehenstufen-/Overlaykarten, geordneten Besitzer-/Positionsdatensaetze, exakte
+Letztschreiber-Belegung, Seeds und Anfuehrer stimmen ueberein. Keine unabhaengige
+Amiga-Ausfuehrung. Die vorher abgewiesenen Starts 70, 74, 93, 94, 160, 201, 204,
+472, 477, 478, 479 werden jetzt ohne veraenderte Karten oder Platzierungen geladen.
+
+Die neue Begegnungslogik bleibt an der bisherigen C-Bewegungsschranke. Originale
+Warteflags 0x20, Frame 101, Warteverluste und phasenabhaengige vorherige Belegung
+sind nicht migriert; diese Etappe behauptet keine tickgenaue Bewohnerparitaet.
+Der exhaustive Originalstart-Test `test-level-local` hat wegen Assetladen/Simulation
+ein separates 120s-Zeitlimit. Testdatenisolation und transaktionaler Reset bleiben
+abgesichert. Verifikation der Ueberlappungsetappe: Build, `test`, `test-sanitize`
+und alle 495 Originalstarts (Laden, Rendern, 100 Ticks mit Belegungs-/Kampfinvarianten,
+Reset) normal und unter ASan/UBSan bestanden. Originaldaten-Matchregressionen
+bleiben bei Sieg Tick 8353 und Niederlage Tick 694. Unabhaengiges Review ohne
+blockierende Befunde; kurze Integrationstests sind kein Kampagnen-Paritaetsnachweis.
 
 Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319-1325`;
 `src/populous_prg.asm:1189-1270`, `:1475-1517`, `:7652-7859`, `:8535-8626`, `:12340-12362`;
@@ -297,7 +303,7 @@ Belege: `populous_c_port/sdl_lowlevel.c:114-137`,
 
 ## Empfohlene naechste Etappen
 
-1. Originalwelt-Etappe ist umgesetzt; P0-Inventar/Bootstrap vervollstaendigen und die elf abgewiesenen Startbelegungen anhand des Originals klaeren.
+1. P0-Inventar/Bootstrap vervollstaendigen; nach Originalwelt- und Ueberlappungsetappe die originalen Warte-/Bewegungszustaende systematisch migrieren.
 2. Bewohner-Sonderzustaende, Aktionssteuerung und Kraefte gemeinsam vervollstaendigen; strategische KI anbinden.
 3. Original-UI, Kampagne/Ergebnisse, Animationen/Intro, Audio und Save/Load abschliessen.
 4. Zweispielerbetrieb und Gesamtparitaet pruefen; optionale Hardwaretreue getrennt verfolgen.

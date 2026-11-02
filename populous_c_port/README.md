@@ -252,25 +252,30 @@ record `N/5`, internal level `5*N`, and seed `(seed_offset + ((5*N) & 7)) & 0xff
 The parser rejects unsupported terrain outside 0..3, nonregular/symlink files,
 and wrong lengths, and preserves its output on failure. Other byte fields are
 retained rather than asserted authentic; startup rejects zero group counts,
-over-capacity populations and unplaceable/conflicting inhabitants. Installed
+over-capacity populations and insufficient placement terrain. Installed
 power masks and enemy parameters do not implement the missing powers or AI.
 
 World creation consumes the four initial random draws, three original raise/walk
 passes, conditional decoration draws, and original first-inhabitant scans. It
 runs against staged A4 storage; a failed reset preserves live state and assets.
 The map update preserves original block 47 until submerged. Host safety deliberately
-skips the original enemy-fallback probe at logical cell 4096 and rejects overlapping
-preferred placements rather than retaining inconsistent occupancy. The enemy
-fallback's original leader-order quirk is preserved.
+skips the original enemy-fallback probe at logical cell 4096. Preferred placement
+preserves co-located inhabitants and uses the original last-writer `map_who`
+representative; fallback scans still require an empty cell. The enemy fallback's
+original leader-order quirk is preserved.
 
-With the supplied data, these 11 starts are rejected for overlapping placement:
-`70, 74, 93, 94, 160, 201, 204, 472, 477, 478, 479`. Resolving their original
-occupancy semantics remains migration work; they are not silently replaced with
-invented worlds. This is world initialization, not 495 completed campaign levels.
-An independent assembly-derived Python translation matched full height, block,
-altitude and overlay arrays for all 495 starts, and final seeds/leaders for the
-484 accepted starts. This is cross-implementation evidence, **not** an independent
-Amiga execution trace or proof of complete game parity.
+The previously rejected starts `70, 74, 93, 94, 160, 201, 204, 472, 477, 478, 479`
+now retain their original placement rather than being relocated. Hostile current-cell
+encounters are handled before settlement/departure at the existing C movement gate;
+ongoing battles cannot have their partner links overwritten by a third walker.
+Settlement guards prevent hidden/duplicate towns while retaining town/split-walker
+sharing. This is bounded overlap support, not the original waiting handshake
+(flags `0x20`, frame 101), its population losses, or delayed movement occupancy.
+Those state-machine details and multi-party battle joining remain migration work.
+
+This is world initialization, not 495 completed campaign levels. Independent
+assembly-derived comparisons are cross-implementation evidence, **not** an
+independent Amiga execution trace or proof of complete game parity.
 
 ## Controls
 
@@ -305,8 +310,9 @@ loading. Synthetic `test-game` also covers generator RNG checkpoints, placement,
 block 47, camera selection and transactional original reset. Fixture writes are
 disabled in `POPULOUS_TEST_REAL_DATA` mode to keep original files read-only.
 
-The explicit supplied-export regression pins the 11 rejected starts and checks
-all 484 accepted starts through asset loading, rendering, 100 ticks and reset:
+The explicit supplied-export regression checks all 495 starts, including exact
+initial inhabitants and last-writer occupancy, asset loading, rendering, 100 ticks
+and reset:
 
 ```sh
 make -C populous_c_port test-level-local \
@@ -317,8 +323,8 @@ SDL_VIDEODRIVER=dummy timeout 120s ./populous_c_port/tests/test_game_sanitize \
 
 Build `test-sanitize` first for the second command. This exhaustive integration
 uses `LEVEL_TEST_TIMEOUT` (default 120s), separately from the 20s focused tests.
-Its exact rejection expectations apply to the supplied dataset, not arbitrary
-modified level tables. The export layout must have `raw/` alongside `pixels/`.
+The export layout must have `raw/` alongside `pixels/`. Successful initialization
+does not imply every modified level table is valid or every campaign feature exists.
 
 `test-runtime` checks real SDL software rendering and partial-initialization
 cleanup, injected resource failures, launcher handoff, and invalid video driver

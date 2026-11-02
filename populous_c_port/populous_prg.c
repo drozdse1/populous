@@ -780,6 +780,21 @@ static void core_remove(int person)
     int owner = peep_owner(person), position = peep_word(person,8);
     if (peeps[person*22]&1) core_set_town(person,1);
     if (map_who[position] == person+1) map_who[position] = 0;
+    if (peeps[person*22]&8) {
+        int partner = peep_word(person,6);
+        /* Walking attrition can remove an attacker immediately after entry,
+         * outside core_battle's winner path. Release only its reciprocal link. */
+        if (partner >= 0 && partner < no_peeps && partner != person &&
+            peep_word(partner,4) > 0 && (peeps[partner*22]&8) &&
+            peep_word(partner,6) == person) {
+            peeps[partner*22] = (peeps[partner*22]&1) ? 1 : 2;
+            set_peep_word(partner,6,0); set_peep_word(partner,10,0);
+            if (!(peeps[partner*22]&1)) set_peep_word(partner,12,0);
+            int cell = peep_word(partner,8);
+            if (!map_who[cell]) map_who[cell] = partner+1;
+        }
+        set_peep_word(person,6,0);
+    }
     if (core_leader(owner) == person+1) core_leader(owner) = 0;
     set_peep_word(person,4,0); peeps[person*22] = 0;
 }
@@ -885,8 +900,30 @@ static void core_move(int person)
     int owner = peep_owner(person), position = peep_word(person,8);
     int delta = core_tendency(owner) ? core_explore(person) : core_magnet_direction(person);
     if (delta == 999) return;
+    /* _move_explorer asm:4510-4559 encounters the current occupant before
+     * settlement/departure. Keep the port's immediate destination path below. */
+    int occupant = map_who[position]-1;
+    if (occupant >= 0 && occupant < no_peeps && occupant != person &&
+        peep_word(occupant,4) > 0) {
+        if (peeps[occupant*22]&8) return; /* Multi-party join is not ported. */
+        if (peep_owner(occupant) != owner) {
+            peeps[person*22] = 8;
+            peeps[occupant*22] = (peeps[occupant*22]&7)|8;
+            set_peep_word(person,6,occupant); set_peep_word(occupant,6,person);
+            map_who[position] = person+1; /* _set_battle asm:6636-6656 */
+            ++core_battles;
+            return;
+        }
+    }
     if (!delta && core_check_life(owner,position) > 0) {
+        if (map_who[position] && map_who[position] != person+1) return;
+        /* A split walker may leave no representative until the town's next
+         * turn. Occupancy alone cannot establish that this plot has no town. */
+        for (int other = 0; other < no_peeps; ++other)
+            if (other != person && peep_word(other,4) > 0 &&
+                peep_word(other,8) == position && (peeps[other*22]&1)) return;
         peeps[person*22] = 1; set_peep_word(person,6,game_turn);
+        map_who[position] = person+1;
         core_frame_town(person,core_check_life(owner,position)); core_set_town(person,0); ++core_settlements;
         return;
     }
@@ -1063,7 +1100,7 @@ static void original_woods(WorldRandom random)
 
 static int original_place_person(int owner, int cell, int leader)
 {
-    if (cell < 0 || cell >= 4096 || no_peeps >= 208 || map_who[cell]) return 0;
+    if (cell < 0 || cell >= 4096 || no_peeps >= 208) return 0;
     int person = no_peeps++;
     peeps[person * 22] = 2;
     peeps[person * 22 + 1] = owner;
@@ -1078,7 +1115,7 @@ static int original_place_person(int owner, int cell, int leader)
 }
 
 /* Conquest searches, asm:7688-7856. Caller stages the whole world so any
- * overlap/capacity/insufficient-land failure cannot publish a partial start. */
+ * capacity/insufficient-land failure cannot publish a partial start. */
 static int original_place_people(int friendly_count, int enemy_count)
 {
     /* Zero counts enter the original decrement-before-test loop and underflow.
@@ -1219,7 +1256,7 @@ static int game_reset_start(StartSelection selection)
         int generated = original_generate(&original);
         prg_a4 = live;
         if (!generated) {
-            fprintf(stderr, "Original level %d rejected: overlapping, insufficient or unsupported starting population\n", scenario);
+            fprintf(stderr, "Original level %d rejected: insufficient terrain or unsupported starting population\n", scenario);
             return 0;
         }
     }

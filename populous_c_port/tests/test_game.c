@@ -323,6 +323,156 @@ static void test_battle_casualties_and_rewards(void)
     _closeall(); SDL_Quit();
 }
 
+static void setup_colocated_walkers(int owner)
+{
+    assert(game_reset(0));
+    memset(peeps,0,208*22); memset(map_who,0,4096); no_peeps=2;
+    for (int person=0; person<2; ++person) {
+        peeps[person*22]=2; peeps[person*22+1]=owner ^ person;
+        peeps[person*22+2]=peeps[person*22+3]=1;
+        set_peep_word(person,4,100); set_peep_word(person,8,50*64+50);
+    }
+    core_tendency(0)=core_tendency(1)=1;
+    map_who[50*64+50]=2;
+}
+
+static void test_colocated_hostile_encounter(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    for (int owner=0; owner<2; ++owner) for (int leaving=0; leaving<2; ++leaving) {
+        setup_colocated_walkers(owner);
+        int position=50*64+50;
+        if (leaving) {
+            core_tendency(owner)=0; core_leader(owner)=1; core_target(owner)=position+1;
+        }
+        core_move(0);
+        assert(peeps[0]==8 && peeps[22]==10);
+        assert(peep_word(0,6)==1 && peep_word(1,6)==0);
+        assert(peep_word(0,8)==position && peep_word(1,8)==position);
+        assert(map_who[position]==1 && !map_who[position+1]); /* _set_battle attacker */
+        assert(peep_word(0,4)==100 && peep_word(1,4)==100);
+        assert(core_battles==1 && core_settlements==0 && !map_bk2[position]);
+        uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
+        game_render(); assert(!memcmp(saved,prg_a4_area,sizeof saved));
+    }
+    /* Keep the existing eight-tick dispatch, not the original frame-101 handshake. */
+    setup_colocated_walkers(0);
+    for (int tick=0; tick<7; ++tick) _move_peeps();
+    assert(!core_battles && peeps[0]==2 && peeps[22]==2);
+    _move_peeps();
+    assert(core_battles==1 && (peeps[0]&8) && (peeps[22]&8));
+    assert(map_who[50*64+50]==1 && !core_settlements);
+    /* No direction means no current-cell encounter yet (asm:4426). */
+    setup_colocated_walkers(0);
+    peeps[2]=0;
+    core_move(0);
+    assert(!core_battles && peeps[0]==2 && map_who[50*64+50]==2);
+    /* A defending town retains its town bit, then transfers through normal battle. */
+    setup_colocated_walkers(0);
+    int position=50*64+50;
+    peeps[22]=1; set_peep_word(1,12,35); core_set_town(1,0);
+    core_tendency(0)=0; core_leader(0)=1; core_target(0)=position+1;
+    core_move(0);
+    assert(peeps[0]==8 && peeps[22]==9 && map_who[position]==1);
+    assert(peep_word(0,6)==1 && peep_word(1,6)==0 && map_bk2[position]==35);
+    set_peep_word(1,4,10); seed=123; core_battle(0,1);
+    assert(peeps[0]==1 && !peep_word(1,4) && map_who[position]==1);
+    assert(map_blk[position]==31 && map_bk2[position]==42);
+    _closeall(); SDL_Quit();
+}
+
+static void test_no_hidden_town(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    for (int owner=0; owner<2; ++owner) {
+        setup_colocated_walkers(owner);
+        peeps[23]=owner;
+        core_move(0);
+        assert(!(peeps[0]&1) && !core_settlements && !map_bk2[50*64+50]);
+        assert(map_who[50*64+50]==2 && peep_word(1,4)>0);
+        /* Even an empty/self representative cannot conceal an existing town.
+         * A one-tile town keeps core_check_life positive at its own center. */
+        for (int representative=0; representative<=2; ++representative) {
+            setup_colocated_walkers(owner);
+            int position=50*64+50;
+            peeps[23]=owner; peeps[22]=1; set_peep_word(1,12,35);
+            core_set_town(1,0);
+            map_who[position]=representative;
+            core_tendency(owner)=0; core_leader(owner)=1; core_target(owner)=position;
+            /* Flat center offers settlement without the surrounding town exclusion. */
+            map_blk[position]=15;
+            assert(core_check_life(owner,position)>0);
+            core_move(0);
+            assert(!(peeps[0]&1) && peeps[22]==1 && !core_settlements);
+            assert(map_bk2[position]==35 && map_who[position]==representative);
+        }
+        /* A genuinely empty cell must publish the newly created town. */
+        setup_colocated_walkers(owner);
+        core_remove(1); map_who[50*64+50]=0;
+        core_move(0);
+        assert(peeps[0]==1 && core_settlements==1 && map_who[50*64+50]==1);
+    }
+    _closeall(); SDL_Quit();
+}
+
+static void test_colocated_battle_death(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    for (int dead=0; dead<2; ++dead) {
+        setup_colocated_walkers(0);
+        core_move(0);
+        assert((peeps[0]&8) && (peeps[22]&8));
+        core_remove(dead);
+        int survivor=1-dead, position=50*64+50;
+        assert(peep_word(dead,4)==0 && !peeps[dead*22]);
+        assert(peeps[survivor*22]==2 && peep_word(survivor,6)==0);
+        assert(map_who[position]==survivor+1 && peep_word(survivor,4)==100);
+        core_move(survivor);
+        assert(peeps[survivor*22]==1 && map_who[position]==survivor+1);
+    }
+    /* Walking loss immediately after battle entry must not strand its partner. */
+    setup_colocated_walkers(0);
+    A4_WORD(0x2fb0)=1; set_peep_word(0,4,1); set_peep_word(0,12,7);
+    _move_peeps();
+    assert(!peep_word(0,4) && peeps[22]==2 && map_who[50*64+50]==2);
+    for (int winner=0; winner<2; ++winner) {
+        setup_colocated_walkers(0);
+        core_move(0);
+        set_peep_word(winner,4,100); set_peep_word(1-winner,4,10);
+        seed=123; core_battle(0,1);
+        assert(peep_word(winner,4)==90 && !peep_word(1-winner,4));
+        assert(peeps[winner*22]==2 && map_who[50*64+50]==winner+1);
+        core_move(winner);
+        assert(peeps[winner*22]==1 && core_settlements==1);
+    }
+    setup_colocated_walkers(0); core_move(0);
+    set_peep_word(0,4,10); set_peep_word(1,4,10);
+    core_battle(0,1);
+    assert(!peep_word(0,4) && !peep_word(1,4) && !map_who[50*64+50]);
+    _closeall(); SDL_Quit();
+}
+
+static void test_ongoing_battle_blocks_third_party(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    for (int owner=0; owner<2; ++owner) for (int colocated=0; colocated<2; ++colocated) {
+        setup_colocated_walkers(0); core_move(0);
+        assert((peeps[0]&8) && (peeps[22]&8));
+        no_peeps=3; peeps[44]=2; peeps[45]=owner; peeps[46]=peeps[47]=1;
+        int position=50*64+50, origin=colocated ? position : position-1;
+        set_peep_word(2,4,45); set_peep_word(2,8,origin);
+        if (!colocated) map_who[origin]=3;
+        core_tendency(owner)=0; core_leader(owner)=3; core_target(owner)=position+1;
+        uint8_t battle[44]; memcpy(battle,peeps,sizeof battle);
+        core_move(2);
+        assert(!memcmp(battle,peeps,sizeof battle));
+        assert(peeps[44]==2 && peep_word(2,8)==origin && peep_word(2,4)==45);
+        assert(map_who[position]==1 && core_battles==1 && !core_settlements);
+        assert(peep_word(0,6)==1 && peep_word(1,6)==0);
+    }
+    _closeall(); SDL_Quit();
+}
+
 static void test_near_town_sculpt(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
@@ -479,6 +629,7 @@ static void test_match_events(void)
         }
         game_tick();
     }
+    fprintf(stderr,"defeat result=%d turns=%u battles=%d towns=%d pop=%d/%d\n",core_result,(uint16_t)game_turn,core_battles,core_settlements,core_population(0),core_population(1));
     assert(core_result==2 && core_population(0)==0 && core_population(1)>0);
     key.key.keysym.sym=SDLK_ESCAPE;
     assert(SDL_PushEvent(&key)==1); ___keyboard();
@@ -762,7 +913,28 @@ static void test_original_placement(void)
     assert(core_leader(0) == 2 && core_leader(1) == 0); /* original fallback order */
     memset(prg_a4_area, 0, sizeof prg_a4_area);
     map_blk[128] = 15;
-    assert(!original_place_people(1, 1)); /* preferred scans overlap: do not filter */
+    assert(original_place_people(1, 1)); /* asm preferred scans do not filter occupancy */
+    assert(no_peeps == 2 && core_leader(0) == 1 && core_leader(1) == 2);
+    assert(peep_word(0,8) == 128 && peep_word(1,8) == 128 && map_who[128] == 2);
+    assert(peep_word(0,4) == 45 && peep_word(1,4) == 45);
+    assert(peep_owner(0) == 0 && peep_owner(1) == 1);
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    map_blk[128] = map_blk[129] = 15;
+    assert(original_place_people(2, 2));
+    const int overlapping_positions[] = {128,129,129,128};
+    for (int index = 0; index < 4; ++index) {
+        assert(peep_word(index,8) == overlapping_positions[index]);
+        assert(peep_word(index,4) == 45 && peep_owner(index) == (index >= 2));
+    }
+    assert(map_who[128] == 4 && map_who[129] == 3);
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    map_blk[128] = 15; map_blk[0] = map_blk[4095] = 1;
+    assert(original_place_people(2, 2)); /* fallback alone skips occupied cells */
+    assert(peep_word(0,8) == 128 && peep_word(1,8) == 0);
+    assert(peep_word(2,8) == 128 && peep_word(3,8) == 4095);
+    assert(map_who[128] == 3 && map_who[0] == 2 && map_who[4095] == 4);
+    assert(core_leader(0) == 2 && core_leader(1) == 0);
+    assert(!original_place_person(0,-1,0) && !original_place_person(0,4096,0));
     memset(prg_a4_area, 0, sizeof prg_a4_area);
     memset(map_blk, 15, 4096);
     assert(!original_place_people(209, 1));
@@ -807,20 +979,44 @@ static void assert_original_world(void)
             if (column < 64) assert(abs(height - core_vertex(column + 1, row)) <= 1);
             if (row < 64) assert(abs(height - core_vertex(column, row + 1)) <= 1);
         }
-    int occupied = 0;
+    /* Independent assembly oracle: preferred flat-cell lists do not exclude
+     * prior occupants; only fallback land lists do (asm:7688-7856). */
+    int expected_positions[208], expected_leaders[2]={0,0}, count=0;
+    uint8_t expected_who[4096]={0};
+    for (int owner=0; owner<2; ++owner) {
+        int requested=owner ? current_start_pop_enemy : current_start_pop_you;
+        int candidates[4096], available=0;
+        for (int cell=128; cell<=(owner ? 3968 : 4095); ++cell)
+            if (map_blk[cell]==15) candidates[available++]=cell;
+        int preferred=requested < available ? requested : available;
+        for (int index=0; index<preferred; ++index) {
+            int cell=candidates[owner ? available-1-index : index];
+            expected_positions[count++]=cell; expected_who[cell]=count;
+        }
+        if (preferred==requested) expected_leaders[owner]=count;
+        available=0;
+        for (int cell=owner ? 1 : 0; cell<4096; ++cell)
+            if (map_blk[cell] && !expected_who[cell]) candidates[available++]=cell;
+        assert(available >= requested-preferred);
+        for (int index=0; index<requested-preferred; ++index) {
+            int cell=candidates[owner ? available-1-index : index];
+            expected_positions[count++]=cell; expected_who[cell]=count;
+        }
+        if (!owner) expected_leaders[owner]=count;
+    }
+    assert(no_peeps==count && core_leader(0)==expected_leaders[0] && core_leader(1)==expected_leaders[1]);
+    assert(!memcmp(map_who,expected_who,sizeof expected_who));
     for (int cell = 0; cell < 4096; ++cell) {
         assert(map_blk[cell] <= 49 && map_alt[cell] <= 8);
         assert(!map_bk2[cell] || (map_bk2[cell] >= 50 && map_bk2[cell] <= 52));
-        if (map_who[cell]) {
-            ++occupied;
-            assert(map_who[cell] <= no_peeps);
-            assert(peep_word(map_who[cell] - 1, 8) == cell);
-        }
     }
-    assert(occupied == no_peeps);
     for (int index = 0; index < no_peeps; ++index) {
-        assert(peep_word(index, 4) == 45 && peep_word(index, 12) == 0);
-        assert(map_who[peep_word(index, 8)] == index + 1);
+        assert(peep_word(index,8)==expected_positions[index]);
+        assert(peep_word(index,4)==45 && peep_word(index,12)==0);
+        assert(peeps[index*22]==2 && peep_owner(index)==(index >= current_start_pop_you));
+        assert(peeps[index*22+2]==1 && peeps[index*22+3]==1);
+        assert(!peep_word(index,6) && !peep_word(index,10));
+        for (int byte=14; byte<22; ++byte) assert(!peeps[index*22+byte]);
     }
 }
 
@@ -882,6 +1078,26 @@ static void test_original_reset(void)
     _closeall(); SDL_Quit();
 }
 
+static void assert_live_occupancy(void)
+{
+    int towns[4096]={0};
+    for (int cell=0; cell<4096; ++cell) if (map_who[cell]) {
+        int person=map_who[cell]-1;
+        assert(person<no_peeps && peep_word(person,4)>0 && peep_word(person,8)==cell);
+    }
+    for (int person=0; person<no_peeps; ++person) if (peep_word(person,4)>0) {
+        int position=peep_word(person,8);
+        assert(position>=0 && position<4096);
+        if (peeps[person*22]&1) assert(++towns[position]==1);
+        if (peeps[person*22]&8) {
+            int partner=peep_word(person,6);
+            assert(partner>=0 && partner<no_peeps && partner!=person);
+            assert(peep_word(partner,4)>0 && (peeps[partner*22]&8));
+            assert(peep_word(partner,6)==person && peep_owner(partner)!=peep_owner(person));
+        }
+    }
+}
+
 static void test_all_original_levels(const char *directory)
 {
     LevelTable table; char error[160];
@@ -891,48 +1107,48 @@ static void test_all_original_levels(const char *directory)
     snprintf(assets_directory, sizeof assets_directory, "%s/..", directory);
     assert(!setenv("POPULOUS_ASSET_DIR", assets_directory, 1));
     assert(SDL_Init(SDL_INIT_VIDEO) == 0);
-    static const unsigned rejected[] = {70,74,93,94,160,201,204,472,477,478,479};
-    unsigned failures = 0;
     for (unsigned number = 0; number < LEVEL_COUNT; ++number) {
         LevelStart start;
         assert(level_data_select(&table, number, &start));
+        assert(game_reset_start((StartSelection){START_ORIGINAL, (int)number}));
         uint8_t saved[sizeof prg_a4_area];
         memcpy(saved, prg_a4_area, sizeof saved);
-        GraphicsAssets *assets = game_assets;
-        StartSelection previous = current_start;
-        int expected_rejection = 0;
-        for (size_t index = 0; index < sizeof rejected / sizeof rejected[0]; ++index)
-            if (number == rejected[index]) expected_rejection = 1;
-        int success = game_reset_start((StartSelection){START_ORIGINAL, (int)number});
-        assert(success == !expected_rejection);
-        if (!success) {
-            assert(!memcmp(saved, prg_a4_area, sizeof saved) && game_assets == assets);
-            assert(current_start.kind == previous.kind && current_start.number == previous.number);
-            printf("Original level %u: safely rejected placement\n", number);
-            ++failures;
-            continue;
-        }
         assert_original_world();
         assert(no_peeps == start.record.your_count + start.record.enemy_count);
         assert(in_conquest == start.internal_level && (uint16_t)start_seed == start.initial_seed);
         game_render();
-        for (int tick = 0; tick < 100; ++tick) game_tick();
+        assert(!memcmp(saved,prg_a4_area,sizeof saved));
+        for (int tick = 0; tick < 100; ++tick) { game_tick(); assert_live_occupancy(); }
+        uint8_t after_ticks[sizeof prg_a4_area]; memcpy(after_ticks,prg_a4_area,sizeof after_ticks);
         game_render();
+        assert(!memcmp(after_ticks,prg_a4_area,sizeof after_ticks));
         SDL_Event reset = {.type = SDL_KEYDOWN}; reset.key.keysym.sym = SDLK_r;
         game_handle_event(&reset);
         assert_original_world();
+        assert(!memcmp(saved,prg_a4_area,sizeof saved));
         assert(game_turn == 0 && current_start.number == (int)number);
     }
-    assert(failures == sizeof rejected / sizeof rejected[0]);
     _closeall(); SDL_Quit();
-    printf("Original starts: %u valid, %u safely rejected of 495 (not original-reference parity)\n",
-           LEVEL_COUNT - failures, failures);
+    assert(!prg_screen && !game_assets && live_allocations==0 && !SDL_WasInit(0));
+    puts("Original starts: all 495 PASS (placement/ticks/render/reset; no tick-parity claim)");
 }
 
 int main(int argc, char **argv)
 {
     if (argc == 3 && !strcmp(argv[1], "--levels")) {
         test_all_original_levels(argv[2]);
+        return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "--overlap")) {
+        prepare_rule_data();
+        if (!strcmp(argv[2], "placement")) test_original_placement();
+        else if (!strcmp(argv[2], "encounter")) test_colocated_hostile_encounter();
+        else if (!strcmp(argv[2], "town")) test_no_hidden_town();
+        else if (!strcmp(argv[2], "death")) test_colocated_battle_death();
+        else if (!strcmp(argv[2], "third-party")) test_ongoing_battle_blocks_third_party();
+        else assert(0);
+        cleanup_rule_data();
+        puts("focused overlap regression: PASS");
         return 0;
     }
     assert(argc == 1);
@@ -943,6 +1159,10 @@ int main(int argc, char **argv)
     test_original_reset();
     test_original_graphics_output();
     test_isometric_match();
+    test_colocated_hostile_encounter();
+    test_no_hidden_town();
+    test_colocated_battle_death();
+    test_ongoing_battle_blocks_third_party();
     test_battle_casualties_and_rewards();
     test_near_town_sculpt();
     test_split_leader_and_occupancy();
