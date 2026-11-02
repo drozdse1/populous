@@ -309,8 +309,8 @@ static int set_peep_reference(int subject, int target)
     return 1;
 }
 static int peep_owner(int index) { return peeps[index * 22 + 1]; }
-/* _get_heading asm:5469-5536. Dormant dependency only: no knight creation or
- * heading navigation is enabled. The original ASR.W #6 floors negative rows;
+/* _get_heading asm:5469-5536. Used by validated heading navigation; knight
+ * creation remains separate. The original ASR.W #6 floors negative rows;
  * use division explicitly so signed right shift is not implementation-defined. */
 static int core_get_heading(int subject)
 {
@@ -905,23 +905,42 @@ static void core_queue_war_raise(int owner, int position)
     A4_DISP(0x82b8 + displacement)[0] = position / 64;
     A4_WORD(0x82be + displacement) = 1;
 }
-/* _move_magnet_peeps asm:4982-5465, ordinary metadata-zero navigation.
- * Nonzero Amiga metadata remains opaque: use this bounded magnet path, not
- * an invented heading/knight target or a native pointer. */
+/* _move_magnet_peeps asm:4912-5465. Existing host headings override magnets;
+ * invalid opaque references retain their bytes and use only a bounded magnet. */
 static int core_magnet_direction(int person)
 {
-    int owner = peep_owner(person), position = peep_word(person,8), leader = core_leader(owner)-1;
-    int target = core_target(owner);
-    if (!core_leader(owner) && position == target) {
-        core_leader(owner) = person+1;
-        if (!view_who) view_who = person+1;
+    if (no_peeps < 0 || no_peeps > 208 || person < 0 || person >= no_peeps) return 999;
+    int owner = peep_owner(person), position = peep_word(person,8);
+    if (owner > 1 || position < 0 || position >= 4096) return 999;
+    int reference = peep_reference(person), present = reference != -1;
+    int target;
+    if (reference >= 0) {
+        target = peep_word(reference,8);
+        if (target == position || peep_word(reference,4) <= 0 ||
+            peep_owner(reference) == owner || (peeps[reference*22]&0x80) ||
+            target < 0 || target >= 4096) {
+            core_get_heading(person);
+            reference = peep_reference(person);
+            target = peep_word(reference,8);
+        }
+        /* The exact selector intentionally admits all signed word positions.
+         * Validate once here, without retrying or changing selector semantics. */
+        if (target < 0 || target >= 4096) return 999;
+    } else {
+        target = core_target(owner);
+        if (!present) {
+            int leader = core_leader(owner)-1;
+            if (!core_leader(owner) && position == target) {
+                core_leader(owner) = person+1;
+                if (!view_who) view_who = person+1;
+            }
+            /* Invalid/dead/foreign leaders use the magnet without repair. */
+            if (leader >= 0 && leader < no_peeps && leader < 208 && leader != person &&
+                peep_word(leader,4) > 0 && peep_owner(leader) == owner &&
+                peep_word(leader,8) >= 0 && peep_word(leader,8) < 4096)
+                target = peep_word(leader,8);
+        } else if (target < 0 || target >= 4096) return 999;
     }
-    /* Host safety fallback: invalid/dead/foreign leaders use the magnet without
-     * repairing the reference, changing view_who, or touching another record. */
-    if (leader >= 0 && leader < no_peeps && leader < 208 && leader != person &&
-        peep_word(leader,4) > 0 && peep_owner(leader) == owner &&
-        peep_word(leader,8) >= 0 && peep_word(leader,8) < 4096)
-        target = peep_word(leader,8);
     int dx = (target%64 > position%64)-(target%64 < position%64);
     int dy = (target/64 > position/64)-(target/64 < position/64);
     static const int to_delta[9] = {7,6,5,0,0,4,1,2,3};
@@ -929,19 +948,20 @@ static int core_magnet_direction(int person)
     static const int opposite[8] = {4,5,6,7,0,1,2,3};
     int primary = to_delta[(dx+1)*3+dy+1], delta = directions[primary];
     int valid = core_valid_move(position,delta);
-    if (!valid || (valid == 2 && A4_WORD(0xae80))) {
+    if ((!valid && (!present || map_blk[position+delta] != 53)) ||
+        (valid == 2 && A4_WORD(0xae80))) {
         peeps[person*22+21] = (uint8_t)delta;
         return delta;
     }
-    if (valid == 3 && !peeps[person*22+14] && !peeps[person*22+15] &&
-        !peeps[person*22+16] && !peeps[person*22+17])
+    if (valid == 3 && reference != -2)
         core_queue_war_raise(owner,position);
     int direction = primary-1;
     for (int attempt = 0; attempt < 8; ++attempt, ++direction) {
         if (direction < 0) direction = 7;
         if (direction > 7) direction = 0;
         int candidate = directions[direction];
-        if (!core_valid_move(position,candidate) && candidate != (int8_t)peeps[person*22+21]) {
+        if (!core_valid_move(position,candidate) && candidate != (int8_t)peeps[person*22+21] &&
+            (!present || map_blk[position+candidate] != 53)) {
             peeps[person*22+21] = (uint8_t)directions[opposite[direction]];
             return candidate;
         }
@@ -1042,7 +1062,8 @@ static void core_join_forces(int source, int target)
 static void core_move(int person)
 {
     int owner = peep_owner(person), position = peep_word(person,8);
-    int use_magnet = A4_WORD(0xae80) || !core_tendency(owner);
+    int present = peep_reference(person) != -1;
+    int use_magnet = present || A4_WORD(0xae80) || !core_tendency(owner);
     int delta = use_magnet ? core_magnet_direction(person) : core_explore(person);
     /* _move_explorer asm:4425-4437: entry does not change the frame. */
     if (delta == 999) {
@@ -1068,7 +1089,7 @@ static void core_move(int person)
     }
     /* asm:4560-4563: encounters precede this guard, settlement/departure do not. */
     if (peep_word(person,4) <= 0) return;
-    if (!delta && core_check_life(owner,position) > 0) {
+    if (!present && !delta && core_check_life(owner,position) > 0) {
         if (map_who[position] && map_who[position] != person+1) return;
         /* A split walker may leave no representative until the town's next
          * turn. Occupancy alone cannot establish that this plot has no town. */
@@ -2196,12 +2217,25 @@ static int core_frame_walker(int person)
 }
 static void _move_peeps(void)
 {
+    /* asm:3357-3424: release heading-bearing leaders before war recenters.
+     * Presence, not liveness or reference validity, controls this prepass. */
+    if (no_peeps >= 0 && no_peeps <= 208) for (int owner=0;owner<2;++owner) {
+        int leader = core_leader(owner)-1;
+        if (leader < 0 || leader >= no_peeps || leader >= 208) continue;
+        if (peep_reference(leader) == -1) continue;
+        int position = peep_word(leader,8);
+        if (!pause && position >= 0 && position < 4096) {
+            core_target(owner) = position;
+            A4_WORD(owner ? 0xae76 : 0xae78) = position;
+        }
+        core_leader(owner) = 0;
+    }
     /* asm:3425-3432: consume war state even with no living residents. */
     if (A4_WORD(0xae80)) {
         core_target(0) = core_target(1) = 0x820;
         A4_WORD(0xae78) = A4_WORD(0xae76) = 0x820;
     }
-    /* Ordinary walker/town/battle/remnant consumption; heading/swamp and nonwar AI producers disabled. */
+    /* Existing walker/town/battle/remnant consumption; knight/swamp and nonwar AI producers disabled. */
     for (int person = 0; person < no_peeps; ++person) {
         if (peep_word(person,4) <= 0) continue;
         int flags = peeps[person*22];

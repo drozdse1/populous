@@ -72,8 +72,8 @@ The clockwise fallback records the opposite direction, and complete failure
 updates avoidance history before the existing blocked-navigation wait. Direct
 block-47 steps are allowed during war, never as fallback steps. Invalid leader
 references safely fall back to the magnet without repairing unrelated records.
-War overrides ordinary tendency selection. Heading-pointer targets remain
-unsupported; this is not complete Armageddon behavior.
+War overrides ordinary tendency selection. Valid heading references override
+magnet/leader targets; special battle behavior still remains incomplete.
 An independent assembly-table harness matched 10,616,832 direction/terrain/history
 cases. Focused/default tests, ASan/UBSan, all 495 original starts and original-data
 matches passed. This comparison is not a trace of execution on an Amiga.
@@ -92,14 +92,15 @@ retains that byte. For controller 1, a corrupt zero divisor discards that owner'
 command and logs an error without dividing or clearing its latch. Controller 0
 does not use that divisor. No replacement cadence is guessed.
 
-War-only water assistance now produces those deferred raises. Ordinary
-metadata-zero magnet navigation queues the walker's current cell when its primary
-step is water, then continues fallback navigation. Residents already carrying
+War-only water assistance produces those deferred raises. Ordinary and admitted
+heading navigation queue the walker's current cell when the primary step is
+water, then continue fallback navigation; opaque invalid headings do not produce.
+Residents already carrying
 bit `0x10` queue before the port's water loss or land recovery, unless fatal-water
 mode or the existing battle exemption applies. Newly assigned water flags do not
 produce in that same pass. Later residents overwrite earlier same-owner commands;
-no terrain changes until the consumer runs. Nonwar AI and heading producers remain
-disabled. Existing immediate drowning/recovery differences are unchanged.
+no terrain changes until the consumer runs. Nonwar AI and swamp-target command
+production remain disabled. Existing immediate drowning/recovery differences are unchanged.
 A controlled two-island fixture raises a route solely through movement-produced
 commands, enters combat at tick 41 and reaches mutual extinction at tick 45 in
 normal and sanitized builds. This is a prerequisite integration test, not an
@@ -112,7 +113,13 @@ The host stores a one-based slot in the existing four-byte field (zero is absent
 read and written via `memcpy`. Checked resolution uses the current A4 backing;
 these values are neither native pointers nor original save-file bytes. Transfers
 preserve the referenced slot, including a donor's self-reference. Live heading
-navigation and knight creation remain disabled until their consumers are migrated.
+navigation follows validated targets, refreshes invalid gameplay targets once,
+and avoids swamp on both primary and fallback routes. Heading presence overrides
+tendency, prevents settlement and releases an existing leader before war recentering.
+Opaque out-of-range metadata stays intact and uses bounded magnet fallback without
+leader acquisition; unsafe map coordinates never become map accesses. The exact
+selector remains position-word based rather than silently filtering its candidates.
+Knight creation and heading-specific battle completion remain deferred.
 All slot roundtrips, signed positions, ties, relocation and transfer cases pass
 normally and under sanitizers. An independent selector matched 10,000 generated
 record sets; full suites, original-data matches and all 495 starts also passed.

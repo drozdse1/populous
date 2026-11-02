@@ -1196,7 +1196,7 @@ static void test_remnant_timer(void)
                 assert(peeps[0]==0x80 && peep_word(0,4)==1);
                 assert((uint16_t)peep_word(0,6)==counter-tick-1);
                 assert(core_population(owner)==1 && map_who[650]==1);
-                assert(core_leader(owner)==1 && view_who==1 && core_target(owner)==1234);
+                assert(!core_leader(owner) && view_who==1 && core_target(owner)==650);
             }
             _move_peeps();
             assert(!peeps[0] && !peep_word(0,4) && !core_population(owner));
@@ -1378,13 +1378,20 @@ static void test_war_target_reset(void)
                 A4_WORD(0xae78)=301+repeat; A4_WORD(0xae76)=401+repeat;
                 uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
                 _move_peeps();
-                assert(core_target(0)==(wars[sample] ? 0x820 : 101+repeat));
-                assert(core_target(1)==(wars[sample] ? 0x820 : 201+repeat));
-                assert(A4_WORD(0xae78)==(wars[sample] ? 0x820 : 301+repeat));
-                assert(A4_WORD(0xae76)==(wars[sample] ? 0x820 : 401+repeat));
+                int released0=records>=1 && !repeat, released1=records>=2 && !repeat;
+                assert(core_target(0)==(wars[sample] ? 0x820 : released0 ? 650 : 101+repeat));
+                assert(core_target(1)==(wars[sample] ? 0x820 : released1 ? 0 : 201+repeat));
+                assert(A4_WORD(0xae78)==(wars[sample] ? 0x820 : released0 ? 650 : 301+repeat));
+                assert(A4_WORD(0xae76)==(wars[sample] ? 0x820 : released1 ? 0 : 401+repeat));
+                assert(core_leader(0)==(records>=1 ? 0 : 1));
+                assert(core_leader(1)==(records>=2 ? 0 : 2));
                 core_target(0)=101+repeat; core_target(1)=201+repeat;
                 A4_WORD(0xae78)=301+repeat; A4_WORD(0xae76)=401+repeat;
+                if (released0) core_leader(0)=1;
+                if (released1) core_leader(1)=2;
                 assert(!memcmp(before,prg_a4_area,sizeof before));
+                if (released0) core_leader(0)=0;
+                if (released1) core_leader(1)=0;
             }
         }
     for (int gate=0; gate<5; ++gate) {
@@ -1418,7 +1425,8 @@ static void test_war_evacuation(void)
             assert(!memcmp(records,peeps,sizeof records));
             assert(!memcmp(occupancy,map_who,sizeof occupancy) && no_peeps==1);
             assert(!map_bk2[650] && map_blk[650]==(trigger==1 ? 1 : 15));
-            assert(core_leader(owner)==1 && core_leader(1-owner)==2 && view_who==1);
+            assert(core_leader(owner)==(!direct && trigger>=2 ? 0 : 1));
+            assert(core_leader(1-owner)==2 && view_who==1);
             assert(core_tendency(0)==3 && core_tendency(1)==2 && seed==123);
             assert(core_mana(0)==12345 && core_mana(1)==23456);
             assert(!core_battles && !core_settlements && game_turn==8);
@@ -4144,8 +4152,295 @@ static void test_heading(void)
     test_heading_relocation(); test_heading_reference_transfers();
 }
 
+/* Navigation consumes existing host references; it does not create knights. */
+static void heading_navigation_fixture(int owner)
+{
+    setup_magnet_walker(owner); no_peeps=3;
+    for (int person=1;person<3;++person) {
+        memcpy(peeps+person*22,peeps,22);
+        peeps[person*22+1]=1-owner;
+        set_peep_word(person,8,person==1 ? 654 : 649);
+    }
+    assert(set_peep_reference(0,1));
+    core_target(owner)=586;
+}
+
+static void test_heading_navigation_targets(void)
+{
+    const int cells[]={585,649,713,586,714,587,651,715};
+    const int deltas[]={-65,-1,63,-64,64,-63,1,65};
+    for (int owner=0;owner<2;++owner) for (int war=0;war<2;++war) {
+        heading_navigation_fixture(owner); A4_WORD(0xae80)=war;
+        core_leader(owner)=3; view_who=17;
+        /* Keep the far eastern target despite a closer western enemy. */
+        assert(core_magnet_direction(0)==1 && peep_reference(0)==1);
+        for (int sample=0;sample<8;++sample) {
+            set_peep_word(1,8,cells[sample]);
+            assert(core_magnet_direction(0)==deltas[sample]);
+            assert((int8_t)peeps[21]==deltas[sample] && peep_reference(0)==1);
+            assert(core_leader(owner)==3 && view_who==17 && seed==123);
+        }
+    }
+    for (int owner=0;owner<2;++owner) {
+        heading_navigation_fixture(owner); peeps[45]=owner;
+        set_peep_word(2,8,714); core_leader(owner)=3;
+        assert(core_magnet_direction(0)==1 && core_leader(owner)==3);
+        core_leader(owner)=0; core_target(owner)=650;
+        assert(core_magnet_direction(0)==1 && !core_leader(owner) && !view_who);
+    }
+    /* Refresh dead, negative, friendly, bit-7, same-cell and self references.
+     * A same-cell enemy remains eligible, so refresh must not retry in a loop. */
+    for (int owner=0;owner<2;++owner) for (int cause=0;cause<7;++cause) {
+        heading_navigation_fixture(owner);
+        if (cause==0) set_peep_word(1,4,0);
+        if (cause==1) set_peep_word(1,4,-1);
+        if (cause==2) peeps[23]=owner;
+        if (cause==3) peeps[22]=0x82;
+        if (cause==4) set_peep_word(1,8,650);
+        if (cause==5) assert(set_peep_reference(0,0));
+        if (cause==6) { assert(set_peep_reference(0,0)); peeps[23]=peeps[45]=owner; }
+        uint8_t others[44]; memcpy(others,peeps+22,sizeof others);
+        assert(core_magnet_direction(0)==(cause==4 || cause==6 ? -64 : -1));
+        assert(peep_reference(0)==(cause==4 ? 1 : cause==6 ? 0 : 2));
+        assert(!memcmp(others,peeps+22,sizeof others));
+        assert(!core_leader(owner) && !view_who && seed==123);
+        if (cause==6) {
+            core_tendency(owner)=1; core_move(0);
+            assert(peeps[0]==2 && peep_word(0,8)==586 && !core_settlements);
+        }
+    }
+}
+
+static void test_heading_navigation_bounds(void)
+{
+    const int bad_cells[]={INT16_MIN,-1,4096,INT16_MAX};
+    for (unsigned sample=0;sample<sizeof bad_cells/sizeof bad_cells[0];++sample) {
+        heading_navigation_fixture(0); set_peep_word(1,8,bad_cells[sample]);
+        assert(core_magnet_direction(0)==-1 && peep_reference(0)==2);
+        /* The exact selector is allowed to reselect an off-map enemy. The
+         * caller must stop, not filter, wrap or use that position as a map index. */
+        heading_navigation_fixture(0); set_peep_word(1,8,bad_cells[sample]);
+        set_peep_word(2,4,0);
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(core_magnet_direction(0)==999 && peep_reference(0)==1);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    const int counts[]={-1,0,1,208,209};
+    const int subjects[]={INT_MIN,-1,0,1,207,208,INT_MAX};
+    for (unsigned count=0;count<sizeof counts/sizeof counts[0];++count)
+    for (unsigned sample=0;sample<sizeof subjects/sizeof subjects[0];++sample) {
+        heading_navigation_fixture(0); no_peeps=counts[count];
+        int subject=subjects[sample];
+        if (no_peeps>0 && no_peeps<=208 && subject>=0 && subject<no_peeps) continue;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(core_magnet_direction(subject)==999);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    for (int invalid=0;invalid<6;++invalid) {
+        heading_navigation_fixture(0);
+        if (invalid<4) set_peep_word(0,8,bad_cells[invalid]);
+        else peeps[1]=invalid==4 ? 2 : 255;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(core_magnet_direction(0)==999);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+}
+
+static void test_heading_navigation_opaque(void)
+{
+    const uint32_t refs[]={4,209,0x53014,0x10001,0x01000002,0x80000000,UINT32_MAX};
+    for (int owner=0;owner<2;++owner) for (unsigned sample=0;sample<sizeof refs/sizeof refs[0];++sample)
+    for (int leader=0;leader<2;++leader) {
+        heading_navigation_fixture(owner); memcpy(peeps+14,&refs[sample],4);
+        peeps[45]=owner; set_peep_word(2,8,714);
+        core_leader(owner)=leader ? 3 : 0; core_target(owner)=650; view_who=0;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(core_magnet_direction(0)==-64); /* Neither acquire nor follow. */
+        peeps[21]=0;
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        core_target(owner)=-1;
+        memcpy(before,prg_a4_area,sizeof before);
+        assert(core_magnet_direction(0)==999);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        core_target(owner)=4096;
+        memcpy(before,prg_a4_area,sizeof before);
+        assert(core_magnet_direction(0)==999);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+}
+
+static void test_heading_navigation_dispatch(void)
+{
+    for (int owner=0;owner<2;++owner) for (int tendency=0;tendency<4;++tendency)
+    for (int opaque=0;opaque<2;++opaque) {
+        heading_navigation_fixture(owner); core_tendency(owner)=tendency;
+        if (opaque) { uint32_t raw=UINT32_MAX; memcpy(peeps+14,&raw,4); core_target(owner)=654; }
+        core_move(0);
+        assert(peep_word(0,8)==651 && peep_word(0,10)==1 && peeps[0]==2);
+        assert(map_who[651]==1 && !map_who[650] && !core_settlements && seed==123);
+    }
+    heading_navigation_fixture(0); core_tendency(0)=1;
+    /* Keep other records inert, but eligible as targets. */
+    peeps[22]=peeps[44]=4;
+    memset(map_blk,47,4096); map_blk[650]=15;
+    set_peep_word(0,12,6);
+    _move_peeps();
+    assert(peep_word(0,8)==650 && peep_word(0,12)==7 && peep_word(0,4)==100);
+    _move_peeps();
+    assert(peeps[0]==0x42 && peep_word(0,6)==7 && peep_word(0,12)==0);
+    assert(peep_word(0,4)==99 && peep_reference(0)==1);
+    map_blk[651]=15;
+    for (int tick=1;tick<=8;++tick) {
+        _move_peeps();
+        assert(peeps[0]==0x42 && peep_word(0,8)==650 && peep_word(0,6)==7+tick);
+        assert(peep_word(0,12)==(tick%2 ? 101 : 102));
+    }
+    _move_peeps();
+    assert(peeps[0]==2 && peep_word(0,8)==651 && peep_word(0,12)==0 && peep_word(0,4)==90);
+    assert(!core_settlements && peep_reference(0)==1);
+}
+
+static void test_heading_navigation_swamp(void)
+{
+    for (int owner=0;owner<2;++owner) for (int war=0;war<2;++war)
+    for (int presence=0;presence<3;++presence) for (int fallback=0;fallback<2;++fallback) {
+        heading_navigation_fixture(owner); core_target(owner)=654; A4_WORD(0xae80)=war;
+        if (!presence) assert(set_peep_reference(0,-1));
+        if (presence==2) { uint32_t raw=UINT32_MAX; memcpy(peeps+14,&raw,4); }
+        memset(map_blk,0,4096); map_blk[650]=15;
+        map_blk[fallback ? 587 : 651]=53;
+        assert(core_valid_move(650,fallback ? -63 : 1)==0);
+        assert(core_magnet_direction(0)==(presence ? 999 : fallback ? -63 : 1));
+        assert(core_valid_move(650,fallback ? -63 : 1)==0);
+        /* Nonwar/controller AI and swamp command production remain disabled. */
+        if (!war || !fallback || presence==2) assert_mailbox_empty();
+    }
+    for (int presence=1;presence<3;++presence) {
+        heading_navigation_fixture(0); A4_WORD(0xae80)=1; core_target(0)=654;
+        if (presence==2) { uint32_t raw=UINT32_MAX; memcpy(peeps+14,&raw,4); }
+        map_blk[651]=47;
+        assert(core_magnet_direction(0)==1 && (int8_t)peeps[21]==1);
+        assert_mailbox_empty();
+    }
+}
+
+static void test_heading_navigation_fallback(void)
+{
+    const int deltas[]={-64,-63,1,65,64,63,-1,-65};
+    const int opposites[]={64,63,-1,-65,-64,-63,1,65};
+    const int failed[]={65,-64,63,-1,-65,-64,-63,1};
+    for (int owner=0;owner<2;++owner) for (int opaque=0;opaque<2;++opaque)
+    for (int direction=0;direction<8;++direction) {
+        heading_navigation_fixture(owner);
+        int primary=(direction+1)%8;
+        set_peep_word(1,8,650+deltas[primary]); core_target(owner)=650+deltas[primary];
+        if (opaque) { uint32_t raw=UINT32_MAX; memcpy(peeps+14,&raw,4); }
+        memset(map_blk,47,4096); map_blk[650]=15;
+        map_blk[650+deltas[direction]]=15;
+        assert(core_magnet_direction(0)==deltas[direction]);
+        assert((int8_t)peeps[21]==opposites[direction]);
+        peeps[21]=(uint8_t)deltas[direction];
+        assert(core_magnet_direction(0)==999 && (int8_t)peeps[21]==failed[primary]);
+        assert(peep_reference(0)==(opaque ? -2 : 1));
+    }
+}
+
+static void test_heading_navigation_water(void)
+{
+    for (int owner=0;owner<2;++owner) for (int war=0;war<2;++war)
+    for (int opaque=0;opaque<2;++opaque) {
+        heading_navigation_fixture(owner); A4_WORD(0xae80)=war; core_target(owner)=654;
+        if (opaque) { uint32_t raw=UINT32_MAX; memcpy(peeps+14,&raw,4); }
+        memset(map_blk,47,4096); map_blk[650]=15; map_blk[651]=0;
+        uint8_t blocks[4096]; memcpy(blocks,map_blk,sizeof blocks);
+        assert(core_magnet_direction(0)==999); /* Fallback never accepts rock. */
+        assert((int8_t)peeps[21]==63);
+        if (war && !opaque) assert_war_command(owner,650); else assert_mailbox_empty();
+        assert(!memcmp(blocks,map_blk,sizeof blocks) && seed==123);
+    }
+}
+
+static void test_heading_leader_release(void)
+{
+    for (int paused=0;paused<2;++paused) for (int war=0;war<2;++war)
+    for (int presence=0;presence<3;++presence) {
+        setup_magnet_walker(0); no_peeps=2; pause=paused; A4_WORD(0xae80)=war;
+        view_who=2;
+        for (int owner=0;owner<2;++owner) {
+            peeps[owner*22+1]=owner;
+            set_peep_word(owner,4,0); /* Source prepass does not require life. */
+            set_peep_word(owner,8,owner ? 900 : 650);
+            core_leader(owner)=owner+1; core_target(owner)=1234;
+            A4_WORD(owner ? 0xae76 : 0xae78)=2345; core_tendency(owner)=3;
+            uint32_t raw=presence==1 ? (uint32_t)owner+1 : presence==2 ? UINT32_MAX : 0;
+            memcpy(peeps+owner*22+14,&raw,4);
+        }
+        uint8_t records[44]; memcpy(records,peeps,sizeof records);
+        _move_peeps();
+        for (int owner=0;owner<2;++owner) {
+            int cell=owner ? 900 : 650;
+            assert(core_leader(owner)==(presence ? 0 : owner+1));
+            assert(core_target(owner)==(war ? 0x820 : presence && !paused ? cell : 1234));
+            assert(A4_WORD(owner ? 0xae76 : 0xae78)==(war ? 0x820 : presence && !paused ? cell : 2345));
+            assert(core_tendency(owner)==3);
+        }
+        assert(view_who==2 && !memcmp(records,peeps,sizeof records));
+    }
+    const int invalid[]={-1,3,209,INT16_MAX};
+    for (unsigned sample=0;sample<sizeof invalid/sizeof invalid[0];++sample) {
+        setup_magnet_walker(0); set_peep_word(0,4,0);
+        core_leader(0)=invalid[sample]; core_leader(1)=invalid[sample];
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        _move_peeps(); assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    setup_magnet_walker(0); assert(set_peep_reference(0,0));
+    set_peep_word(0,4,0); set_peep_word(0,8,-1); core_leader(0)=1;
+    core_target(0)=1234; A4_WORD(0xae78)=2345;
+    _move_peeps();
+    assert(!core_leader(0) && core_target(0)==1234 && A4_WORD(0xae78)==2345);
+    setup_magnet_walker(0); assert(set_peep_reference(0,0)); core_leader(0)=1; pause=1;
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    game_tick(); assert(!memcmp(before,prg_a4_area,sizeof before));
+}
+
+static void test_heading_seeded_encounter(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    assert(game_reset(0));
+    /* Seed an existing walker, not a knight producer or a combat result. */
+    assert(peeps[0]==2 && core_get_heading(0));
+    int target=peep_reference(0), start=peep_word(0,8);
+    assert(target>=0 && peep_owner(target)==1);
+    for (int tick=0;tick<2048 && !(peeps[0]&8) && peep_word(0,4)>0;++tick) game_tick();
+    assert(peep_word(0,4)>0 && (peeps[0]&8) && core_battles>0);
+    assert(peep_word(0,8)!=start && !core_leader(0));
+    assert(peep_reference(0)==target && peep_word(0,6)==target);
+    /* Remove the encountered target through existing cleanup; navigation, not
+     * death cleanup, refreshes the retained reference on its next invocation. */
+    core_remove(target);
+    assert(peep_reference(0)==target && peeps[0]==2 && peep_word(target,4)==0);
+    int population=peep_word(0,4), battles=core_battles;
+    core_move(0);
+    assert(peep_reference(0)!=target && peep_word(0,4)==population);
+    assert(core_battles>=battles);
+    _closeall(); SDL_Quit();
+}
+
+static void test_heading_navigation(void)
+{
+    test_heading_navigation_targets(); test_heading_navigation_bounds();
+    test_heading_navigation_opaque(); test_heading_navigation_dispatch();
+    test_heading_navigation_swamp(); test_heading_navigation_fallback();
+    test_heading_navigation_water(); test_heading_leader_release();
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--heading-navigation")) {
+        test_heading_navigation();
+        prepare_rule_data(); test_heading_seeded_encounter(); cleanup_rule_data();
+        puts("focused heading navigation: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--heading")) {
         test_heading(); puts("focused heading/reference regression: PASS"); return 0;
     }
@@ -4253,7 +4548,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
-    test_heading();
+    test_heading(); test_heading_navigation();
     test_armageddon_input_smoke(); test_armageddon_cast(); test_armageddon_delayed(); test_armageddon_islands();
     test_war_terrain();
     test_terrain_mailbox();
@@ -4275,6 +4570,7 @@ int main(int argc, char **argv)
     test_original_generator();
     test_original_placement();
     prepare_rule_data();
+    test_heading_seeded_encounter();
     test_armageddon_locks(); test_armageddon_render();
     test_terrain_defaults();
     test_volcano_input(); test_volcano_render();
