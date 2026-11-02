@@ -38,8 +38,9 @@ Knight creation, Armageddon, original computer
 power/auto-level logic, celebration animations and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
-Rule-word overflow is bounded at 32000
-population and mana at -250..1999999 for host safety.
+Population is bounded at 32000; ordinary mana helpers clamp to -250..1999999.
+Raw terrain commands instead preserve source word-cost/32-bit subtraction rules,
+using defined unsigned arithmetic rather than a C signed-overflow operation.
 
 The exact `0x80` peep remnant now consumes its original unsigned 16-bit timer
 (`src/populous_prg.asm:4283-4315`): it claims only empty occupancy and is removed
@@ -71,11 +72,25 @@ The clockwise fallback records the opposite direction, and complete failure
 updates avoidance history before the existing blocked-navigation wait. Direct
 block-47 steps are allowed during war, never as fallback steps. Invalid leader
 references safely fall back to the magnet without repairing unrelated records.
-War overrides ordinary tendency selection. Heading-pointer targets and deferred
-terrain assistance remain unsupported; this is not complete Armageddon behavior.
+War overrides ordinary tendency selection. Heading-pointer targets and automatic
+terrain-command production remain unsupported; this is not complete Armageddon behavior.
 An independent assembly-table harness matched 10,616,832 direction/terrain/history
 cases. Focused/default tests, ASan/UBSan, all 495 original starts and original-data
 matches passed. This comparison is not a trace of execution on an Amiga.
+
+The terrain-command path uses the original three-byte command/X/Y mailbox per
+owner, not a FIFO. Pending raises execute in owner order after the population
+pass and its terminal check; finished matches discard old commands. The separate
+controller/divisor latch does not gate command execution. Raw raises use original
+recursive bounds and local map rebuilding, not the UI sculpt helper; war makes
+them free, while normal execution charges the original word-sized build cost,
+including 10 mana for a saturated vertex. Diagnostic `P` is not editor permission.
+Navigation/drowning producers and other command opcodes remain separate work.
+Starts restore controllers 0/1, divisors 1/selected speed and latches 1/0.
+Runtime initialization rejects zero speed transactionally; the disk parser still
+retains that byte. For controller 1, a corrupt zero divisor discards that owner's
+command and logs an error without dividing or clearing its latch. Controller 0
+does not use that divisor. No replacement cadence is guessed.
 
 The original `_load_ground` reads gameplay tables from `landN` files, including
 `population_add`, `mana_add`, `weapons_add`, `battle_add1` and `battle_add2`

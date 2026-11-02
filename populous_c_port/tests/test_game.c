@@ -2156,6 +2156,7 @@ static void assert_live_occupancy(void)
     }
 }
 
+static void assert_mailbox_defaults(int speed);
 static void test_all_original_levels(const char *directory)
 {
     LevelTable table; char error[160];
@@ -2169,6 +2170,8 @@ static void test_all_original_levels(const char *directory)
         LevelStart start;
         assert(level_data_select(&table, number, &start));
         assert(game_reset_start((StartSelection){START_ORIGINAL, (int)number}));
+        assert(start.record.speed>0);
+        assert_mailbox_defaults(start.record.speed);
         uint8_t saved[sizeof prg_a4_area];
         memcpy(saved, prg_a4_area, sizeof saved);
         assert_original_world();
@@ -3141,8 +3144,342 @@ static void test_volcano_input_smoke(void)
     assert(seed!=321);
 }
 
+/* Deferred terrain commands are test-injected, never produced by gameplay. */
+static void terrain_mailbox_write(int owner, int opcode, int column, int row)
+{
+    A4_DISP(0x82b6+owner*46)[0]=opcode;
+    A4_DISP(0x82b7+owner*46)[0]=column;
+    A4_DISP(0x82b8+owner*46)[0]=row;
+}
+static void assert_mailbox_defaults(int speed)
+{
+    assert(A4_WORD(0x82bc)==0 && A4_WORD(0x82bc+46)==1);
+    assert(A4_WORD(0x82be)==1 && A4_WORD(0x82be + 46)==0);
+    assert(A4_WORD(0x82c6)==1 && A4_WORD(0x82c6+46)==speed);
+    for (int owner=0;owner<2;++owner)
+        for (int byte=0;byte<3;++byte) assert(!A4_DISP(0x82b6+owner*46)[byte]);
+}
+static void test_terrain_defaults(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    for (int scenario=0;scenario<8;++scenario) {
+        assert(game_reset(scenario));
+        assert_mailbox_defaults(demo_levels[scenario][1]);
+        for (int owner=0;owner<2;++owner) {
+            terrain_mailbox_write(owner,1,64,64);
+            A4_WORD(0x82bc+owner*46)=3;
+            A4_WORD(0x82be + owner*46)=17;
+            A4_WORD(0x82c6+owner*46)=0;
+        }
+        SDL_Event reset={.type=SDL_KEYDOWN}; reset.key.keysym.sym=SDLK_r;
+        game_handle_event(&reset);
+        assert_mailbox_defaults(demo_levels[scenario][1]);
+    }
+    if (!getenv("POPULOUS_TEST_REAL_DATA")) {
+        write_level_fixture(1,1);
+        assert(game_reset_start((StartSelection){START_ORIGINAL,0}));
+        assert_mailbox_defaults(9);
+        terrain_mailbox_write(0,1,20,30); terrain_mailbox_write(1,255,64,64);
+        pause=1; diagnostic_view=1; core_tool=1; core_battles=17;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        GraphicsAssets *assets=game_assets;
+        /* Zero remains a valid on-disk speed. Only runtime initialization rejects. */
+        char path[512]; snprintf(path,sizeof path,"%s/level.dat",test_data_directory);
+        FILE *file=fopen(path,"r+b"); assert(file);
+        assert(!fseek(file,1,SEEK_SET) && fputc(0,file)!=EOF && !fclose(file));
+        LevelTable levels; char error[160];
+        assert(level_data_load(test_data_directory,&levels,error,sizeof error));
+        assert(!game_reset_start((StartSelection){START_ORIGINAL,0}));
+        assert(!memcmp(before,prg_a4_area,sizeof before) && assets==game_assets);
+        assert(pause && diagnostic_view==1 && core_tool==1 && core_battles==17);
+        assert(current_start.kind==START_ORIGINAL && current_start.number==0);
+        assert(prg_a4==prg_a4_area+32768);
+        write_level_fixture(1,1);
+        assert(game_reset_start((StartSelection){START_ORIGINAL,0}));
+        assert_mailbox_defaults(9);
+        assert(!unlink(path));
+    }
+    _closeall(); SDL_Quit();
+}
+static void terrain_mailbox_fixture(int height)
+{
+    quake_fixture(height);
+    prg_quit=diagnostic_view=core_tool=core_swamp_selected=0;
+    core_battles=core_settlements=0;
+    A4_LONG(0x848a)=10;
+    no_peeps=2;
+    for (int owner=0;owner<2;++owner) {
+        /* Remnants stay put and merely decrement their timer during movement. */
+        int position=owner ? 3500 : 400;
+        peeps[owner*22]=0x80; peeps[owner*22+1]=owner;
+        set_peep_word(owner,4,45); set_peep_word(owner,6,100);
+        set_peep_word(owner,8,position); set_peep_word(owner,12,7);
+        map_who[position]=owner+1;
+        core_target(owner)=position; core_leader(owner)=owner+1;
+        A4_WORD(0x82c6+owner*46)=1;
+        A4_WORD(0x82be + owner*46)=17;
+    }
+}
+static void assert_mailbox_empty(void)
+{
+    for (int owner=0;owner<2;++owner)
+        for (int byte=0;byte<3;++byte) assert(!A4_DISP(0x82b6+owner*46)[byte]);
+}
+static void test_terrain_mailbox_tick(void)
+{
+    terrain_mailbox_fixture(1);
+    terrain_mailbox_write(0,1,10,10);
+    terrain_mailbox_write(0,1,20,30); /* Last write replaces, not queues. */
+    game_tick();
+    assert(core_vertex(10,10)==1 && core_vertex(20,30)==2);
+    assert(core_mana(0)==9986 && core_mana(1)==10000);
+    assert(A4_WORD(0x2f88)==1 && game_turn==1);
+    assert(A4_WORD(0x82be)==17 && A4_WORD(0x82be + 46)==17);
+    assert_mailbox_empty();
+    assert(seed==321 && !core_result && !core_battles && !core_settlements);
+    for (int owner=0;owner<2;++owner) {
+        assert(peep_word(owner,4)==45 && peep_word(owner,6)==99 && peep_word(owner,12)==7);
+        assert(A4_LONG(0x99fe + owner*16)==45);
+        assert(core_leader(owner)==owner+1 && core_target(owner)==(owner ? 3500 : 400));
+    }
+    /* Same vertex: first raise costs 14, second recursively raises 9 vertices (46).
+     * Reversing owner order would exchange the payments. */
+    terrain_mailbox_fixture(1);
+    terrain_mailbox_write(0,1,20,30); terrain_mailbox_write(1,1,20,30);
+    game_tick();
+    assert(core_mana(0)==9986 && core_mana(1)==9954 && A4_WORD(0x2f88)==9);
+    for (int row=0;row<=64;++row) for (int column=0;column<=64;++column) {
+        int distance=abs(column-20)>abs(row-30) ? abs(column-20) : abs(row-30);
+        assert(core_vertex(column,row)==(distance==0 ? 3 : distance==1 ? 2 : 1));
+    }
+    assert_mailbox_empty();
+}
+static void test_terrain_mailbox_cadence(void)
+{
+    static const struct { unsigned turn,divisor; int controller,latch,expected; } cases[]={
+        {5,3,1,17,0},{4,3,1,17,17},{5,3,0,17,17},{5,3,2,17,17},
+        {4,3,1,0,0},{65534,65535,1,17,0},{32767,32768,1,17,0},
+        {65535,3,1,17,0},{4,0,1,17,17},{4,0,1,0,0},{4,0,0,17,17}
+    };
+    for (unsigned index=0;index<sizeof cases/sizeof cases[0];++index)
+    for (int opcode=0;opcode<=2;++opcode) for (int owner=0;owner<2;++owner) {
+        terrain_mailbox_fixture(1);
+        game_turn=(int16_t)cases[index].turn;
+        A4_WORD(0x82bc+owner*46)=cases[index].controller;
+        A4_WORD(0x82be + owner*46)=cases[index].latch;
+        A4_WORD(0x82c6+owner*46)=(int16_t)cases[index].divisor;
+        terrain_mailbox_write(owner,opcode,20,30);
+        game_tick();
+        int raised=opcode==1 && !(cases[index].controller==1 && !cases[index].divisor);
+        assert(core_vertex(20,30)==1+raised && core_mana(owner)==10000-14*raised);
+        assert(A4_WORD(0x82be + owner*46)==cases[index].expected);
+        assert(A4_WORD(0x82bc+owner*46)==cases[index].controller);
+        assert((uint16_t)A4_WORD(0x82c6+owner*46)==cases[index].divisor);
+        assert_mailbox_empty();
+    }
+    for (int opcode=2;opcode<=255;++opcode) {
+        terrain_mailbox_fixture(1); terrain_mailbox_write(0,opcode,20,30);
+        game_tick();
+        assert(core_vertex(20,30)==1 && core_mana(0)==10000 && A4_WORD(0x2f88)==123);
+        assert(A4_WORD(0x82be)==17); assert_mailbox_empty();
+    }
+}
+static void test_terrain_mailbox_gates(void)
+{
+    for (int gate=0;gate<5;++gate) {
+        terrain_mailbox_fixture(1);
+        terrain_mailbox_write(0,1,20,30); terrain_mailbox_write(1,1,21,30);
+        if (gate==0) pause=1;
+        else if (gate==1) prg_quit=1;
+        else core_result=gate-1;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        game_tick(); assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    /* Fatal water is evaluated before the queued rescue raise. C population
+     * timing is retained, not an assertion about the original extinction tick. */
+    terrain_mailbox_fixture(0); game_mode=GAME_MODE_WATER_FATAL;
+    map_blk[400]=0; A4_WORD(0x82bc)=1; A4_WORD(0x82c6)=1;
+    terrain_mailbox_write(0,1,16,6); terrain_mailbox_write(1,1,20,30);
+    game_tick();
+    assert(core_result==2 && !peep_word(0,4) && A4_LONG(0x99fe)==0 && A4_LONG(0x9a0e)==45);
+    assert(core_vertex(16,6)==0 && core_mana(0)==10000 && A4_WORD(0x2f88)==123);
+    assert(A4_WORD(0x82be)==17 && A4_WORD(0x82be + 46)==17);
+    assert_mailbox_empty();
+}
+static void test_terrain_mailbox_raise(void)
+{
+    /* Invalid wrapper arguments must not touch even bounds/count/controller data. */
+    static const int invalid[][3]={{-1,20,30},{2,20,30},{0,-1,30},{1,65,30},{0,20,-1},{1,20,255}};
+    for (unsigned index=0;index<sizeof invalid/sizeof invalid[0];++index) {
+        terrain_mailbox_fixture(1);
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(!core_raw_raise(invalid[index][0],invalid[index][1],invalid[index][2]));
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    static const int coordinates[][2]={{0,0},{64,0},{0,64},{64,64},{20,30},{65,30},{255,30},{20,65},{20,255}};
+    for (unsigned index=0;index<sizeof coordinates/sizeof coordinates[0];++index)
+    for (int owner=0;owner<2;++owner) for (int height=1;height<=8;height+=7) {
+        terrain_mailbox_fixture(height);
+        int column=coordinates[index][0],row=coordinates[index][1];
+        terrain_mailbox_write(owner,1,column,row);
+        game_tick();
+        int valid=column<=64 && row<=64;
+        assert(core_mana(owner)==10000-(valid ? (height==8 ? 10 : 14) : 0));
+        assert(A4_WORD(0x2f88)==(valid ? (height==8 ? 0 : 1) : 123));
+        for (int y=0;y<=64;++y) for (int x=0;x<=64;++x)
+            assert(core_vertex(x,y)==height+(valid && height<8 && x==column && y==row));
+        if (valid) {
+            assert(A4_WORD(0x2f8a)==(column<1 ? 1 : column));
+            assert(A4_WORD(0x2f8c)==(column>63 ? 63 : column));
+            assert(A4_WORD(0x2f8e)==(row<1 ? 1 : row));
+            assert(A4_WORD(0x2f90)==(row>63 ? 63 : row));
+        }
+        for (int y=0;y<64;++y) for (int x=0;x<64;++x) {
+            int cell=y*64+x;
+            int rebuilt=valid && x>=column-1 && x<=column && y>=row-1 && y<=row;
+            assert(A4_WORD(0xff88+cell*2)==(rebuilt ? 0 : 91));
+            assert(map_bk2[cell]==42);
+            if (!rebuilt) assert(map_blk[cell]==15 && map_alt[cell]==2);
+            else if (height==8) assert(map_blk[cell]==15 && map_alt[cell]==7);
+            else {
+                /* Vertex at BR/BL/TR/TL gives bits 4/8/2/1. */
+                int block=y==row ? (x==column ? 1 : 2) : (x==column ? 8 : 4);
+                assert(map_blk[cell]==block && map_alt[cell]==1);
+            }
+        }
+        assert_mailbox_empty();
+    }
+    for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint)
+    for (int diagnostic=0;diagnostic<2;++diagnostic) for (int war=0;war<2;++war)
+    for (int admitted=0;admitted<2;++admitted) {
+        terrain_mailbox_fixture(1);
+        paint_map=paint; diagnostic_view=diagnostic; A4_WORD(0xae80)=war;
+        game_mode=GAME_MODE_NO_BUILD|GAME_MODE_BUILD_NEAR_TOWNS|GAME_MODE_BUILD_ONLY_UP;
+        mode=3; core_tool=1; core_swamp_selected=1;
+        A4_WORD(0x82c4+owner*46)=0;
+        A4_LONG(0x848a)=20; A4_LONG(0x9a02+owner*16)=admitted ? 20 : UINT32_MAX;
+        terrain_mailbox_write(owner,1,20,30); game_tick();
+        assert(core_vertex(20,30)==1+(war || admitted));
+        assert(core_mana(owner)==(admitted ? (war ? 20 : 6) : -1));
+        assert(paint_map==paint && diagnostic_view==diagnostic && mode==3);
+        assert(core_tool==1 && core_swamp_selected==1);
+        assert_mailbox_empty();
+    }
+    /* Legal-height steep terrain exposes source recursion, not host cone-fill.
+     * A lone height 7 becomes 8; each initially flat neighbour is raised ONCE,
+     * leaving height 1, rather than being filled to height 7. */
+    terrain_mailbox_fixture(0); core_set_vertex(20,30,7);
+    A4_LONG(0x9a02)=10;
+    terrain_mailbox_write(0,1,20,30); game_tick();
+    assert(A4_WORD(0x2f88)==9 && core_mana(0)==-36);
+    for (int row=0;row<=64;++row) for (int column=0;column<=64;++column) {
+        int distance=abs(column-20)>abs(row-30) ? abs(column-20) : abs(row-30);
+        assert(core_vertex(column,row)==(distance==0 ? 8 : distance==1 ? 1 : 0));
+    }
+    /* With heights 0..8, recursion descends in height at every call: radius
+     * <=7, at most 225 vertices and <=1800 increments even on steep terrain.
+     * A negative signed-word cost cannot be reached without corrupt heights;
+     * do not fake build_count (the wrapper resets it) to manufacture that case. */
+    terrain_mailbox_fixture(0); core_set_vertex(20,30,7);
+    A4_WORD(0x82c4)=1;
+    assert(core_sculpt(0,20,30,1));
+    assert(core_vertex(21,30)==7); /* Raw recursion above leaves it at 1. */
+
+    /* A valid height-7 cone raises 225 vertices. Admission is not affordability;
+     * its 910 charge must not be truncated by core_sculpt's host -250 cap. */
+    terrain_mailbox_fixture(0);
+    for (int row=0;row<=64;++row) for (int column=0;column<=64;++column) {
+        int distance=abs(column-20)>abs(row-30) ? abs(column-20) : abs(row-30);
+        core_set_vertex(column,row,distance<7 ? 7-distance : 0);
+    }
+    A4_LONG(0x9a02)=10;
+    terrain_mailbox_write(0,1,20,30); game_tick();
+    assert(A4_WORD(0x2f88)==225 && core_mana(0)==-900);
+    assert(A4_WORD(0x2f8a)==13 && A4_WORD(0x2f8c)==27);
+    assert(A4_WORD(0x2f8e)==23 && A4_WORD(0x2f90)==37);
+    for (int row=0;row<=64;++row) for (int column=0;column<=64;++column) {
+        int distance=abs(column-20)>abs(row-30) ? abs(column-20) : abs(row-30);
+        assert(core_vertex(column,row)==(distance<8 ? 8-distance : 0));
+    }
+    for (int row=0;row<64;++row) for (int column=0;column<64;++column) {
+        int rebuilt=column>=12 && column<=27 && row>=22 && row<=37;
+        assert(A4_WORD(0xff88+2*(row*64+column))==(rebuilt ? 0 : 91));
+    }
+    /* Explicit unsigned 32-bit subtraction crosses INT32_MIN without C UB. */
+    terrain_mailbox_fixture(1);
+    A4_LONG(0x848a)=A4_LONG(0x9a02)=0x80000000u;
+    terrain_mailbox_write(0,1,20,30); game_tick();
+    assert(A4_LONG(0x9a02)==0x7ffffff2u);
+}
+static void test_terrain_mailbox_isolation(void)
+{
+    /* Saturated commands still rebuild exactly four cells, without repainting
+     * even a remote town. Compare the complete A4 image, including people,
+     * population caches, frames, RNG, score, stats and navigation history. */
+    terrain_mailbox_fixture(8);
+    peeps[0]=1; set_peep_word(0,12,42);
+    A4_LONG(0x99fe)=123; A4_LONG(0x9a0e)=456;
+    A4_LONG(0xae72)=789;
+    terrain_mailbox_write(0,1,20,30); terrain_mailbox_write(1,255,50,50);
+    _Alignas(4) uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+    uint8_t *live=prg_a4; prg_a4=expected+32768;
+    A4_LONG(0x9a02)=9990; A4_WORD(0x2f88)=0;
+    A4_WORD(0x2f8a)=A4_WORD(0x2f8c)=20;
+    A4_WORD(0x2f8e)=A4_WORD(0x2f90)=30;
+    for (int row=29;row<=30;++row) for (int column=19;column<=20;++column) {
+        map_alt[row*64+column]=7;
+        A4_WORD(0xff88+2*(row*64+column))=0;
+    }
+    for (int owner=0;owner<2;++owner) memset(A4_DISP(0x82b6+owner*46),0,3);
+    prg_a4=live;
+    core_consume_terrain_mailboxes();
+    assert(!memcmp(expected,prg_a4_area,sizeof expected));
+
+    /* Movement does not consume pending terrain; a nonterminal water casualty
+     * takes its damage before a later raise rebuilds its cell. */
+    terrain_mailbox_fixture(0);
+    map_blk[400]=0; A4_WORD(0x2fb0)=3;
+    terrain_mailbox_write(0,1,16,6);
+    _move_peeps();
+    assert(core_vertex(16,6)==0 && A4_DISP(0x82b6)[0]==1 && core_mana(0)==10000);
+    assert(peep_word(0,4)==39);
+    terrain_mailbox_fixture(0);
+    map_blk[400]=0; A4_WORD(0x2fb0)=3;
+    terrain_mailbox_write(0,1,16,6);
+    game_tick();
+    assert(peep_word(0,4)==39 && A4_LONG(0x99fe)==39 && !core_result);
+    assert(core_vertex(16,6)==1 && map_blk[400]==17);
+    assert_mailbox_empty();
+
+    /* The guard must report the zero divisor, not silently substitute one. */
+    terrain_mailbox_fixture(1);
+    A4_WORD(0x82bc)=1; A4_WORD(0x82c6)=0;
+    terrain_mailbox_write(0,1,20,30); terrain_mailbox_write(1,1,21,30);
+    FILE *diagnostics=tmpfile(); assert(diagnostics);
+    fflush(stderr); int saved_stderr=dup(STDERR_FILENO); assert(saved_stderr>=0);
+    assert(dup2(fileno(diagnostics),STDERR_FILENO)>=0);
+    core_consume_terrain_mailboxes();
+    fflush(stderr); assert(dup2(saved_stderr,STDERR_FILENO)>=0); assert(!close(saved_stderr));
+    rewind(diagnostics); char message[256]; assert(fgets(message,sizeof message,diagnostics));
+    assert(strstr(message,"owner 0") && strstr(message,"zero") && strstr(message,"divisor"));
+    assert(!fclose(diagnostics));
+    assert(core_vertex(20,30)==1 && core_vertex(21,30)==2);
+    assert(core_mana(0)==10000 && core_mana(1)==9986 && A4_WORD(0x82be)==17);
+    assert_mailbox_empty();
+}
+static void test_terrain_mailbox(void)
+{
+    test_terrain_mailbox_tick(); test_terrain_mailbox_cadence(); test_terrain_mailbox_gates();
+    test_terrain_mailbox_raise(); test_terrain_mailbox_isolation();
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--terrain-mailbox")) {
+        test_terrain_mailbox();
+        prepare_rule_data(); test_terrain_defaults(); cleanup_rule_data();
+        puts("focused terrain mailbox/defaults: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--magnet")) {
         test_magnet();
         puts("focused magnet regression: PASS");
@@ -3225,6 +3562,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_terrain_mailbox();
     test_magnet();
     test_war_state();
     test_remnant_timer(); test_remnant_occupancy_and_state();
@@ -3243,6 +3581,7 @@ int main(int argc, char **argv)
     test_original_generator();
     test_original_placement();
     prepare_rule_data();
+    test_terrain_defaults();
     test_volcano_input(); test_volcano_render();
     test_flood_input();
     test_quake_input();

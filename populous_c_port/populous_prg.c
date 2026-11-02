@@ -1167,6 +1167,60 @@ static int original_raise_point(int column, int row)
     return core_vertex(column, row);
 }
 
+/* _do_raise_point asm:7180-7246, gameplay path only. Diagnostic P is not
+ * the original editor: it never bypasses admission or payment. */
+static int core_raw_raise(int owner, int column, int row)
+{
+    if (owner < 0 || owner > 1 || column < 0 || column > 64 || row < 0 || row > 64)
+        return 0;
+    /* Convert the signed long comparison without out-of-range signed casts. */
+    uint32_t mana = A4_LONG(0x9a02 + owner * 16), threshold = A4_LONG(0x848a);
+    if (!A4_WORD(0xae80) && (mana ^ 0x80000000u) < (threshold ^ 0x80000000u)) return 0;
+    A4_WORD(0x2f8a) = A4_WORD(0x2f8c) = column;
+    A4_WORD(0x2f8e) = A4_WORD(0x2f90) = row;
+    A4_WORD(0x2f88) = 0;
+    original_raise_point(column, row);
+    if (!A4_WORD(0xae80)) {
+        unsigned word_cost = ((uint16_t)A4_WORD(0x2f88) * 4u + 10u) & 0xffffu;
+        int32_t cost = word_cost < 0x8000u ? (int32_t)word_cost : (int32_t)word_cost - 65536;
+        /* SUB.L wraps in 32 bits. Unlike core_sculpt/core_add_mana, no host cap. */
+        A4_LONG(0x9a02 + owner * 16) = mana - (uint32_t)cost;
+    }
+    if (A4_WORD(0x2f8a) < 1) A4_WORD(0x2f8a) = 1;
+    if (A4_WORD(0x2f8c) > 63) A4_WORD(0x2f8c) = 63;
+    if (A4_WORD(0x2f8e) < 1) A4_WORD(0x2f8e) = 1;
+    if (A4_WORD(0x2f90) > 63) A4_WORD(0x2f90) = 63;
+    core_make_map_region(A4_WORD(0x2f8a)-1, A4_WORD(0x2f8e)-1,
+                         A4_WORD(0x2f8c), A4_WORD(0x2f90));
+    return 1;
+}
+
+/* _clear_send asm:18234-18254: only command/x/y, never the controller state. */
+static void core_clear_terrain_mailboxes(void)
+{
+    for (int owner = 0; owner < 2; ++owner) memset(A4_DISP(0x82b6 + owner * 46), 0, 3);
+}
+
+/* _get_message asm:17929-17995,18218-18229. No serial/editor/UI producers yet.
+ * Cadence clears the latch independently of the opcode, including empty slots. */
+static void core_consume_terrain_mailboxes(void)
+{
+    for (int owner = 0; owner < 2; ++owner) {
+        int displacement = owner * 46;
+        if (A4_WORD(0x82bc + displacement) == 1) {
+            unsigned divisor = (uint16_t)A4_WORD(0x82c6 + displacement);
+            if (!divisor) {
+                fprintf(stderr, "Terrain mailbox owner %d: zero cadence divisor; command discarded, latch preserved\n", owner);
+                continue;
+            }
+            if ((uint16_t)game_turn % divisor == 0) A4_WORD(0x82be + displacement) = 0;
+        }
+        if (A4_DISP(0x82b6 + displacement)[0] == 1)
+            core_raw_raise(owner, A4_DISP(0x82b7 + displacement)[0], A4_DISP(0x82b8 + displacement)[0]);
+    }
+    core_clear_terrain_mailboxes();
+}
+
 /* _lower_point asm:2571-2713: ADDQ.W build_count, then SUBQ.W height.
  * Keep the source recursive neighbour order, but bounds-check before reads. */
 static int original_lower_point(int column, int row)
@@ -1488,6 +1542,11 @@ static int game_reset_start(StartSelection selection)
         }
         terrain = original.record.terrain;
     } else terrain = demo_levels[scenario][5];
+    unsigned selected_speed = selection.kind == START_ORIGINAL ? original.record.speed : demo_levels[scenario][1];
+    if (!selected_speed) {
+        fprintf(stderr, "Start %d rejected: unsupported zero terrain mailbox cadence divisor\n", scenario);
+        return 0;
+    }
     if (!land_rules_load(directory, terrain, &loaded, error, sizeof error)) {
         fprintf(stderr,"Original LAND data: %s. Set POPULOUS_DATA_DIR to extracted land0..3.\n",error);
         return 0;
@@ -1548,6 +1607,12 @@ static int game_reset_start(StartSelection selection)
         demo_shield_timer = growth_tick = 0;
         prg_quit = 0;
     }
+    /* Conquest start asm:12762-12767 and speed asm:409-411, not static "abc".
+     * Publish only after all fallible generation/asset work has succeeded. */
+    core_clear_terrain_mailboxes();
+    A4_WORD(0x82bc) = 0; A4_WORD(0x82bc + 46) = 1;
+    A4_WORD(0x82be) = 1; A4_WORD(0x82be + 46) = 0;
+    A4_WORD(0x82c6) = 1; A4_WORD(0x82c6 + 46) = selected_speed;
     core_result = core_battles = core_settlements = core_tool = core_swamp_selected = 0;
     xoff = yoff = 6;
     if (selection.kind == START_ORIGINAL) {
@@ -1572,6 +1637,9 @@ static void game_tick(void)
     int friendly = core_population(0), enemy = core_population(1);
     A4_LONG(0x99fe) = friendly; A4_LONG(0x9a0e) = enemy;
     if (!friendly || !enemy) core_result = !friendly ? (enemy ? 2 : 3) : 1;
+    /* Preserve the C population/result timing; never modify terrain mid-movement. */
+    if (core_result) core_clear_terrain_mailboxes();
+    else core_consume_terrain_mailboxes();
 }
 
 static void game_render(void)
