@@ -287,7 +287,50 @@ static void set_peep_word(int index, int offset, int16_t value)
 {
     memcpy(peeps + index * 22 + offset, &value, sizeof value);
 }
+/* Bytes 14..17: host-endian uint32_t, zero absent, slot+1 otherwise.
+ * Original values were Amiga pointers (0x53014 + 22*slot), not this encoding;
+ * this is not a save format. Opaque fixtures/presence checks stay opaque.
+ * Decode returns -1 for absent, -2 for invalid, or a current peeps slot.
+ * Slot reuse intentionally retains identity: no pointer or generation cache. */
+static int peep_reference(int subject)
+{
+    if (no_peeps < 0 || no_peeps > 208 || subject < 0 || subject >= no_peeps) return -2;
+    uint32_t raw;
+    memcpy(&raw,peeps+subject*22+14,sizeof raw);
+    if (raw > (uint32_t)no_peeps || raw > 208) return -2;
+    return (int)raw-1;
+}
+static int set_peep_reference(int subject, int target)
+{
+    if (no_peeps < 0 || no_peeps > 208 || subject < 0 || subject >= no_peeps ||
+        target < -1 || target >= no_peeps) return 0;
+    uint32_t raw=(uint32_t)(target+1);
+    memcpy(peeps+subject*22+14,&raw,sizeof raw);
+    return 1;
+}
 static int peep_owner(int index) { return peeps[index * 22 + 1]; }
+/* _get_heading asm:5469-5536. Dormant dependency only: no knight creation or
+ * heading navigation is enabled. The original ASR.W #6 floors negative rows;
+ * use division explicitly so signed right shift is not implementation-defined. */
+static int core_get_heading(int subject)
+{
+    if (!set_peep_reference(subject,subject)) return 0;
+    int position=peep_word(subject,8), column=(uint16_t)position&63;
+    int row=position >= 0 ? position/64 : -((-position+63)/64);
+    int nearest=9999;
+    for (int candidate=0;candidate<no_peeps;++candidate) {
+        if (peep_owner(candidate)==peep_owner(subject) || peep_word(candidate,4)<=0 ||
+            (peeps[candidate*22]&0x80)) continue;
+        int other=peep_word(candidate,8), other_column=(uint16_t)other&63;
+        int other_row=other >= 0 ? other/64 : -((-other+63)/64);
+        int distance=abs(other_column-column)+abs(other_row-row);
+        if (distance < nearest) {
+            nearest=distance;
+            set_peep_reference(subject,candidate);
+        }
+    }
+    return 1;
+}
 static int peep_screen_x(int index) { return (peep_word(index, 8) % 64) * 4 + 2; }
 static int peep_screen_y(int index) { return (peep_word(index, 8) / 64) * 4 + 2; }
 

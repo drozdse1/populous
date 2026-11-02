@@ -105,6 +105,18 @@ commands, enters combat at tick 41 and reaches mutual extinction at tick 45 in
 normal and sanitized builds. This is a prerequisite integration test, not an
 original campaign trace or a human-playability claim.
 
+Heading target selection (`_get_heading`) now has a bounded implementation:
+self when no enemy qualifies, otherwise the first nearest living different-owner
+record without bit 7, using Manhattan distance and no path/occupancy filter.
+The host stores a one-based slot in the existing four-byte field (zero is absent),
+read and written via `memcpy`. Checked resolution uses the current A4 backing;
+these values are neither native pointers nor original save-file bytes. Transfers
+preserve the referenced slot, including a donor's self-reference. Live heading
+navigation and knight creation remain disabled until their consumers are migrated.
+All slot roundtrips, signed positions, ties, relocation and transfer cases pass
+normally and under sanitizers. An independent selector matched 10,000 generated
+record sets; full suites, original-data matches and all 495 starts also passed.
+
 The original `_load_ground` reads gameplay tables from `landN` files, including
 `population_add`, `mana_add`, `weapons_add`, `battle_add1` and `battle_add2`
 (`src/populous_prg.asm:16468-16514`). Reset validates the selected file before

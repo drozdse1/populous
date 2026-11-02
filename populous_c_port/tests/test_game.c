@@ -3939,8 +3939,216 @@ static void test_armageddon_original(const char *directory)
     _closeall(); SDL_Quit();
 }
 
+/* Host references are slot identities, not serialized Amiga addresses. */
+static void heading_fixture(int count)
+{
+    memset(prg_a4_area,0xa5,sizeof prg_a4_area);
+    no_peeps=count;
+    for (int person=0;person<208;++person) {
+        peeps[person*22]=2; peeps[person*22+1]=0;
+        set_peep_word(person,4,100); set_peep_word(person,8,650);
+    }
+}
+
+static void assert_heading(int subject, uint32_t expected_reference)
+{
+    uint8_t expected[sizeof prg_a4_area];
+    memcpy(expected,prg_a4_area,sizeof expected);
+    size_t offset=(size_t)(peeps+subject*22+14-prg_a4_area);
+    memcpy(expected+offset,&expected_reference,4);
+    assert(core_get_heading(subject));
+    /* Catches RNG, map, other-record and adjacent-field writes too. */
+    assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    assert(peep_reference(subject)==(int)expected_reference-1);
+}
+
+static void test_peep_references(void)
+{
+    /* Catch zero-based/self-zero encoding, narrow/overwide copies, and unchecked
+     * decoding. All records (including two-byte-aligned ones) round-trip. */
+    heading_fixture(208);
+    for (int subject=0;subject<208;++subject) {
+        for (int target=-1;target<208;++target) {
+            uint8_t expected[sizeof prg_a4_area];
+            memcpy(expected,prg_a4_area,sizeof expected);
+            uint32_t raw=(uint32_t)(target+1);
+            size_t offset=(size_t)(peeps+subject*22+14-prg_a4_area);
+            memcpy(expected+offset,&raw,4);
+            assert(set_peep_reference(subject,target));
+            assert(peep_reference(subject)==target);
+            assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        }
+    }
+    const uint32_t raw_values[]={0,1,2,208,209,UINT32_MAX,0x53014};
+    const int decoded_full[]={-1,0,1,207,-2,-2,-2};
+    const int decoded_one[]={-1,0,-2,-2,-2,-2,-2};
+    for (unsigned sample=0;sample<sizeof raw_values/sizeof raw_values[0];++sample) {
+        heading_fixture(208);
+        memcpy(peeps+14,&raw_values[sample],4);
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(peep_reference(0)==decoded_full[sample]);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        no_peeps=1;
+        assert(peep_reference(0)==decoded_one[sample]);
+    }
+    const int counts[]={-1,0,1,207,208,209};
+    const int subjects[]={INT_MIN,-1,0,1,206,207,208,INT_MAX};
+    for (unsigned count=0;count<sizeof counts/sizeof counts[0];++count)
+    for (unsigned sample=0;sample<sizeof subjects/sizeof subjects[0];++sample) {
+        heading_fixture(counts[count]);
+        int subject=subjects[sample];
+        if (counts[count]>=1 && counts[count]<=208 && subject>=0 && subject<counts[count]) continue;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(peep_reference(subject)==-2);
+        assert(!set_peep_reference(subject,0));
+        assert(!set_peep_reference(subject,-1));
+        assert(!core_get_heading(subject));
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    const int targets[]={INT_MIN,-2,1,207,208,INT_MAX};
+    heading_fixture(1);
+    for (unsigned sample=0;sample<sizeof targets/sizeof targets[0];++sample) {
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(!set_peep_reference(0,targets[sample]));
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+}
+
+static void test_heading_selection(void)
+{
+    /* No eligible enemy overwrites stale/absent references with self, including
+     * the first and last allocated slots. Count, not capacity, bounds the scan. */
+    heading_fixture(1); peeps[23]=1; set_peep_word(1,8,650);
+    assert_heading(0,1);
+    heading_fixture(208); assert_heading(207,208);
+    heading_fixture(208); assert(set_peep_reference(0,-1)); assert_heading(0,1);
+    heading_fixture(208); peeps[207*22+1]=1; assert_heading(0,208);
+    heading_fixture(208); peeps[1]=1; assert_heading(207,1);
+
+    heading_fixture(5);
+    peeps[23]=peeps[45]=peeps[67]=peeps[89]=1;
+    set_peep_word(1,8,654); /* distance 4 */
+    set_peep_word(2,8,648); /* distance 2 */
+    set_peep_word(3,8,778); /* distance 2, loses ascending tie */
+    set_peep_word(4,8,653); /* distance 3 */
+    assert_heading(0,3);
+    set_peep_word(4,8,650); assert_heading(0,5); /* Same-cell enemy allowed. */
+    set_peep_word(1,8,650); assert_heading(0,2);
+
+    /* Compare full unsigned owner bytes, not boolean sides or signed bytes. */
+    const uint8_t owners[]={0,1,2,127,128,255};
+    for (unsigned source=0;source<sizeof owners;++source)
+    for (unsigned target=0;target<sizeof owners;++target) {
+        heading_fixture(2); peeps[1]=owners[source]; peeps[23]=owners[target];
+        assert_heading(0,owners[source]==owners[target] ? 1 : 2);
+    }
+    /* Every state below bit 7 is eligible, including town, battle and waiting;
+     * every combination containing bit 7 is excluded, regardless of other bits. */
+    const int populations[]={INT16_MIN,-1,0,1,INT16_MAX};
+    for (int flags=0;flags<256;++flags)
+    for (unsigned population=0;population<sizeof populations/sizeof populations[0];++population) {
+        heading_fixture(2); peeps[22]=flags; peeps[23]=1;
+        set_peep_word(1,4,populations[population]);
+        assert_heading(0,flags<128 && populations[population]>0 ? 2 : 1);
+    }
+}
+
+static void test_heading_signed_positions(void)
+{
+    /* Literal distances expose unsigned rows, truncation instead of ASR floor,
+     * map-range rejection, toroidal wrap, and masking the complete position. */
+    const int cases[][4]={
+        {0,63,2,3},             /* 63 versus 2, not wrapped 1 versus 2 */
+        {0,4032,128,3},         /* rows 63 versus 2, no vertical wrap */
+        {0,-32768,32767,2},     /* 512 versus 574 */
+        {-32768,32767,-1,3},    /* 1086 versus 574 */
+        {-1,32767,-32768,2},    /* 512 versus 574 */
+        {-1,0,63,3},            /* 64 versus 1 */
+        {63,-1,-64,2},          /* 1 versus 64 */
+        {0,-1,64,3},            /* 64 versus 1 */
+        {32767,-32768,-1,3},    /* 1086 versus 512 */
+        {0,32767,32767,2}       /* Farther than map rows, still eligible/tie first. */
+    };
+    for (unsigned sample=0;sample<sizeof cases/sizeof cases[0];++sample) {
+        heading_fixture(3); peeps[23]=peeps[45]=1;
+        for (int person=0;person<3;++person) set_peep_word(person,8,cases[sample][person]);
+        assert_heading(0,(uint32_t)cases[sample][3]);
+    }
+    /* -1 is row -1, not row zero: floor changes the winner, not just distance. */
+    heading_fixture(3); peeps[23]=peeps[45]=1;
+    set_peep_word(0,8,63); set_peep_word(1,8,-1); set_peep_word(2,8,63);
+    assert_heading(0,3);
+}
+
+static void test_heading_relocation(void)
+{
+    heading_fixture(208);
+    assert(set_peep_reference(0,207)); assert(set_peep_reference(207,0));
+    _Alignas(4) uint8_t staged[sizeof prg_a4_area];
+    memcpy(staged,prg_a4_area,sizeof staged);
+    uint8_t *original=prg_a4;
+    prg_a4=staged+32768;
+    assert(peep_reference(0)==207 && peep_reference(207)==0);
+    peeps[207*22+1]=255; set_peep_word(207,4,1234);
+    assert(peep_owner(peep_reference(0))==255 && peep_word(peep_reference(0),4)==1234);
+    assert(core_get_heading(0)); assert(peep_reference(0)==207);
+    assert(set_peep_reference(207,-1)); assert(peep_reference(207)==-1);
+    prg_a4=original;
+    assert(peep_owner(peep_reference(0))==0 && peep_word(peep_reference(0),4)==100);
+    assert(peep_reference(207)==0);
+    /* An A4 image can also be copied back without pointer fixups. */
+    memcpy(prg_a4_area,staged,sizeof staged);
+    assert(peep_reference(0)==207 && peep_word(peep_reference(0),4)==1234);
+    assert(peep_reference(207)==-1);
+}
+
+static void test_heading_reference_transfers(void)
+{
+    /* Donor-self must stay donor-self on the recipient, even after donor removal
+     * and reuse. Do not rebase, eagerly clear, or add generation identity. */
+    for (int source=0;source<2;++source) for (int target=0;target<3;++target) {
+        setup_friendly_merge(source,0);
+        assert(set_peep_reference(source,target));
+        uint8_t reference[4]; memcpy(reference,peeps+source*22+14,4);
+        core_join_forces(source,1-source);
+        assert(!peep_word(source,4) && peep_word(1-source,4)==300);
+        assert(!memcmp(reference,peeps+(1-source)*22+14,4));
+        assert(peep_reference(1-source)==target);
+        peeps[source*22]=2; set_peep_word(source,4,77);
+        assert(peep_reference(1-source)==target);
+        if (target==source) assert(peep_word(peep_reference(1-source),4)==77);
+    }
+    for (int source=0;source<=2;source+=2) for (int owner=0;owner<2;++owner)
+    for (int target=0;target<4;++target) {
+        setup_reinforcement(source,owner,1,0);
+        int first=source==0 ? 1 : 0, recipient=first+owner;
+        assert(set_peep_reference(source,target));
+        uint8_t reference[4]; memcpy(reference,peeps+source*22+14,4);
+        core_join_battle(source,first);
+        assert(!peep_word(source,4) && peep_word(recipient,4)==145);
+        assert(!memcmp(reference,peeps+recipient*22+14,4));
+        assert(peep_reference(recipient)==target);
+        peeps[source*22]=2; set_peep_word(source,4,77);
+        assert(peep_reference(recipient)==target);
+        if (target==source) assert(peep_word(peep_reference(recipient),4)==77);
+    }
+    armageddon_fixture(); no_peeps=208;
+    for (int person=0;person<208;++person) assert(set_peep_reference(person,207-person));
+    assert(core_war(0));
+    for (int person=0;person<208;++person) assert(peep_reference(person)==-1);
+}
+
+static void test_heading(void)
+{
+    test_peep_references(); test_heading_selection(); test_heading_signed_positions();
+    test_heading_relocation(); test_heading_reference_transfers();
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--heading")) {
+        test_heading(); puts("focused heading/reference regression: PASS"); return 0;
+    }
     if (argc==3 && !strcmp(argv[1],"--armageddon")) {
         test_armageddon_original(argv[2]); return 0;
     }
@@ -4045,6 +4253,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_heading();
     test_armageddon_input_smoke(); test_armageddon_cast(); test_armageddon_delayed(); test_armageddon_islands();
     test_war_terrain();
     test_terrain_mailbox();
