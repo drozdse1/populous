@@ -1019,7 +1019,16 @@ static void core_move(int person)
 static void core_settle_tick(int person)
 {
     int owner = peep_owner(person), position = peep_word(person,8), capacity = core_check_life(owner,position);
-    if (!capacity) { core_set_town(person,1); peeps[person*22] = 2; set_peep_word(person,12,0); return; }
+    /* asm:3600-3633: caller dispatches exact peaceful towns. Metadata is an
+     * opaque four-byte Amiga field, never a native pointer. */
+    uint32_t metadata;
+    memcpy(&metadata,peeps+person*22+14,sizeof metadata);
+    if (capacity <= 0 || metadata || A4_WORD(0xae80)) {
+        peeps[person*22] = (peeps[person*22]&0xfe)|2;
+        set_peep_word(person,12,0); set_peep_word(person,10,0);
+        core_set_town(person,1);
+        return;
+    }
     core_frame_town(person,capacity); core_set_town(person,0);
     /* asm:3667-3677: reclaim a departed walker's slot, never another occupant. */
     if (!map_who[position]) map_who[position] = person+1;
@@ -2014,6 +2023,11 @@ static int core_frame_walker(int person)
 }
 static void _move_peeps(void)
 {
+    /* asm:3425-3432: consume war state even with no living residents. */
+    if (A4_WORD(0xae80)) {
+        core_target(0) = core_target(1) = 0x820;
+        A4_WORD(0xae78) = A4_WORD(0xae76) = 0x820;
+    }
     /* Ordinary walker/town/battle/remnant consumption; special producers disabled. */
     for (int person = 0; person < no_peeps; ++person) {
         if (peep_word(person,4) <= 0) continue;
@@ -2045,7 +2059,7 @@ static void _move_peeps(void)
             }
             /* A retry can create a reciprocal battle before attrition kills us. */
             if (peep_word(person,4)<=0) core_remove(person);
-        } else if (flags&1) core_settle_tick(person);
+        } else if (flags == 1) core_settle_tick(person);
         else if (flags == 0x80) {
             /* asm:4283-4315: ordinary remnant, not a knight flag. Water and
              * waiting/battle dispatch stay ahead; no heading-winner producer. */

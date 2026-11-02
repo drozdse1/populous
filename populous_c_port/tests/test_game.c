@@ -1149,6 +1149,202 @@ static void test_remnant_collision(void)
     }
 }
 
+/* Consumer-only fixtures: no Armageddon producer or war navigation enabled. */
+static void setup_war_town(int owner, int position, int city)
+{
+    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(map_blk,15,4096);
+    no_peeps=1; core_result=prg_quit=core_battles=core_settlements=0;
+    peeps[0]=1; peeps[1]=owner; peeps[2]=3; peeps[3]=7;
+    set_peep_word(0,4,3100); set_peep_word(0,6,1234);
+    set_peep_word(0,8,position); set_peep_word(0,10,-65);
+    set_peep_word(0,12,city ? 42 : 37);
+    for (int byte=18; byte<22; ++byte) peeps[byte]=0x80+byte;
+    core_set_town(0,0); map_who[position]=1;
+    core_leader(owner)=1; core_leader(1-owner)=2; view_who=1;
+    core_tendency(0)=3; core_tendency(1)=2;
+    A4_LONG(0x9a02)=12345; A4_LONG(0x9a12)=23456;
+    seed=123; game_turn=8; A4_WORD(0x2fb0)=1;
+    for (int level=0; level<11; ++level) {
+        A4_WORD(0x2fb6+level*2)=17; A4_WORD(0x2fcc+level*2)=9;
+        A4_WORD(0x2fe2+level*2)=11;
+    }
+}
+
+static void test_war_target_reset(void)
+{
+    const int wars[] = {0,1,0x8000,0xffff};
+    for (unsigned sample=0; sample<sizeof wars/sizeof wars[0]; ++sample)
+        for (int records=0; records<=2; ++records) {
+            setup_war_town(0,650,1); no_peeps=records;
+            set_peep_word(0,4,0); set_peep_word(1,4,-1);
+            peeps[14]=0x80; peeps[22+17]=0xff;
+            A4_WORD(0xae80)=wars[sample];
+            for (int repeat=0; repeat<3; ++repeat) {
+                core_target(0)=101+repeat; core_target(1)=201+repeat;
+                A4_WORD(0xae78)=301+repeat; A4_WORD(0xae76)=401+repeat;
+                uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+                _move_peeps();
+                assert(core_target(0)==(wars[sample] ? 0x820 : 101+repeat));
+                assert(core_target(1)==(wars[sample] ? 0x820 : 201+repeat));
+                assert(A4_WORD(0xae78)==(wars[sample] ? 0x820 : 301+repeat));
+                assert(A4_WORD(0xae76)==(wars[sample] ? 0x820 : 401+repeat));
+                core_target(0)=101+repeat; core_target(1)=201+repeat;
+                A4_WORD(0xae78)=301+repeat; A4_WORD(0xae76)=401+repeat;
+                assert(!memcmp(before,prg_a4_area,sizeof before));
+            }
+        }
+    for (int gate=0; gate<5; ++gate) {
+        setup_war_town(0,650,1); A4_WORD(0xae80)=1;
+        core_target(0)=123; core_target(1)=456;
+        A4_WORD(0xae78)=789; A4_WORD(0xae76)=987;
+        pause=gate==0; prg_quit=gate==1; core_result=gate>=2 ? gate-1 : 0;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        game_tick();
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+}
+
+static void test_war_evacuation(void)
+{
+    /* Catch missing war/zero-capacity/any-byte metadata predicates, early
+     * growth/splitting, lost metadata, and occupancy reclamation on evacuation. */
+    for (int owner=0; owner<2; ++owner) for (int trigger=0; trigger<10; ++trigger)
+        for (int occupant=0; occupant<=2; ++occupant) for (int direct=0; direct<=1; ++direct) {
+            setup_war_town(owner,650,1);
+            if (trigger==0) A4_WORD(0xae80)=1;
+            else if (trigger==1) map_blk[650]=1;
+            else peeps[14+(trigger-2)/2]=(trigger&1) ? 0x80 : 1;
+            map_who[650]=occupant;
+            assert(core_check_life(owner,650)==(trigger==1 ? 0 : 3050));
+            A4_WORD(0x2ff8)=A4_WORD(0x2fb2)=-1;
+            uint8_t records[208*22], occupancy[4096];
+            memcpy(records,peeps,sizeof records); memcpy(occupancy,map_who,sizeof occupancy);
+            records[0]=2; memset(records+10,0,4);
+            if (direct) core_settle_tick(0); else _move_peeps();
+            assert(!memcmp(records,peeps,sizeof records));
+            assert(!memcmp(occupancy,map_who,sizeof occupancy) && no_peeps==1);
+            assert(!map_bk2[650] && map_blk[650]==(trigger==1 ? 1 : 15));
+            assert(core_leader(owner)==1 && core_leader(1-owner)==2 && view_who==1);
+            assert(core_tendency(0)==3 && core_tendency(1)==2 && seed==123);
+            assert(core_mana(0)==12345 && core_mana(1)==23456);
+            assert(!core_battles && !core_settlements && game_turn==8);
+            assert(A4_WORD(0x2ff8)!=(int16_t)-1 && A4_WORD(0x2fb2)!=(int16_t)-1);
+        }
+    /* Peace without metadata still grows, pays mana, and splits at tick eight. */
+    for (int split=0; split<=1; ++split) {
+        setup_war_town(0,650,1); set_peep_word(0,4,split ? 3100 : 100);
+        core_settle_tick(0);
+        assert(peeps[0]==1 && peep_word(0,12)==42 && map_bk2[650]==42);
+        assert(peep_word(0,4)==(split ? 1536 : 111) && core_mana(0)==12362);
+        assert(peeps[3]==9 && no_peeps==1+split);
+        if (split) assert(peeps[22]==2 && peep_word(1,4)==1575 && core_leader(0)==2);
+    }
+}
+
+static void test_war_town_footprint(void)
+{
+    const int positions[] = {650,0,63,4032,4095,32,2048,2111,4064};
+    /* Independent coordinate sets for the original 17-cell ordinary footprint
+     * and 25-cell city; never derive expected removal with core_set_town. */
+    for (int owner=0; owner<2; ++owner) for (int city=0; city<=1; ++city)
+        for (unsigned sample=0; sample<sizeof positions/sizeof positions[0]; ++sample) {
+            int position=positions[sample];
+            setup_war_town(owner,position,city); A4_WORD(0xae80)=1;
+            const uint8_t terrain[] = {31,32,53,47,0,1,15};
+            uint8_t blocks[4096], buildings[4096], altitude[4096], history[8192], heights[65*65*2];
+            for (int cell=0; cell<4096; ++cell) {
+                map_blk[cell]=terrain[cell%7]; map_bk2[cell]=55;
+                map_alt[cell]=cell%8; A4_WORD(0xff88+cell*2)=cell+123;
+            }
+            map_blk[position]=31+owner; map_bk2[position]=city ? 42 : 37;
+            for (int row=0; row<=64; ++row) for (int column=0; column<=64; ++column)
+                core_set_vertex(column,row,(column+row)%9);
+            memcpy(blocks,map_blk,sizeof blocks); memcpy(buildings,map_bk2,sizeof buildings);
+            memcpy(altitude,map_alt,sizeof altitude); memcpy(history,map_steps,sizeof history);
+            memcpy(heights,A4_DISP(0xae86),sizeof heights);
+            for (int cell=0; cell<4096; ++cell) {
+                int dx=abs(cell%64-position%64), dy=abs(cell/64-position/64);
+                int inner=dx<=1 && dy<=1;
+                int ordinary=inner || (dx==2 && (dy==0 || dy==2)) || (dy==2 && dx==0);
+                int footprint=city ? dx<=2 && dy<=2 : ordinary;
+                if (footprint && blocks[cell]==31+owner) blocks[cell]=15;
+                if ((city && footprint) || inner) buildings[cell]=0;
+            }
+            _move_peeps();
+            assert(peeps[0]==2 && !peep_word(0,10) && !peep_word(0,12));
+            assert(!memcmp(blocks,map_blk,sizeof blocks) && !memcmp(buildings,map_bk2,sizeof buildings));
+            assert(!memcmp(altitude,map_alt,sizeof altitude) && !memcmp(history,map_steps,sizeof history));
+            assert(!memcmp(heights,A4_DISP(0xae86),sizeof heights));
+        }
+}
+
+static void test_war_dispatch(void)
+{
+    const int mixed[] = {3,5,7,0x81,0x83};
+    for (unsigned sample=0; sample<sizeof mixed/sizeof mixed[0]; ++sample) {
+        setup_war_town(0,650,1); peeps[0]=mixed[sample]; A4_WORD(0xae80)=1;
+        peeps[17]=0x80;
+        uint8_t record[22], blocks[4096], buildings[4096];
+        memcpy(record,peeps,sizeof record); memcpy(blocks,map_blk,sizeof blocks);
+        memcpy(buildings,map_bk2,sizeof buildings);
+        _move_peeps();
+        assert(!memcmp(record,peeps,sizeof record));
+        assert(!memcmp(blocks,map_blk,sizeof blocks) && !memcmp(buildings,map_bk2,sizeof buildings));
+        assert(core_mana(0)==12345 && seed==123);
+    }
+    for (int flags=0x21; flags<=0x61; flags+=0x20) {
+        setup_war_town(0,650,1); peeps[0]=flags; A4_WORD(0xae80)=1;
+        set_peep_word(0,6,7);
+        _move_peeps();
+        assert(peeps[0]==flags && peep_word(0,4)==3099 && peep_word(0,6)==8);
+        assert(peep_word(0,12)==101 && peep_word(0,10)==-65 && map_bk2[650]==42);
+    }
+    for (int fatal=0; fatal<=1; ++fatal) {
+        setup_war_town(0,650,1); A4_WORD(0xae80)=1;
+        map_blk[650]=0; game_mode=fatal;
+        _move_peeps();
+        assert(peeps[0]==(fatal ? 0 : 18) && peep_word(0,4)==(fatal ? 0 : 3098));
+        assert(peep_word(0,12)==42 && peep_word(0,10)==-65 && !map_bk2[650]);
+        assert(map_who[650]==!fatal && core_mana(0)==12345 && seed==123);
+    }
+    /* Reciprocal town battle still fights (even on water), never evacuates. */
+    for (int water=0; water<=1; ++water) {
+        setup_war_town(0,650,1); A4_WORD(0xae80)=1; no_peeps=2;
+        peeps[0]=9; peeps[22]=8; peeps[23]=1; peeps[25]=1;
+        set_peep_word(0,4,100); set_peep_word(1,4,100);
+        set_peep_word(0,6,1); set_peep_word(1,6,0); set_peep_word(1,8,650);
+        if (water) map_blk[650]=0;
+        _move_peeps();
+        assert(peeps[0]==9 && peeps[22]==8 && peep_word(0,4)<100 && peep_word(1,4)<100);
+        assert(peep_word(0,12)==42 && peep_word(0,10)==-65 && map_bk2[650]==42);
+        assert(core_mana(0)==12345 && core_mana(1)==23456 && seed!=123);
+    }
+}
+
+static void test_war_tick_totals(void)
+{
+    setup_war_town(0,650,1); no_peeps=2; A4_WORD(0xae80)=1; game_turn=7;
+    memcpy(peeps+22,peeps,22); peeps[23]=1;
+    set_peep_word(1,8,3250); set_peep_word(1,4,2100);
+    core_set_town(1,0); map_who[3250]=2;
+    game_tick();
+    assert(game_turn==8 && !core_result && no_peeps==2);
+    assert(peeps[0]==2 && peeps[22]==2 && !peep_word(0,12) && !peep_word(1,12));
+    assert(A4_LONG(0x99fe)==3100 && A4_LONG(0x9a0e)==2100);
+    assert(core_mana(0)==12345 && core_mana(1)==23456 && seed==123);
+    assert(core_target(0)==0x820 && core_target(1)==0x820);
+    assert(A4_WORD(0xae78)==0x820 && A4_WORD(0xae76)==0x820);
+    assert(core_leader(0)==1 && core_leader(1)==2 && view_who==1);
+    assert(map_who[650]==1 && map_who[3250]==2 && !core_battles && !core_settlements);
+}
+
+static void test_war_state(void)
+{
+    test_war_target_reset(); test_war_evacuation(); test_war_town_footprint();
+    test_war_dispatch(); test_war_tick_totals();
+}
+
 static void test_near_town_sculpt(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
@@ -2761,6 +2957,11 @@ static void test_volcano_input_smoke(void)
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--war-state")) {
+        test_war_state();
+        puts("focused war-state regression: PASS");
+        return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--volcano")) {
         test_volcano_input_smoke(); test_volcano_cast(); test_volcano_lava();
         prepare_rule_data(); test_volcano_input(); test_volcano_render(); cleanup_rule_data();
@@ -2833,6 +3034,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_war_state();
     test_remnant_timer(); test_remnant_occupancy_and_state();
     test_remnant_tick_and_water(); test_remnant_collision();
     test_flood_input_smoke(); test_flood_cast(); test_flood_delayed_hazards();

@@ -54,6 +54,16 @@ state dispatch remain bounded host behavior, not original drowning/phase parity.
 boundaries, occupancy, cleanup and stopped ticks. Normal/ASan/UBSan suites, all
 495 original starts and original-data match regressions passed for this milestone.
 
+An already-set war state resets both destinations and displayed magnets to
+cell `0x0820` on each resident update. Exact peaceful towns evacuate when their
+land has no capacity, their four-byte heading metadata is nonzero, or war is set
+(`src/populous_prg.asm:3425-3432,3600-3633`). Evacuation clears the town flag,
+frame and movement delta, removes its existing town footprint and skips growth,
+splitting and movement for that update. Population, occupancy, metadata and
+leader/view references are retained. Water, battle and waiting dispatch retain
+their existing precedence. This does not enable Armageddon casting: original
+war navigation and queued terrain actions are still required for convergence.
+
 The original `_load_ground` reads gameplay tables from `landN` files, including
 `population_add`, `mana_add`, `weapons_add`, `battle_add1` and `battle_add2`
 (`src/populous_prg.asm:16468-16514`). Reset validates the selected file before
@@ -478,9 +488,9 @@ The fixed scenario-0 sequence selects fight tendency, simulates settlement and
 combat, then after tick 6000 sends legal right-clicks to the four corners of
 visible hostile plots every eight ticks. Budget: 12000 ticks, no teleportation
 or population/result edits. With the supplied original grass LAND it reached
-victory at tick 9058 after 271 engagements and 296 settlement formations, with
-93085 friendly population remaining. Normal and ASan/UBSan runs agreed. Friendly
-merge frame resets change the earlier 7537-tick reinforcement-only observation;
+victory at tick 7515 after 266 engagements and 136 settlement formations, with
+17045 friendly population remaining. Normal and ASan/UBSan runs agreed. Clearing
+the movement delta on town evacuation changes the previous 9058-tick result;
 no test script or winning-state assertion was weakened to recover old timing. A
 separate legal self-sculpt sequence verifies defeat and reset/quit. The synthetic
 rule fixture may reach defeat sooner; it is not a balance/authenticity fixture.

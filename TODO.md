@@ -107,6 +107,8 @@ erneut gepruefte Sieg bei Tick 7537 (279 Kaempfe, 190 Stadtgruendungen, 39278/0)
 Niederlage weiter Tick 694. Nach freundlicher Zustandsvereinigung: Sieg Tick 9058,
 271 Kaempfe, 296 Stadtgruendungen, 93085/0; Niederlage Tick 694. Normal-/Sanitizer-
 laeufe und alle 495 Starts bestanden ohne veraenderte Siegerassertionen.
+Nach originaler Siedlungsaufloesung mit geloeschtem Bewegungsdelta: Sieg Tick 7515,
+266 Kaempfe, 136 Stadtgruendungen, 17045/0; Niederlage unveraendert Tick 694.
 Unabhaengiges Review ohne
 blockierende Befunde; kurze Integrationstests sind kein Kampagnen-Paritaetsnachweis.
 
@@ -124,7 +126,8 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 - [ ] **Teilweise:** Restzustand durch den originalen Kampfgewinner erzeugen; gemischte Sonderflags, Ertrinkensphasen und Darstellung migrieren. Der getestete 0x80-Verbrauch allein aktiviert weder Ritter noch Armageddon.
 - [ ] **Fehlt:** Ritter, Sonderfiguren und `_do_funny`-/`_do_place_funny`-Ereignisse, auch bei erschoepften 208 normalen Bewohnerplaetzen.
 - [x] Sumpf-Folgen fuer normale Bewohner am abgeschlossenen Gehframe: gesamte Population entfernen, Effekt 66, flachen Sumpf zu Block 15 zuruecksetzen; bodenlosen Sumpf erhalten.
-- [ ] **Teilweise:** Kriegs-/Armageddonzustand, Aufloesung von Siedlungen und Sonderziele mit den neuen Kraeften verbinden.
+- [x] Verbrauch des gesetzten Kriegszustands und Siedlungsaufloesung: vier Ziele auf 0x0820; exakte friedliche Stadt bei Kapazitaet <=0, Metadaten oder Krieg aufloesen, Frame/Delta leeren und Tick beenden. Bewohnerdaten/Belegung erhalten, vorhandenen Stadtfussabdruck entfernen; kein vorgezogener Mana-/Wachstums-/Bewegungsschritt.
+- [ ] **Teilweise:** Kriegsnavigation, nachgelagerte Terrain-Aktionen und Armageddon-Ausloesung verbinden; Zielreset und Siedlungsaufloesung allein belegen keine Konvergenz.
 - [x] Zustandsuebertragung bei freundlicher Zielzellen-Vereinigung nach `_join_forces`: Metadaten-/Stadtsperre, Anfuehrer/Ansicht, Bevoelkerung/Waffen und Zuruecksetzen der Wartebits/Frames. Nicht mit unveraenderten Kampfframes bei Verstaerkung vermischen.
 - [ ] **Pruefen:** Weitere Sonderfaelle bei Stadtuebernahme, Kampfende, Belohnungen, gleichem-Zellen-Vereinigungszeitpunkt, Tod und Belegungswechseln gegen die Originalpfade testen; gewoehnlicher Zweierkampf existiert bereits.
 - [ ] **Pruefen:** Bewusste Host-Sicherheitsgrenzen dokumentieren und gegen originale Wortarithmetik abgrenzen: Bevoelkerung bis 32000, Mana -250..1999999. Speicher-/Undefiniertes-Verhalten-Sicherheit nicht zugunsten vermeintlicher Treue aufgeben.
