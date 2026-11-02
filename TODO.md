@@ -74,7 +74,7 @@ Belege: `populous_c_port/Makefile:1-35`,
 - [x] Block 47 bei Kartenupdates gemaess Original erhalten beziehungsweise bei vollstaendiger Ueberflutung entfernen.
 - [ ] **Pruefen:** Weitere Karten-Sonderfaelle und Wechselwirkungen mit spaeteren Spezialterrainbloecken migrieren.
 - [x] Ueberlappende Conquest-Startbelegung gemaess Original zulassen: alle Bewohnerdatensaetze erhalten, letzter Eintrag repraesentiert die Zelle. Feindlichen aktuellen Bewohner vor Gruendung/Abmarsch behandeln; verdeckte/doppelte Stadtgruendung verhindern. Keine Verlegung der Originalstarts.
-- [ ] **Teilweise:** Custom-/Serial-Startmodi sowie originale Warte-/Bewegungsphasen fehlen weiterhin. Conquest-Suchpfade sind implementiert; der historische Zugriff auf Zelle 4096 bleibt sicher ausgelassen.
+- [ ] **Teilweise:** Custom-/Serial-Startmodi sowie originale Kollisionswarte-Erzeugung und phasenweise Bewegung fehlen weiterhin. Conquest-Suchpfade und Blockade-Retry sind implementiert; der historische Zugriff auf Zelle 4096 bleibt sicher ausgelassen.
 - [ ] **Pruefen:** Kartenrotation, Kartenbearbeitung und weitere Welt-/Modusfunktionen aus dem Routineninventar nach tatsaechlicher Originalverwendung zuordnen und migrieren.
 
 **Abhaengigkeiten:** LAND-Lader und RNG sind vorhanden. Conquest benoetigt diesen
@@ -121,7 +121,7 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 - [ ] **Teilweise:** Originale Magnetnavigation, Zielwahl und Ausweich-/Fehlversuchspfade vervollstaendigen; direkte Zielrichtung plus Ausweichsuche reicht als Paritaetsnachweis nicht aus.
 - [x] Gewoehnlichen Beitritt zu laufenden Kaempfen migrieren: richtige Partei verstaerken, Population bis 32000, Waffen/Anfuehrer/Ansicht/Metadaten uebertragen, bestehende Kampfpartner und Frames erhalten. Ungueltige Paare sicher ablehnen; originale phasenweise Begegnungszeitpunkte und Sonderfiguren bleiben offen.
 - [ ] **Fehlt:** Ritter, Sonderfiguren und `_do_funny`-/`_do_place_funny`-Ereignisse, auch bei erschoepften 208 normalen Bewohnerplaetzen.
-- [ ] **Fehlt:** Sumpf-Folgen fuer Bewohner und Entfernung benutzten flachen Sumpfs.
+- [x] Sumpf-Folgen fuer normale Bewohner am abgeschlossenen Gehframe: gesamte Population entfernen, Effekt 66, flachen Sumpf zu Block 15 zuruecksetzen; bodenlosen Sumpf erhalten.
 - [ ] **Teilweise:** Kriegs-/Armageddonzustand, Aufloesung von Siedlungen und Sonderziele mit den neuen Kraeften verbinden.
 - [x] Zustandsuebertragung bei freundlicher Zielzellen-Vereinigung nach `_join_forces`: Metadaten-/Stadtsperre, Anfuehrer/Ansicht, Bevoelkerung/Waffen und Zuruecksetzen der Wartebits/Frames. Nicht mit unveraenderten Kampfframes bei Verstaerkung vermischen.
 - [ ] **Pruefen:** Weitere Sonderfaelle bei Stadtuebernahme, Kampfende, Belohnungen, gleichem-Zellen-Vereinigungszeitpunkt, Tod und Belegungswechseln gegen die Originalpfade testen; gewoehnlicher Zweierkampf existiert bereits.
@@ -142,7 +142,8 @@ Belege: `populous_c_port/populous_prg.c:803-915`, `:1509-1549`;
 - [ ] **Teilweise:** Heben/Senken und Magnet gegen alle Originalzulassungen, Kosten, Ziele und Zustandsbedingungen abgleichen.
 - [ ] **Fehlt:** Erdbeben.
 - [ ] **Fehlt:** Vulkan.
-- [ ] **Fehlt:** Sumpf.
+- [x] Gameplay-Sumpfkraft: aktive Freigabe, 5000 Mana, 30 Versuche/60 RNG-Ziehungen, Punkte, Block 53 und einmalige Zielwahl ueber Port-Taste S. Originale Vertex-minus-eins-Bytekoordinaten erhalten; Bounds vor Kartenlesezugriff pruefen.
+- [ ] **Teilweise:** Sumpf in Originaltoolbar, Editor-Freimodus und Computer-KI integrieren; Audio fehlt. Diagnose-P darf keine kostenfreien Kraefte freischalten. Wartezeitige Kriegsklicks konsumieren im Port derzeit die Auswahl ohne Wirkung; originaler frueher War-Abbruch behaelt sie.
 - [ ] **Fehlt:** Rittererzeugung und zugehoeriges Verhalten.
 - [ ] **Fehlt:** Flut.
 - [ ] **Fehlt:** Armageddon/Krieg.

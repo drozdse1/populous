@@ -34,7 +34,7 @@ ordinary `_where_do_i_go`/magnet navigation, settlement growth/mana/splitting,
 ordinary `_do_battle`/`_battle_over`, joining, water loss and vertex sculpting.
 Source labels and assembly ranges appear beside each implementation. The
 opponent uses the same settlement/exploration rules, not timer-created units.
-Special powers, knights, original computer
+Special powers other than swamp, knights, original computer
 power/auto-level logic, celebration animations and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
@@ -297,6 +297,34 @@ This is world initialization, not 495 completed campaign levels. Independent
 assembly-derived comparisons are cross-implementation evidence, **not** an
 independent Amiga execution trace or proof of complete game parity.
 
+## Swamp power
+
+`S` is a port-specific one-shot swamp target binding, not an original keyboard
+mapping. Selection requires the active swamp permission (`0x10`) and **more than
+5000 mana**, following the original selector; execution accepts **exactly 5000**.
+A valid left-click consumes targeting even if execution is then rejected and
+restores the previous terrain/magnet tool. Right-click does not cast or sculpt
+while targeting; minimap navigation is still available. Pause, war and finished
+matches prevent gameplay casts. Pause/outcome clicks retain targeting; a war-time
+valid click currently consumes targeting but pays nothing, unlike original
+`_sculpt`'s early war return. This small UI difference remains explicit.
+
+Accepted casts cost 5000, award the player-caster 50 score and consume exactly
+60 random draws: 30 attempts within a 7x7 area. Empty cells of block 15, 31, 32 or
+66 become block 53. Duplicates, occupied cells and invalid terrain are skipped,
+not retried. Even an accepted cast placing nothing pays and advances the RNG.
+The original target is `(selected_vertex - 1) & 255` per axis: vertex zero wraps
+to 255 and therefore yields an empty cast, rather than a clamped edge cast.
+C bounds checks precede map reads, unlike the unsafe assembly read ordering.
+
+An ordinary walker dies on swamp at its next completed eight-frame walking cycle,
+before navigation and walking loss. Shallow swamp returns to block 15; bottomless
+swamp (game-mode bit 1) remains. This is not water/drowning. Frame 53 already comes
+from LAND; the original effect code is recorded, but audio is not implemented.
+Editor free casting is deliberately absent: `P` remains diagnostic display state
+and never bypasses costs or permissions. Original toolbar activation, editor mode
+and computer swamp selection remain separate TODOs.
+
 ## Controls
 
 - Blue is your population; red is the opponent. Original houses/castles show
@@ -310,6 +338,8 @@ independent Amiga execution trace or proof of complete game parity.
 - `0`: gather walkers at the initial magnet (32,32). After a leader reaches it,
   `m` selects magnet placement; left-click moves the target for 200 mana. `m`
   again returns to terrain. Settlements release walkers when over capacity.
+- `s`: select one-shot swamp targeting when allowed and mana exceeds 5000;
+  left-click targets, then the previous terrain/magnet tool returns.
 - Arrows/numpad: scroll by world cells. Click the upper-left diamond minimap to
   recenter anywhere (also while paused); its white outline marks the viewport.
   `d`: explicit top-down diagnostic view; `p`: dots in that diagnostic view only.

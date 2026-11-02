@@ -1635,8 +1635,304 @@ static void test_all_original_levels(const char *directory)
     puts("Original starts: all 495 PASS (placement/ticks/render/reset; no tick-parity claim)");
 }
 
+static unsigned swamp_draws;
+static uint16_t swamp_values[60];
+static uint16_t swamp_random(void)
+{
+    assert(swamp_draws < 60);
+    return swamp_values[swamp_draws++];
+}
+static void swamp_fixture(void)
+{
+    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(map_blk,15,4096);
+    memset(map_bk2,42,4096);
+    memset(map_alt,2,4096);
+    for (int cell=0;cell<4096;++cell) A4_WORD(0xff88+cell*2)=91;
+    A4_LONG(0x8496)=5000;
+    A4_LONG(0x9a02)=A4_LONG(0x9a12)=10000;
+    A4_WORD(0x82c4)=A4_WORD(0x82c4+46)=0x10;
+    core_result=0; player=0; seed=123;
+    swamp_draws=0;
+    for (int draw=0;draw<60;++draw) swamp_values[draw]=3;
+}
+static void test_swamp_cast(void)
+{
+    /* Catch wrong gate boundaries, editor bypass and mutation on rejection. */
+    for (int side=0;side<2;++side) for (int gate=0;gate<11;++gate)
+    for (int paint=0;paint<2;++paint) {
+        swamp_fixture(); paint_map=paint;
+        int owner=side,column=20,row=20;
+        if (gate==0) owner=-1;
+        if (gate==1) owner=2;
+        if (gate==2) column=-1;
+        if (gate==3) column=256;
+        if (gate==4) row=-1;
+        if (gate==5) row=256;
+        if (gate==6) A4_LONG(0x9a02+side*16)=4999;
+        if (gate==7) A4_WORD(0x82c4+side*46)=0xffef;
+        if (gate==8) pause=1;
+        if (gate==9) A4_WORD(0xae80)=1;
+        if (gate==10) core_result=1;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(!core_swamp(owner,column,row,swamp_random));
+        assert(swamp_draws==0 && !memcmp(before,prg_a4_area,sizeof before));
+    }
+    for (int owner=0;owner<2;++owner) for (int local=0;local<2;++local)
+    for (int mana=5000;mana<=5001;++mana) for (int paint=0;paint<2;++paint) {
+        swamp_fixture(); player=local; paint_map=paint;
+        A4_LONG(0x9a02+owner*16)=mana;
+        assert(core_swamp(owner,255,255,swamp_random));
+        assert(core_mana(owner)==mana-5000 && swamp_draws==60);
+        assert(A4_LONG(0xae72)==(owner==local ? 50u : 0u));
+        for (int cell=0;cell<4096;++cell) assert(map_blk[cell]==15);
+    }
+    /* Distinct column-first offsets, every accepted block, duplicate, occupied
+     * and ineligible attempts. Only block/mana/score may change. */
+    swamp_fixture();
+    int cells[5]={19*64+17,20*64+18,21*64+19,22*64+20,23*64+21};
+    map_blk[cells[0]]=15; map_blk[cells[1]]=31;
+    map_blk[cells[2]]=32; map_blk[cells[3]]=66;
+    map_blk[cells[4]]=47; map_who[20*64+20]=7;
+    for (int attempt=0;attempt<5;++attempt) {
+        swamp_values[attempt*2]=attempt;
+        swamp_values[attempt*2+1]=attempt+2;
+    }
+    swamp_values[10]=0; swamp_values[11]=2; /* Duplicate first placement. */
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    assert(core_swamp(0,20,20,swamp_random));
+    assert(swamp_draws==60 && core_mana(0)==5000 && A4_LONG(0xae72)==50);
+    for (int index=0;index<4;++index) assert(map_blk[cells[index]]==53);
+    assert(map_blk[cells[4]]==47 && map_blk[20*64+20]==15);
+    map_blk[cells[0]]=15; map_blk[cells[1]]=31;
+    map_blk[cells[2]]=32; map_blk[cells[3]]=66;
+    A4_LONG(0x9a02)=10000; A4_LONG(0xae72)=0;
+    assert(!memcmp(before,prg_a4_area,sizeof before));
+    static const int corners[4][2]={{0,0},{63,0},{0,63},{63,63}};
+    for (int corner=0;corner<4;++corner) {
+        swamp_fixture();
+        for (int draw=0;draw<60;++draw) swamp_values[draw]=draw%2 ? 6 : 0;
+        swamp_values[0]=3; swamp_values[1]=3;
+        int column=corners[corner][0],row=corners[corner][1];
+        assert(core_swamp(1,column,row,swamp_random));
+        assert(swamp_draws==60 && map_blk[row*64+column]==53);
+        int placed=0;
+        for (int cell=0;cell<4096;++cell) placed+=map_blk[cell]==53;
+        assert(placed==(corner==1 ? 2 : 1));
+    }
+}
+
+static void swamp_walker(int owner, int flags, int frame)
+{
+    swamp_fixture(); no_peeps=1;
+    peeps[0]=flags; peeps[1]=owner; peeps[2]=1; peeps[3]=1;
+    set_peep_word(0,4,100); set_peep_word(0,8,1300);
+    set_peep_word(0,10,1); set_peep_word(0,12,frame);
+    map_blk[1300]=53; map_who[1300]=1;
+    A4_WORD(0x2fb0)=3;
+}
+static void test_swamp_hazard(void)
+{
+    /* Catch early death, navigation/attrition before death, wrong owner/mode,
+     * and accidental clearing of another occupant or the previous cell. */
+    for (int owner=0;owner<2;++owner) for (int bottomless=0;bottomless<2;++bottomless)
+    for (int fatal=0;fatal<2;++fatal) for (int owned=0;owned<2;++owned) {
+        swamp_walker(owner,2,0);
+        game_mode=(bottomless ? 2 : 0) | (fatal ? GAME_MODE_WATER_FATAL : 0);
+        core_leader(owner)=1; core_target(owner)=777; view_who=1;
+        A4_WORD(owner ? 0xae76 : 0xae78)=777;
+        map_who[1300]=owned ? 1 : 2; map_who[1299]=1;
+        for (int frame=0;frame<7;++frame) {
+            _move_peeps();
+            assert(peep_word(0,4)==100 && peep_word(0,8)==1300);
+            assert(peep_word(0,12)==frame+1 && map_blk[1300]==53);
+            assert(A4_WORD(0x2fac)==0 && seed==123);
+        }
+        _move_peeps();
+        assert(peep_word(0,4)==0 && peeps[0]==0 && peep_word(0,8)==1300);
+        assert(map_blk[1300]==(bottomless ? 53 : 15) && A4_WORD(0x2fac)==66);
+        assert(map_who[1300]==(owned ? 0 : 2) && map_who[1299]==1);
+        assert(core_leader(owner)==0 && core_target(owner)==1300 && view_who==0);
+        assert(A4_WORD(owner ? 0xae76 : 0xae78)==1300);
+        assert(core_target(1-owner)==0 && seed==123);
+        assert(map_alt[1300]==2 && map_bk2[1300]==42 && A4_WORD(0xff88+1300*2)==91);
+    }
+    static const int flags[]={0x22,0x42,8,1};
+    for (unsigned index=0;index<sizeof flags/sizeof flags[0];++index) {
+        swamp_walker(0,flags[index],7); set_peep_word(0,6,1);
+        _move_peeps();
+        assert(peep_word(0,4)>0 && A4_WORD(0x2fac)==0 && map_blk[1300]==53);
+    }
+    swamp_walker(0,0x42,7); set_peep_word(0,6,15);
+    memset(map_blk,47,4096); map_blk[1300]=53;
+    core_target(0)=1300;
+    _move_peeps();
+    assert(peep_word(0,4)==97 && map_blk[1300]==53 && A4_WORD(0x2fac)==0);
+    /* Nonleader death must preserve unrelated references. */
+    swamp_walker(1,2,7); core_leader(1)=2; core_target(1)=777; view_who=2;
+    _move_peeps();
+    assert(core_leader(1)==2 && core_target(1)==777 && view_who==2);
+}
+
+static void test_swamp_input(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_s;
+    SDL_Event click={.type=SDL_MOUSEBUTTONDOWN}; click.button.button=SDL_BUTTON_LEFT;
+    for (int tool=0;tool<2;++tool) for (int diagnostic=0;diagnostic<2;++diagnostic)
+    for (int mana=4999;mana<=5001;++mana) {
+        assert(game_reset(0)); core_tool=tool; diagnostic_view=diagnostic;
+        SDL_SetWindowSize(prg_screen->window,960,768);
+        A4_LONG(0x9a02)=mana; A4_WORD(0x82c4)=0x10;
+        if (diagnostic) { xoff=0; yoff=0; click.button.x=81*3; click.button.y=81*3; }
+        else {
+            xoff=16; yoff=16;
+            int sx,sy; assert(graphics_vertex(4,4,core_vertex(20,20),&sx,&sy));
+            click.button.x=sx*3; click.button.y=sy*3;
+        }
+        game_handle_event(&key);
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        click.button.button=SDL_BUTTON_RIGHT; game_handle_event(&click);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        click.button.button=SDL_BUTTON_LEFT; game_handle_event(&click);
+        assert(core_mana(0)==(mana>5000 ? 1 : mana));
+        assert(core_tool==tool);
+        if (mana>5000) {
+            assert(A4_LONG(0xae72)==50);
+            for (int cell=0;cell<4096;++cell) if (map_blk[cell]==53)
+                assert(cell%64>=16 && cell%64<=22 && cell/64>=16 && cell/64<=22);
+            /* Consumed once: later clicks must use the underlying tool. */
+            A4_LONG(0x9a02)=10000; A4_WORD(0x82c4)=1;
+            core_leader(0)=1;
+            game_handle_event(&click);
+            assert(core_mana(0)==(tool ? 9800 : 9986));
+        }
+    }
+    /* Selection at 5001, execution after mana drops to exactly 5000. */
+    assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,640,512);
+    A4_LONG(0x9a02)=5001; A4_WORD(0x82c4)=0x10;
+    game_handle_event(&key); A4_LONG(0x9a02)=5000;
+    iso_click_vertex(20,20,SDL_BUTTON_LEFT);
+    assert(core_mana(0)==0 && A4_LONG(0xae72)==50);
+    /* Player-side validation and source selection during war. */
+    for (int owner=-1;owner<=2;++owner) {
+        assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,640,512);
+        player=owner; A4_LONG(0x9a02)=A4_LONG(0x9a12)=6000;
+        A4_WORD(0x82c4)=A4_WORD(0x82c4+46)=0x10; A4_WORD(0xae80)=1;
+        game_handle_event(&key); A4_WORD(0xae80)=0;
+        iso_click_vertex(20,20,SDL_BUTTON_LEFT);
+        assert(A4_LONG(0xae72)==(owner==0 || owner==1 ? 50u : 0u));
+        assert(core_mana(0)==(owner==0 ? 1000 : 6000));
+        assert(core_mana(1)==(owner==1 ? 1000 : 6000));
+    }
+    /* A valid target clears selection even if execution now rejects it. */
+    for (int failure=0;failure<3;++failure) {
+        assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,640,512);
+        A4_LONG(0x9a02)=6000; A4_WORD(0x82c4)=0x11;
+        game_handle_event(&key);
+        if (failure==0) A4_LONG(0x9a02)=4999;
+        if (failure==1) A4_WORD(0x82c4)=1;
+        if (failure==2) A4_WORD(0xae80)=1;
+        uint16_t old_seed=seed;
+        iso_click_vertex(20,20,SDL_BUTTON_LEFT);
+        assert(seed==old_seed && A4_LONG(0xae72)==0 && core_vertex(20,20)==1);
+        A4_LONG(0x9a02)=10000; A4_WORD(0x82c4)=0x11; A4_WORD(0xae80)=0;
+        iso_click_vertex(20,20,SDL_BUTTON_LEFT);
+        assert(core_vertex(20,20)==2 && core_mana(0)==9986);
+    }
+    /* Repeats/missing spell cannot arm; P never permits a free cast. */
+    for (int paint=0;paint<2;++paint) for (int missing=0;missing<2;++missing) {
+        assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,640,512);
+        paint_map=paint; A4_LONG(0x9a02)=6000; A4_WORD(0x82c4)=missing ? 1 : 0x11;
+        key.key.repeat=!missing; game_handle_event(&key); key.key.repeat=0;
+        iso_click_vertex(20,20,SDL_BUTTON_LEFT);
+        assert(core_vertex(20,20)==2 && core_mana(0)==5986 && A4_LONG(0xae72)==0);
+    }
+    /* HUD/toolbar/minimap clicks don't consume an armed target. Pause and
+     * outcomes retain their existing click guard; S itself may select. */
+    for (int blocked=0;blocked<3;++blocked) {
+        assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,640,512);
+        A4_LONG(0x9a02)=6000; A4_WORD(0x82c4)=0x11;
+        pause=blocked==1; core_result=blocked==2; game_handle_event(&key);
+        click.button.x=100*2; click.button.y=220*2; game_handle_event(&click);
+        click.button.x=20*2; click.button.y=120*2; game_handle_event(&click);
+        if (blocked) iso_click_vertex(20,20,SDL_BUTTON_LEFT);
+        assert(core_mana(0)==6000 && A4_LONG(0xae72)==0);
+        pause=0; core_result=0;
+        iso_click_vertex(20,20,SDL_BUTTON_LEFT);
+        assert(core_mana(0)==1000 && A4_LONG(0xae72)==50);
+    }
+    /* Byte wrap, not clamping: vertex zero spends and draws but places none. */
+    for (int diagnostic=0;diagnostic<2;++diagnostic) {
+        assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,640,512);
+        A4_LONG(0x9a02)=6000; A4_WORD(0x82c4)=0x10;
+        game_handle_event(&key); diagnostic_view=diagnostic; xoff=yoff=0;
+        uint16_t old_seed=seed;
+        for (int draw=0;draw<60;++draw) ___newrand();
+        uint16_t expected_seed=seed; seed=old_seed;
+        if (diagnostic) { click.button.x=0; click.button.y=0; game_handle_event(&click); }
+        else iso_click_vertex(0,0,SDL_BUTTON_LEFT);
+        assert(core_mana(0)==1000 && seed==expected_seed && A4_LONG(0xae72)==50);
+        for (int cell=0;cell<4096;++cell) assert(map_blk[cell]!=53);
+    }
+    assert(game_reset(0)); A4_LONG(0x9a02)=6000; A4_WORD(0x82c4)=0x11;
+    game_handle_event(&key);
+    /* Failed reset preserves target selection transactionally. */
+    char *directory=strdup(getenv("POPULOUS_ASSET_DIR") ? getenv("POPULOUS_ASSET_DIR") : POPULOUS_DEFAULT_ASSET_DIR);
+    assert(directory && !setenv("POPULOUS_ASSET_DIR","/nonexistent-populous-assets",1));
+    assert(!game_reset(0));
+    assert(!setenv("POPULOUS_ASSET_DIR",directory,1)); free(directory);
+    iso_click_vertex(20,20,SDL_BUTTON_LEFT); assert(core_mana(0)==1000);
+    A4_LONG(0x9a02)=6000; game_handle_event(&key);
+    assert(game_reset(0)); A4_LONG(0x9a02)=6000; A4_WORD(0x82c4)=0x11;
+    iso_click_vertex(20,20,SDL_BUTTON_LEFT);
+    assert(core_mana(0)==5986 && core_vertex(20,20)==2);
+    _closeall(); SDL_Quit();
+}
+
+static void test_swamp_render(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    A4_LONG(0x9a02)=6000; A4_WORD(0x82c4)=0x11;
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_s;
+    game_render();
+    uint32_t unarmed[320*56];
+    memcpy(unarmed,prg_screen->chunky_buffer+320*200,sizeof unarmed);
+    for (int pixel=320*200;pixel<320*256;++pixel)
+        prg_screen->chunky_buffer[pixel]=0xff123456;
+    game_render();
+    assert(!memcmp(unarmed,prg_screen->chunky_buffer+320*200,sizeof unarmed));
+    game_handle_event(&key); game_render();
+    assert(strstr(SDL_GetWindowTitle(prg_screen->window),"SWAMP ARMED (5000)"));
+    assert(memcmp(unarmed,prg_screen->chunky_buffer+320*200,sizeof unarmed));
+    /* Rendering frame 53 uses the loaded sheet unchanged (synthetic or real).
+     * Bottom/right view tile has no later terrain tile painting over it. */
+    no_peeps=0; memset(map_who,0,4096); memset(map_bk2,0,4096);
+    core_tendency(0)=core_tendency(1)=1; mousex=mousey=0;
+    xoff=yoff=6;
+    int cell=13*64+13; map_blk[cell]=53;
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    game_render();
+    uint8_t expected[64000]; memcpy(expected,game_pixels,sizeof expected);
+    int left,top; assert(graphics_tile(7,7,map_alt[cell],&left,&top));
+    assert(graphics_blit(expected,sizeof expected,320,200,graphics_land(game_assets),53,left,top));
+    assert(!memcmp(expected,game_pixels,sizeof expected));
+    assert(!memcmp(before,prg_a4_area,sizeof before));
+    SDL_SetWindowSize(prg_screen->window,640,512);
+    iso_click_vertex(20,20,SDL_BUTTON_LEFT); game_render();
+    assert(!strstr(SDL_GetWindowTitle(prg_screen->window),"SWAMP ARMED"));
+    _closeall(); SDL_Quit();
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--swamp")) {
+        test_swamp_cast();
+        test_swamp_hazard();
+        prepare_rule_data(); test_swamp_input(); test_swamp_render(); cleanup_rule_data();
+        puts("focused swamp regression: PASS");
+        return 0;
+    }
     if (argc == 3 && !strcmp(argv[1], "--levels")) {
         test_all_original_levels(argv[2]);
         return 0;
@@ -1673,6 +1969,8 @@ int main(int argc, char **argv)
         return 0;
     }
     assert(argc == 1);
+    test_swamp_cast();
+    test_swamp_hazard();
     test_blocked_entry();
     test_blocked_retry();
     test_wait_boundaries();
@@ -1681,6 +1979,8 @@ int main(int argc, char **argv)
     test_original_generator();
     test_original_placement();
     prepare_rule_data();
+    test_swamp_input();
+    test_swamp_render();
     test_original_reset();
     test_original_graphics_output();
     test_isometric_match();

@@ -699,6 +699,7 @@ static void _make_map(void)
 #define core_leader(owner) A4_WORD(0x99f6 + (owner) * 16)
 #define core_target(owner) A4_WORD(0x99f8 + (owner) * 16)
 static int core_result, core_battles, core_settlements, core_tool;
+static int core_swamp_selected;
 static const int16_t core_offsets[25] = {
     0,-64,1,64,-1,-63,65,63,-65,-128,2,128,-2,-126,130,126,-130,
     -127,-62,66,129,127,62,-66,-129
@@ -795,7 +796,15 @@ static void core_remove(int person)
         }
         set_peep_word(person,6,0);
     }
-    if (core_leader(owner) == person+1) core_leader(owner) = 0;
+    if (core_leader(owner) == person+1) {
+        core_leader(owner) = 0;
+        /* _zero_population / _set_magnet_to asm:5691-5716,8271-8291. */
+        if (!pause) {
+            core_target(owner) = position;
+            A4_WORD(owner ? 0xae76 : 0xae78) = position;
+        }
+    }
+    if (view_who == person+1) view_who = 0;
     set_peep_word(person,4,0); peeps[person*22] = 0;
 }
 static void core_frame_town(int person, int capacity)
@@ -1122,6 +1131,27 @@ static int original_raise_point(int column, int row)
 }
 
 typedef uint16_t (*WorldRandom)(void);
+/* _do_swamp asm:8295-8387, gameplay only: P is not the original editor.
+ * Byte target coordinates can be outside the map; still consume all 60 draws. */
+static int core_swamp(int owner, int column, int row, WorldRandom random)
+{
+    if (owner < 0 || owner > 1 || column < 0 || column > 255 || row < 0 || row > 255 ||
+        pause || A4_WORD(0xae80) || core_result ||
+        core_mana(owner) < (int32_t)A4_LONG(0x8496) ||
+        !(A4_WORD(0x82c4+owner*46)&0x10)) return 0;
+    A4_LONG(0x9a02+owner*16) -= A4_LONG(0x8496);
+    if (owner == player) A4_LONG(0xae72) += 50;
+    for (int attempt = 0; attempt < 30; ++attempt) {
+        int x = column + random()%7 - 3;
+        int y = row + random()%7 - 3;
+        /* Unlike the original, bounds must precede even the block read. */
+        if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
+        int cell = y*64+x, block = map_blk[cell];
+        if ((block == 15 || block == 31 || block == 32 || block == 66) && !map_who[cell])
+            map_blk[cell] = 53;
+    }
+    return 1;
+}
 static void original_make_thing(int spread_x, int spread_y, WorldRandom random)
 {
     int column = random() % 64;
@@ -1362,7 +1392,7 @@ static int game_reset_start(StartSelection selection)
         demo_shield_timer = growth_tick = 0;
         prg_quit = 0;
     }
-    core_result = core_battles = core_settlements = core_tool = 0;
+    core_result = core_battles = core_settlements = core_tool = core_swamp_selected = 0;
     xoff = yoff = 6;
     if (selection.kind == START_ORIGINAL) {
         /* Host camera accommodation: original inhabitants are not on demo plots. */
@@ -1766,10 +1796,16 @@ static void draw_original(int view_x, int view_y)
     char status[80];
     snprintf(status,sizeof status,"%s  BLUE %d RED %d MANA %d",core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : "PLAY",core_population(0),core_population(1),core_mana(0));
     hud_text(4,204,status);
-    hud_text(4,213,"LMB RAISE / RMB LOWER / ARROWS SCROLL / MAP CLICK");
-    hud_text(4,222,"0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET");
+    hud_text(4,213,core_swamp_selected ?
+        "S SWAMP ARMED 5000 / LMB TARGET / RMB INERT" :
+        "LMB RAISE / RMB LOWER / ARROWS SCROLL / MAP CLICK");
+    hud_text(4,222,"0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET / S SWAMP 5000");
     hud_text(4,231,"SPACE PAUSE / R RESET / ESC QUIT / D DIAGNOSTIC");
-    hud_text(4,240,core_tool ? "MAGNET TOOL - ORIGINAL TOOLBAR IS DECORATIVE" : "TERRAIN TOOL - ORIGINAL TOOLBAR IS DECORATIVE");
+    hud_text(4,240,core_swamp_selected ?
+        (core_tool ? "AFTER TARGET: MAGNET / ORIGINAL TOOLBAR DECORATIVE" :
+                     "AFTER TARGET: TERRAIN / ORIGINAL TOOLBAR DECORATIVE") :
+        (core_tool ? "MAGNET TOOL - ORIGINAL TOOLBAR IS DECORATIVE" :
+                     "TERRAIN TOOL - ORIGINAL TOOLBAR IS DECORATIVE"));
 }
 
 static void _draw_it(int16_t y, int16_t x)
@@ -1824,9 +1860,12 @@ static void _draw_it(int16_t y, int16_t x)
     }
     } else draw_original(x,y);
     char title[512];
-    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; mouse raise/lower; Space pause R reset Esc quit",
+    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; mouse raise/lower; Space pause R reset Esc quit",
         core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : "RUNNING",
-        core_population(0),core_population(1),core_mana(0),core_tool ? "MAGNET (200)" : "TERRAIN (10+4/point)");
+        core_population(0),core_population(1),core_mana(0),core_swamp_selected ?
+        (core_tool ? "SWAMP ARMED (5000) LMB target then MAGNET / RMB inert" :
+                     "SWAMP ARMED (5000) LMB target then TERRAIN / RMB inert") :
+        (core_tool ? "MAGNET (200)" : "TERRAIN (10+4/point)"));
     SDL_SetWindowTitle(prg_screen->window,title);
 }
 
@@ -1886,6 +1925,13 @@ static void _move_peeps(void)
         else {
             if (!core_frame_walker(person)) continue;
             int position = peep_word(person,8);
+            /* asm:4061-4081: ordinary frame completion, before move/loss. */
+            if (flags == 2 && map_blk[position] == 53) {
+                core_remove(person);
+                A4_WORD(0x2fac) = 66;
+                if (!(game_mode&2)) map_blk[position] = 15;
+                continue;
+            }
             if (!map_blk[position]) {
                 if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
                 set_peep_word(person,4,peep_word(person,4)-A4_WORD(0x2fb0));
@@ -1967,6 +2013,10 @@ static void game_handle_event(const SDL_Event *event)
             fprintf(stderr, "Reset failed; keeping the current game.\n");
             if (!pause && !core_result && key >= SDLK_0 && key <= SDLK_3) core_tendency(0) = key-SDLK_0;
             if (key == SDLK_m) core_tool = !core_tool;
+            /* Host S mapping for source selection asm:2021-2042 (> cost). */
+            if (key == SDLK_s && player >= 0 && player <= 1 &&
+                core_mana(player) > (int32_t)A4_LONG(0x8496) &&
+                (A4_WORD(0x82c4+player*46)&0x10)) core_swamp_selected = 1;
         }
         if ((key == SDLK_LEFT || key == SDLK_KP_4 || key == SDLK_KP_7 || key == SDLK_KP_1) && xoff > 0) --xoff;
         if ((key == SDLK_RIGHT || key == SDLK_KP_6 || key == SDLK_KP_9 || key == SDLK_KP_3) && xoff < 56) ++xoff;
@@ -2011,6 +2061,15 @@ static void game_handle_event(const SDL_Event *event)
             column=(sx+xoff)/4; row=(sy+yoff)/4;
             if (column>=64 || row>=64) return;
         } else if (!game_pick(sx,sy,&column,&row)) return;
+        if (core_swamp_selected) {
+            if (event->button.button == SDL_BUTTON_LEFT) {
+                /* asm:7451-7489 clears selection before command execution.
+                 * Diagnostic picks use this same vertex-to-byte mapping. */
+                core_swamp_selected = 0;
+                core_swamp(player,(column-1)&255,(row-1)&255,___newrand);
+            }
+            return;
+        }
         if (core_tool) {
             if (column>=64 || row>=64) return;
             if (event->button.button == SDL_BUTTON_LEFT && core_leader(0) && core_mana(0)>=200) {
