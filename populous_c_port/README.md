@@ -99,8 +99,8 @@ split attempt. The ordinary completion checks the signed population and removes
 nonpositive towns, including on non-economy turns. Evacuation remains an immediate
 return that bypasses this check. Thus an eligible direct town update can revive
 a nonpositive population through growth; the resident-loop entry still skips
-initially nonpositive records. Split-record differences, AI selection/capacity
-overrides and dry `0x11` town recovery remain separate work.
+initially nonpositive records. AI selection/capacity overrides and dry `0x11`
+town recovery remain separate work.
 This is not full town-consumer or original cleanup parity. `--town-economy`
 checks literal word/longword boundaries, cadence, low-byte weapons, direct revival
 and evacuation bypass, split/full-slot behavior, and resident-pass death bookkeeping.
@@ -118,6 +118,20 @@ AI terrain work or change the footprint helper's existing map-boundary behavior.
 changed/flat/incomplete-city updates, downgrade, edges, death/revival, splitting
 and later-resident visibility. Focused/full normal and sanitized suites,
 original-data matches and all 495 starts passed; existing outcomes remain unchanged.
+
+Successful town splits initialize only the original child-record fields
+(`src/populous_prg.asm:3901-3989`). The reused slot's counter bytes 6/7 and navigation
+history byte 21 survive; direction, frame, all four heading bytes and marker byte
+20 are cleared. The child inherits the parent's radius before any increment and
+its newly assigned weapon. Parent view and owner-leader references transfer
+independently when they point to the parent; unrelated views/leaders and third-party
+occupancy stay unchanged. Earlier child slots start processing next pass, while
+later dry children can advance their initial walker frame in the current pass.
+Full-slot special-figure creation and original phased movement remain deferred.
+`--town-split` checks poisoned reusable records, allocation/count limits, independent
+view/leader transfer, radius boundaries, occupancy and uninterrupted birth-to-walk
+progression with inherited navigation history. Focused/full normal and sanitized
+suites, original-data matches and all 495 starts passed; match outcomes are unchanged.
 
 Ordinary magnet navigation uses the original nine-entry direction table: arriving
 at the target attempts north rather than switching to exploration. A new leader

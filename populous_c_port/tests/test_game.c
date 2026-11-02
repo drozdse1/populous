@@ -3059,19 +3059,179 @@ static void test_town_economy_split(void)
         town_expected_completion(expected,owner,full ? -32436 : 1536,1,owner ? 23473 : 12362);
         if (!full) {
             uint8_t *child=expected+(peeps-prg_a4_area)+22;
-            memset(child,0,22); child[0]=2; child[1]=owner; child[2]=3; child[3]=9;
+            child[0]=2; child[1]=owner; child[2]=3; child[3]=9;
+            memset(child+10,0,8); child[20]=0;
             celebration_expected_word(expected,0x9c26+22+4,1575);
             celebration_expected_word(expected,0x9c26+22+8,650);
             celebration_expected_word(expected,0x9c26+22+18,650);
             celebration_expected_word(expected,0xae5e,2);
             celebration_expected_word(expected,0x99f6+owner*16,2);
             expected[peeps-prg_a4_area+2]=4; expected[map_who-prg_a4_area+650]=2;
-            /* Preserve known host gaps: whole-child memset, no view transfer. */
+            celebration_expected_word(expected,0xae68,2);
         }
         core_settle_tick(0);
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(!core_battles && !core_settlements && !core_result);
     }
+}
+
+/* Reused records retain only their own counter and navigation history. */
+static void setup_town_split(int owner, int parent, int child, int count)
+{
+    setup_town_economy(owner,3100);
+    uint8_t father[22]; memcpy(father,peeps,22);
+    for (int person=0; person<208; ++person) {
+        for (int byte=0; byte<22; ++byte) peeps[person*22+byte]=0x81+byte;
+        set_peep_word(person,4,person<child ? 77 : -1);
+    }
+    memcpy(peeps+parent*22,father,22);
+    set_peep_word(parent,12,42);
+    no_peeps=count; map_who[650]=parent+1; map_who[500]=parent+1;
+    core_leader(owner)=parent+1; core_leader(1-owner)=206; view_who=parent+1;
+    /* Allocated A4 storage immediately beyond the 208-record pool is a guard,
+     * not a 209th record. Keep it dead so an off-by-one search would select it. */
+    memset(peeps+208*22,0xb7,22);
+    int16_t dead=-1; memcpy(peeps+208*22+4,&dead,sizeof dead);
+}
+
+static void test_town_split_view(void)
+{
+    /* These state pairs catch coupling the view transfer to leader transfer. */
+    for (int owner=0; owner<2; ++owner) for (int leader=0; leader<=1; ++leader)
+    for (int view=0; view<3; ++view) {
+        setup_town_split(owner,2,0,4);
+        core_leader(owner)=leader ? 3 : 206;
+        view_who=view==1 ? 3 : view==2 ? 206 : 0;
+        core_settle_tick(2);
+        assert(view_who==(view==1 ? 1 : view==2 ? 206 : 0));
+        assert(core_leader(owner)==(leader ? 1 : 206));
+        assert(core_leader(1-owner)==206);
+    }
+}
+
+static void test_town_split_records(void)
+{
+    /* Catches whole-record clearing/copying, unsigned-pop allocation, searching
+     * only no_peeps, parent self-allocation, radius signedness and stale fields. */
+    const struct { int parent, child, count, result_count; } layouts[]={
+        {2,0,4,4},{0,2,4,4},{0,2,208,208},{0,4,1,5},
+        {0,207,1,208},{207,1,208,208},{0,208,208,208}
+    };
+    const struct { int before, after; } radii[]={{0,1},{3,4},{4,4},{127,127},{128,128},{255,255}};
+    const struct { int population, timer, history; } stale[]={
+        {0,0x0180,1},{-1,0x8001,193},{-32768,0xffff,255}
+    };
+    for (int owner=0; owner<2; ++owner)
+    for (unsigned layout=0; layout<sizeof layouts/sizeof layouts[0]; ++layout)
+    for (unsigned radius=0; radius<sizeof radii/sizeof radii[0]; ++radius)
+    for (unsigned poison=0; poison<sizeof stale/sizeof stale[0]; ++poison)
+    for (int leader=0; leader<=1; ++leader) for (int view=0; view<3; ++view)
+    for (int occupant=0; occupant<4; ++occupant) {
+        int parent=layouts[layout].parent, child=layouts[layout].child, full=child==208;
+        setup_town_split(owner,parent,child,layouts[layout].count);
+        peeps[parent*22+2]=radii[radius].before;
+        core_leader(owner)=leader ? parent+1 : 206;
+        core_leader(1-owner)=poison==2 ? parent+1 : 206;
+        view_who=view==1 ? parent+1 : view==2 ? 206 : 0;
+        map_who[650]=occupant==0 ? 0 : occupant==1 ? parent+1 : 206;
+        peeps[205*22]=8; peeps[205*22+1]=occupant==3 ? 1-owner : owner;
+        set_peep_word(205,4,77); set_peep_word(205,8,650);
+        if (!full) {
+            set_peep_word(child,4,stale[poison].population);
+            set_peep_word(child,6,stale[poison].timer);
+            peeps[child*22+21]=stale[poison].history;
+            peeps[child*22]=poison==0 ? 0 : poison==1 ? 0xff : 0x80;
+            peeps[child*22+1]=poison==0 ? owner : poison==1 ? 1-owner : 255;
+        }
+        A4_WORD(0x2fe0)=poison==0 ? 0x5509 : 0xab09;
+        uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+        celebration_expected_word(expected,0x2ff8,9); celebration_expected_word(expected,0x2fb2,0);
+        celebration_expected_word(expected,0x9c26+parent*22+4,full ? 3111 : 1536);
+        expected[peeps-prg_a4_area+parent*22+3]=9;
+        town_expected_long(expected,0x9a02+owner*16,owner ? 23473 : 12362);
+        if (!occupant) expected[map_who-prg_a4_area+650]=parent+1;
+        if (!full) {
+            uint8_t *record=expected+(peeps-prg_a4_area)+child*22;
+            record[0]=2; record[1]=owner; record[2]=radii[radius].before; record[3]=9;
+            celebration_expected_word(expected,0x9c26+child*22+4,1575);
+            celebration_expected_word(expected,0x9c26+child*22+8,650);
+            celebration_expected_word(expected,0x9c26+child*22+10,0);
+            celebration_expected_word(expected,0x9c26+child*22+12,0);
+            record[14]=record[15]=record[16]=record[17]=record[20]=0;
+            celebration_expected_word(expected,0x9c26+child*22+18,650);
+            celebration_expected_word(expected,0xae5e,layouts[layout].result_count);
+            if (leader) celebration_expected_word(expected,0x99f6+owner*16,child+1);
+            if (view==1) celebration_expected_word(expected,0xae68,child+1);
+            expected[peeps-prg_a4_area+parent*22+2]=radii[radius].after;
+            if (occupant<2) expected[map_who-prg_a4_area+650]=child+1;
+        }
+        core_settle_tick(parent);
+        if (!full) {
+            assert((uint16_t)peep_word(child,6)==stale[poison].timer);
+            assert(peeps[child*22+21]==stale[poison].history);
+        }
+        if (memcmp(expected,prg_a4_area,sizeof expected)) {
+            fprintf(stderr,"split owner=%d layout=%u radius=%u poison=%u leader=%d view=%d occupant=%d\n",
+                    owner,layout,radius,poison,leader,view,occupant);
+            for (size_t byte=0; byte<sizeof expected; ++byte)
+                if (expected[byte]!=prg_a4_area[byte])
+                    fprintf(stderr,"A4 %04zx expected=%02x actual=%02x\n",(byte-32768)&0xffff,expected[byte],prg_a4_area[byte]);
+        }
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(no_peeps==layouts[layout].result_count);
+        assert(!core_result && !core_battles && !core_settlements && !prg_quit);
+    }
+}
+
+static void test_town_split_passes(void)
+{
+    /* Birth before/after the loop cursor must not move or lose population.
+     * The following prepass must see cleared heading bytes and retain leader.
+     * A blocked east step then distinguishes inherited NE history from zero. */
+    const struct { int parent, child, count; } layouts[]={{1,0,2},{0,1,2},{0,1,1}};
+    for (int owner=0; owner<2; ++owner) for (int layout=0; layout<3; ++layout)
+    for (int history=0; history<2; ++history) {
+        int parent=layouts[layout].parent, child=layouts[layout].child;
+        setup_town_split(owner,parent,child,layouts[layout].count);
+        core_leader(1-owner)=0; core_tendency(owner)=0; core_target(owner)=655;
+        set_peep_word(child,6,0x8001); peeps[child*22+21]=history ? 193 : 63;
+        /* Mountain is impassable but footprint maintenance leaves it alone.
+         * Capacity is 275, so the town keeps 137 and releases 2963. */
+        map_blk[651]=47;
+        A4_WORD(0x2ff4)=11; A4_WORD(0x2fde)=0xab09;
+        _move_peeps();
+        int birth_frame=child>parent ? 1 : 0;
+        assert(peeps[child*22]==2 && peep_word(child,4)==2963);
+        assert(peep_word(child,12)==birth_frame && peep_word(child,8)==650);
+        assert(peep_word(child,10)==0 && peep_word(child,18)==650);
+        assert((uint16_t)peep_word(child,6)==0x8001 && peeps[child*22+21]==(history ? 193 : 63));
+        assert(peeps[child*22+3]==9 && !peeps[child*22+20]);
+        for (int byte=14; byte<18; ++byte) assert(!peeps[child*22+byte]);
+        assert(core_leader(owner)==child+1 && view_who==child+1);
+        for (int frame=birth_frame+1; frame<=7; ++frame) {
+            ++game_turn; _move_peeps();
+            assert(core_leader(owner)==child+1 && view_who==child+1);
+            assert(peep_word(child,12)==frame && peep_word(child,8)==650);
+            assert(peep_word(child,4)==2963 && (uint16_t)peep_word(child,6)==0x8001);
+            assert(peeps[child*22+21]==(history ? 193 : 63));
+        }
+        ++game_turn; _move_peeps();
+        assert(peeps[child*22]==2 && peep_word(child,12)==0 && peep_word(child,4)==2962);
+        assert(peep_word(child,8)==(history ? 715 : 587));
+        assert(peep_word(child,10)==(history ? 65 : -63));
+        assert(peeps[child*22+21]==(history ? 191 : 63));
+        assert((uint16_t)peep_word(child,6)==0x8001 && !peeps[child*22+20]);
+        assert(core_leader(owner)==child+1 && view_who==child+1 && !core_leader(1-owner));
+        /* A later parent turn reclaims the cell vacated by a lower child. */
+        assert(map_who[650]==(child<parent ? parent+1 : 0));
+        assert(map_who[history ? 715 : 587]==child+1);
+        assert(!core_battles && !core_settlements && !core_result);
+    }
+}
+
+static void test_town_split(void)
+{
+    test_town_split_records(); test_town_split_view(); test_town_split_passes();
 }
 
 static void test_town_economy_ticks(void)
@@ -3273,7 +3433,9 @@ static void test_town_footprint_completion(void)
             town_expected_long(expected,0x9a02+owner*16,owner ? 23565 : 12454);
             if (!full) {
                 uint8_t *child=expected+(peeps-prg_a4_area)+44;
-                memset(child,0,22); child[0]=2; child[1]=owner; child[2]=3; child[3]=9;
+                child[0]=2; child[1]=owner; child[2]=3; child[3]=9;
+                memset(child+10,0,8); child[20]=0;
+                celebration_expected_word(expected,0xae68,3);
                 celebration_expected_word(expected,0x9c26+44+4,2955);
                 celebration_expected_word(expected,0x9c26+44+8,650);
                 celebration_expected_word(expected,0x9c26+44+18,650);
@@ -7903,6 +8065,10 @@ static void test_battle_frame_render_and_entry(void)
 
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--town-split")) {
+        test_town_split(); test_town_economy(); test_town_footprint();
+        puts("focused ordinary town split: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--town-footprint")) {
         test_town_footprint(); test_town_economy(); test_war_state();
         puts("focused ordinary town footprint: PASS"); return 0;
@@ -8089,6 +8255,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_town_split();
     test_town_footprint(); test_town_economy();
     test_water_remnant(); test_water_remnant_rescue();
     test_water_wait(); test_water_wait_rescue();

@@ -1225,12 +1225,16 @@ static void core_settle_tick(int person)
             int child;
             for (child = 0; child < 208 && peep_word(child,4)>0; ++child) {}
             if (child < 208) {
-                memset(peeps+child*22,0,22); if (child >= no_peeps) no_peeps = child+1;
+                if (child >= no_peeps) no_peeps = child+1;
+                /* asm:3950-3963 leaves this slot's counter and nav history intact. */
+                set_peep_word(child,10,0); set_peep_word(child,12,0);
+                memset(peeps+child*22+14,0,4); peeps[child*22+20] = 0;
                 peeps[child*22] = 2; peeps[child*22+1] = owner;
                 peeps[child*22+2] = peeps[person*22+2]; peeps[child*22+3] = peeps[person*22+3];
                 set_peep_word(child,4,peep_word(person,4)-capacity/2); set_peep_word(person,4,capacity/2);
                 /* asm:3913-3929: the released walker carries the leader. */
                 if (core_leader(owner) == person+1) core_leader(owner) = child+1;
+                if (view_who == person+1) view_who = child+1; /* asm:3931-3937 */
                 set_peep_word(child,8,position); set_peep_word(child,18,position);
                 /* asm:3964-3983: preserve a co-located walker or battle occupant. */
                 if (!map_who[position] || map_who[position] == person+1) map_who[position] = child+1;
