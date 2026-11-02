@@ -6986,7 +6986,8 @@ static void test_heading_navigation_swamp(void)
         assert(core_valid_move(650,fallback ? -63 : 1)==0);
         assert(core_magnet_direction(0)==(presence ? 999 : fallback ? -63 : 1));
         assert(core_valid_move(650,fallback ? -63 : 1)==0);
-        /* Nonwar/controller AI and swamp command production remain disabled. */
+        /* This fixture has controller 0: only the existing war/water producer
+         * can queue. Controller-1 swamp production is covered by --swamp-rescue. */
         if (!war || !fallback || presence==2) assert_mailbox_empty();
     }
     for (int presence=1;presence<3;++presence) {
@@ -9332,8 +9333,213 @@ static void test_magnet_rescue(void)
     test_magnet_rescue_mixed(); test_magnet_rescue_deferred();
 }
 
+/* Catch wrong-cell writes, water-style war admission, fatal-mode leakage,
+ * byte controllers, fallback-only production and premature terrain/payment. */
+static void test_swamp_rescue_admission(void)
+{
+    const int controllers[]={0,1,2,-1,0x0100,0x0101};
+    const int wars[]={0,1,0x8000};
+    unsigned checked=0;
+    for (int owner=0; owner<2; ++owner) for (int controller=0; controller<6; ++controller)
+    for (int war=0; war<3; ++war) for (int bits=0; bits<44; ++bits)
+    for (int reference=0; reference<9; ++reference) for (int fallback=0; fallback<2; ++fallback) {
+        heading_navigation_fixture(owner); no_peeps=2; core_target(owner)=654;
+        A4_WORD(0xae80)=wars[war]; A4_WORD(0x82bc+owner*46)=controllers[controller];
+        A4_WORD(0x82bc+(1-owner)*46)=controllers[5-controller];
+        game_mode=bits<32 ? bits : bits==43 ? -1 : 1<<(bits-27);
+        if (!reference) assert(set_peep_reference(0,-1));
+        if (reference==2 || reference==3) assert(set_peep_reference(0,0));
+        if (reference==3) peeps[23]=owner; /* Empty scan retains self: north. */
+        if (reference>=4) {
+            memset(peeps+14,0,4);
+            if (reference==8) memset(peeps+14,0xff,4);
+            else peeps[14+reference-4]=0xff;
+        }
+        memset(map_blk,47,4096); map_blk[650]=15;
+        map_blk[reference==3 ? 586 : 651]=53;
+        if (fallback) map_blk[reference==3 ? 585 : 587]=15;
+        for (int side=0; side<2; ++side) {
+            terrain_mailbox_write(side,255,27,31);
+            A4_WORD(0x82be + side*46)=bits%2 ? -1 : 0;
+            A4_WORD(0x82c4+side*46)=A4_WORD(0x82c6+side*46)=0;
+            A4_LONG(0x9a02+side*16)=0x80000000u;
+        }
+        game_turn=7; mode=3; core_tool=core_swamp_selected=1; peeps[21]=0x80;
+        uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+        int delta=reference==0 ? 1 : fallback ? (reference==3 ? -65 : -63) : 999;
+        expected[peeps-prg_a4_area+21]=(uint8_t)(reference==0 ? 1 : reference==3 ? 65 : 63);
+        if (reference==2) { uint32_t heading=2; memcpy(expected+(peeps-prg_a4_area)+14,&heading,4); }
+        if (reference>=1 && reference<=3 && !war && controller==1 && !(game_mode&12)) {
+            expected[A4_DISP(0x82b6+owner*46)-prg_a4_area]=1;
+            expected[A4_DISP(0x82b7+owner*46)-prg_a4_area]=reference==3 ? 10 : 11;
+            expected[A4_DISP(0x82b8+owner*46)-prg_a4_area]=reference==3 ? 9 : 10;
+            celebration_expected_word(expected,0x82be + owner*46,1);
+        }
+        assert(core_magnet_direction(0)==delta);
+        if (memcmp(expected,prg_a4_area,sizeof expected))
+            fprintf(stderr,"swamp rescue owner=%d controller=%d war=%x mode=%x reference=%d fallback=%d\n",
+                    owner,controllers[controller],wars[war],(uint16_t)game_mode,reference,fallback);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        assert(seed==123 && !core_battles && !core_settlements); ++checked;
+    }
+    printf("swamp rescue admission full-A4 cases: %u\n",checked);
+}
+
+static void test_swamp_rescue_navigation(void)
+{
+    const struct { int position,target,swamp,opening,history,delta,after,x,y; } cases[]={
+        {650,654,651,-1,0,999,63,11,10},
+        {650,654,651,587,0,-63,63,11,10},
+        {650,654,651,587,-63,999,63,11,10},
+        {650,654,587,-1,0,999,63,-1,-1}, /* Rock primary; swamp only in fallback. */
+        {0,1,1,-1,0,999,63,1,0},{63,62,62,-1,0,999,-63,62,0},
+        {4032,4033,4033,-1,0,999,63,1,63},{4095,4094,4094,-1,0,999,-63,62,63},
+        {0,0,4032,-1,0,999,65,-1,-1}, /* Same-cell heading tries off-map north. */
+        {63,63,4095,-1,0,999,65,-1,-1}
+    };
+    for (int owner=0; owner<2; ++owner)
+    for (unsigned sample=0; sample<sizeof cases/sizeof cases[0]; ++sample) {
+        heading_navigation_fixture(owner); no_peeps=2;
+        A4_WORD(0x82bc+owner*46)=1;
+        set_peep_word(0,8,cases[sample].position); set_peep_word(1,8,cases[sample].target);
+        memset(map_blk,47,4096); map_blk[cases[sample].position]=15;
+        map_blk[cases[sample].swamp]=53;
+        if (cases[sample].opening>=0) map_blk[cases[sample].opening]=15;
+        peeps[21]=(uint8_t)cases[sample].history;
+        terrain_mailbox_write(owner,2,27,31); A4_WORD(0x82be + owner*46)=-1;
+        uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+        expected[peeps-prg_a4_area+21]=(uint8_t)cases[sample].after;
+        if (cases[sample].x>=0) {
+            expected[A4_DISP(0x82b6+owner*46)-prg_a4_area]=1;
+            expected[A4_DISP(0x82b7+owner*46)-prg_a4_area]=cases[sample].x;
+            expected[A4_DISP(0x82b8+owner*46)-prg_a4_area]=cases[sample].y;
+            celebration_expected_word(expected,0x82be + owner*46,1);
+        }
+        assert(core_magnet_direction(0)==cases[sample].delta);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+    /* Geometric sign navigation cannot generate row wrap; keep its underlying
+     * validity guard explicit rather than inventing an unreachable heading. */
+    heading_navigation_fixture(0); map_blk[64]=map_blk[63]=53;
+    assert(core_valid_move(63,1)==1 && core_valid_move(64,-1)==1);
+}
+
+static void swamp_rescue_fixture(int owner, int population, int terminal)
+{
+    water_rescue_fixture(owner,population,terminal);
+    peeps[0]=2; set_peep_word(0,12,7); map_blk[650]=15; map_blk[651]=53;
+    assert(set_peep_reference(0,1)); set_peep_word(1,8,654);
+    map_who[901]=0; map_who[654]=2;
+    core_target(owner)=654;
+}
+
+static void test_swamp_rescue_deferred(void)
+{
+    for (int owner=0; owner<2; ++owner) {
+        swamp_rescue_fixture(owner,100,0);
+        _move_peeps(); assert_war_command(owner,651);
+        assert(peeps[0]==0x42 && peep_word(0,8)==650 && peep_word(0,4)==99);
+        assert(map_blk[651]==53 && core_vertex(11,10)==0 && core_mana(owner)==100);
+        core_consume_terrain_mailboxes();
+        /* _make_map preserves rocks, not swamp: one raised NW corner -> 17. */
+        assert(map_blk[651]==17 && map_blk[650]==18 && core_vertex(11,10)==1);
+        assert(core_vertex(10,10)==0 && core_vertex(14,10)==0 && core_mana(owner)==86);
+        assert_mailbox_empty();
+
+        swamp_rescue_fixture(owner,100,0);
+        for (int turn=1; turn<=10; ++turn) {
+            game_tick();
+            assert(peep_word(0,4)==100-turn && core_mana(owner)==86);
+            assert(map_blk[651]==17 && core_vertex(11,10)==1);
+            assert(A4_WORD(0x82be + owner*46)==(turn<3)); assert_mailbox_empty();
+            assert(peeps[0]==(turn<10 ? 0x42 : 2));
+            assert(peep_word(0,8)==(turn<10 ? 650 : 651));
+        }
+        assert(peep_word(0,10)==1 && map_who[651]==1 && !map_who[650] && !core_result);
+        swamp_rescue_fixture(owner,100,0); A4_LONG(0x9a02+owner*16)=9;
+        for (int turn=1; turn<=10; ++turn) {
+            game_tick();
+            assert(peep_word(0,8)==650 && peeps[0]==0x42 && peep_word(0,4)==100-turn);
+            assert(map_blk[651]==53 && core_vertex(11,10)==0 && core_mana(owner)==9);
+            assert(A4_WORD(0x82be + owner*46)==(turn<3 || turn==10)); assert_mailbox_empty();
+        }
+        for (int terminal=0; terminal<2; ++terminal) {
+            swamp_rescue_fixture(owner,1,terminal); game_tick();
+            assert(!peeps[0] && !peep_word(0,4) && !map_who[650]);
+            assert(core_result==(terminal ? (owner ? 1 : 2) : 0));
+            assert(map_blk[651]==(terminal ? 53 : 17));
+            assert(core_vertex(11,10)==!terminal && core_mana(owner)==(terminal ? 100 : 86));
+            assert_mailbox_empty();
+        }
+        for (int gate=0; gate<5; ++gate) {
+            swamp_rescue_fixture(owner,100,0); terrain_mailbox_write(owner,2,27,31);
+            pause=gate==0; prg_quit=gate==1; core_result=gate>=2 ? gate-1 : 0;
+            uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+            game_tick(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        }
+        pause=prg_quit=core_result=0;
+    }
+}
+
+static void test_swamp_rescue_order(void)
+{
+    /* Slot order, not producer type, owns the last write. Foreign owners retain
+     * separate mailboxes. Old-water fatal exclusion must not infect swamp. */
+    for (int owner=0; owner<2; ++owner) for (int reverse=0; reverse<2; ++reverse)
+    for (int separate=0; separate<2; ++separate) for (int fatal=0; fatal<2; ++fatal) {
+        swamp_rescue_fixture(owner,100,0); game_mode=fatal;
+        A4_WORD(0x82bc)=A4_WORD(0x82bc+46)=1;
+        uint8_t walker[22]; memcpy(walker,peeps,22);
+        memset(peeps,0,66); no_peeps=3;
+        int wet=1-reverse, wet_owner=separate ? 1-owner : owner;
+        memcpy(peeps+reverse*22,walker,22); assert(set_peep_reference(reverse,2));
+        peeps[wet*22]=18; peeps[wet*22+1]=wet_owner;
+        set_peep_word(wet,4,100); set_peep_word(wet,8,780);
+        peeps[44]=8; peeps[45]=1-owner;
+        set_peep_word(2,4,100); set_peep_word(2,6,2); set_peep_word(2,8,654);
+        memset(map_who,0,4096); map_who[650]=reverse+1; map_who[780]=wet+1; map_who[654]=3;
+        map_blk[780]=0;
+        _move_peeps();
+        assert(peep_word(reverse,8)==650 && peeps[reverse*22]==0x42);
+        assert(peep_word(reverse,4)==99 && peep_word(wet,4)==(fatal ? 0 : 98));
+        assert_war_command(owner,!fatal && !separate && !reverse ? 780 : 651);
+        if (separate && !fatal) assert_war_command(wet_owner,780);
+        else assert(!A4_DISP(0x82b6+(1-owner)*46)[0]);
+        assert(map_blk[651]==53 && core_vertex(11,10)==0 && core_mana(owner)==100);
+    }
+    /* The same owner latch suppresses the later town capacity override. A
+     * foreign rescue must not suppress that split; an earlier town still splits. */
+    for (int owner=0; owner<2; ++owner) for (int foreign=0; foreign<2; ++foreign)
+    for (int town_first=0; town_first<2; ++town_first) {
+        setup_town_capacity(owner,306); game_mode=0; no_peeps=3;
+        int side=foreign ? 1-owner : owner;
+        A4_WORD(0x82bc)=A4_WORD(0x82bc+46)=1;
+        A4_WORD(0x82be)=A4_WORD(0x82be + 46)=0;
+        peeps[22]=2; peeps[23]=side;
+        set_peep_word(1,4,100); set_peep_word(1,8,900); assert(set_peep_reference(1,2));
+        peeps[44]=8; peeps[45]=1-side;
+        set_peep_word(2,4,100); set_peep_word(2,8,904);
+        memset(map_blk+835,47,132); map_blk[900]=15; map_blk[901]=53;
+        if (town_first) core_settle_tick(0);
+        assert(core_magnet_direction(1)==999);
+        if (!town_first) core_settle_tick(0);
+        assert_war_command(side,901);
+        assert(peep_word(0,4)==(town_first || foreign ? 163 : 317));
+        assert(no_peeps==(town_first || foreign ? 4 : 3));
+    }
+}
+
+static void test_swamp_rescue(void)
+{
+    test_swamp_rescue_admission(); test_swamp_rescue_navigation(); test_swamp_rescue_deferred();
+    test_swamp_rescue_order();
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--swamp-rescue")) {
+        test_swamp_rescue(); puts("focused swamp rescue: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--magnet-rescue")) {
         test_magnet_rescue(); test_water_rescue(); test_war_terrain(); test_magnet();
         puts("focused magnet rescue: PASS"); return 0;
@@ -9560,6 +9766,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_swamp_rescue();
     test_magnet_rescue();
     test_water_rescue();
     test_water_town();

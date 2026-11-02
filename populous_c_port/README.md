@@ -197,7 +197,19 @@ references, fallback history, mixed producer ordering and paid retry-to-crossing
 Focused/full normal and sanitized suites, real-data victories, historical cadence
 regressions and all 495 starts passed with unchanged limits after enabling this
 walking producer; measured match outcomes remain those listed below.
-Other AI and swamp-target command production remain disabled.
+A rejected primary swamp step can also queue a raise
+(`src/populous_prg.asm:5328-5383`): outside war, controller word exactly 1, with
+both no-build and build-only-up clear. It targets the adjacent swamp cell, unlike
+water assistance's current-cell command, then continues ordinary fallback.
+Heading-absent walkers still take their earlier direct-swamp return; fallback-only
+swamps do not produce. Fatal-water mode is not an admission restriction here.
+The port rejects geometrically invalid primary steps and opaque invalid heading
+references before production; these are explicit host bounds, not literal Amiga
+behavior. `--swamp-rescue` checks 28,512 full-A4 admission cases, navigation,
+shared writes and paid swamp clearance followed by crossing. Focused/full normal
+and sanitized suites, original-data victories, historical cadence regressions and
+all 495 starts passed with unchanged inputs, outcomes and limits. Other AI remains
+disabled.
 Mixed-water recovery and combat-water differences remain; canonical entry,
 submerged loss and dry recovery are described below.
 A controlled two-island fixture raises a route solely through movement-produced

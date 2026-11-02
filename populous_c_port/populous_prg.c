@@ -959,6 +959,11 @@ static int core_magnet_direction(int person)
     }
     if (valid == 3 && reference != -2)
         core_queue_terrain_raise(owner,position);
+    /* asm:5328-5383 queues the rejected primary swamp, then tries fallback.
+     * Retain host geometric safety and the bounded opaque-reference exclusion. */
+    if (valid == 0 && reference != -2 && map_blk[position+delta] == 53 &&
+        !A4_WORD(0xae80) && !(game_mode&GAME_MODE_BUILD_ONLY_UP))
+        core_queue_terrain_raise(owner,position+delta);
     int direction = primary-1;
     for (int attempt = 0; attempt < 8; ++attempt, ++direction) {
         if (direction < 0) direction = 7;
