@@ -2402,11 +2402,12 @@ static void _move_peeps(void)
             continue;
         }
         if ((flags == 18 || flags == 0x15 || flags == 0x16 ||
-             flags == 0x32 || flags == 0x52 || flags == 0x72) && map_blk[position]) {
+             flags == 0x32 || flags == 0x52 || flags == 0x72 || flags == 0x90) && map_blk[position]) {
             /* asm:3484-3490,3544-3557: dry recovery still loses first.
              * Frame even a negative word, but never zero; ignore completion.
              * Exact-2 dies before navigation; 5/6 finish celebration first;
-             * 0x22/42/62 finish waiting loss and any retry before cleanup. */
+             * 0x22/42/62 finish waiting loss and any retry before cleanup.
+             * Exact-0x80 framing is inert; even nonpositive loss reaches its timer. */
             if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
             uint16_t loss = (uint16_t)(2u*(uint16_t)A4_WORD(0x2fb0));
             set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)-loss));
@@ -2451,7 +2452,7 @@ static void _move_peeps(void)
             if (!map_who[position]) map_who[position] = person+1;
             unsigned previous = (uint16_t)peep_word(person,6);
             set_peep_word(person,6,(uint16_t)(previous-1u));
-            if (!previous) core_remove(person);
+            if (!previous || peep_word(person,4)<=0) core_remove(person);
         } else {
             if (!core_frame_walker(person)) continue;
             int position = peep_word(person,8);

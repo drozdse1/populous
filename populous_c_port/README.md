@@ -172,8 +172,8 @@ first frame update; a negative result still advances it before cleanup. Thus a
 survivor at frame 6 can move in this update, whereas frame 7 or 93 ends at frame 1
 without moving. Rescue terrain does not guarantee survival of the following
 recovery update. Other mixed-water states retain the previous host recovery
-behavior, except for the bounded victory and waiting states described below;
-this change does not establish full drowning, movement or cleanup parity.
+behavior, except for the bounded victory, waiting and remnant states described
+below; this change does not establish full drowning, movement or cleanup parity.
 `--water-recovery` covers literal full-A4 frame/loss outcomes, negative-population
 encounter prevention, swamp ordering, stopped ticks and rescue-to-death sequences.
 Full normal/sanitized suites, original-data matches and all 495 starts passed;
@@ -209,6 +209,19 @@ open/blocked routes, current-cell battle cleanup, dead destination isolation,
 mailboxes, stopped ticks and deferred rescue with independent full-A4 expectations.
 Focused/full normal and sanitized suites, original-data matches and all 495
 original starts passed; original-data match outcomes are unchanged.
+
+Dry remnant-water state `0x90` recovers to `0x80` instead of becoming a walker.
+After wrapped water loss it claims only empty occupancy and decrements its old
+unsigned timer, even when that loss leaves zero or negative population. Old timer
+zero forces expiry; signed nonpositive population also triggers cleanup, but only
+after the timer update. Fatal mode removes the original state before loss or timer
+work. Frames and terrain remain unchanged; no walking, swamp trap or town cleanup
+is introduced. Existing host leader/view and protected-occupancy cleanup still
+applies, rather than claiming full original death parity. `--water-remnant` checks
+full-A4 dry/wet boundaries, word losses, timer expiry, fatal ordering, map edges,
+foreign occupancy, stopped ticks and deferred rescue/death sequences. Focused/full
+normal and sanitized suites, original-data matches and all 495 starts passed;
+original-data match outcomes remain unchanged.
 
 Heading target selection (`_get_heading`) now has a bounded implementation:
 self when no enemy qualifies, otherwise the first nearest living different-owner
