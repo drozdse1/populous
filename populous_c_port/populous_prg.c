@@ -59,6 +59,7 @@
 #include <limits.h>
 
 #include "land_data.h"
+#include "level_data.h"
 #include "graphics.h"
 #ifndef POPULOUS_DEFAULT_ASSET_DIR
 #define POPULOUS_DEFAULT_ASSET_DIR "binaries/populous-extracted"
@@ -75,7 +76,7 @@
  * GCC packed/may_alias accessors support the original two-byte long alignment
  * without violating C aliasing. Values are host-endian, not disk images. */
 _Alignas(4) static uint8_t prg_a4_area[65536];
-#define prg_a4 (prg_a4_area + 32768)
+static uint8_t *prg_a4 = prg_a4_area + 32768; /* temporarily redirected for staged starts */
 typedef struct __attribute__((packed, may_alias)) { int16_t value; } A4Word;
 typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
 #define A4_WORD(offset) (((A4Word *)A4_DISP(offset))->value)
@@ -579,8 +580,12 @@ static const uint8_t demo_levels[8][9] = {
 
 static int current_start_pop_you = 12;
 static int current_start_pop_enemy = 10;
+typedef enum { START_SYNTHETIC, START_ORIGINAL } StartKind;
+typedef struct { StartKind kind; int number; } StartSelection;
+static StartSelection current_start, requested_start;
 static int current_scenario;
 static int game_reset(int scenario);
+static int game_reset_start(StartSelection selection);
 static void game_tick(void);
 static void game_render(void);
 static void game_handle_event(const SDL_Event *event);
@@ -600,12 +605,29 @@ static int parse_scenario(int argc, char **argv, int *scenario)
     return 1;
 }
 
+static int parse_start(int argc, char **argv, StartSelection *out)
+{
+    StartSelection selected = {START_SYNTHETIC, 0};
+    if (argc == 3 && argv && argv[1] && !strcmp(argv[1], "--level")) {
+        if (!argv[2] || !argv[2][0]) return 0;
+        for (const char *digit = argv[2]; *digit; ++digit)
+            if (*digit < '0' || *digit > '9') return 0;
+        errno = 0;
+        char *end;
+        unsigned long number = strtoul(argv[2], &end, 10);
+        if (errno == ERANGE || *end || number >= LEVEL_COUNT) return 0;
+        selected = (StartSelection){START_ORIGINAL, (int)number};
+    } else if (!parse_scenario(argc, argv, &selected.number)) return 0;
+    *out = selected;
+    return 1;
+}
+
 void prg_main(void)
 {
     prg_status = EXIT_SUCCESS;
     prg_quit = 0;
-    if (!parse_scenario(g_argc, g_argv, &current_scenario)) {
-        fprintf(stderr, "Usage: populous_init_port [nonnegative integer <= INT_MAX]\n");
+    if (!parse_start(g_argc, g_argv, &requested_start)) {
+        fprintf(stderr, "Usage: populous_init_port [nonnegative integer <= INT_MAX | --level 0..494]\n");
         prg_status = EXIT_FAILURE;
         return;
     }
@@ -652,9 +674,14 @@ static void core_make_map_region(int left, int top, int right, int bottom)
             int block = 0, cell = row * 64 + column;
             for (int corner = 0; corner < 4; ++corner)
                 if (corners[corner] > altitude) block |= 1 << corner;
+            /* asm:1475-1517: preserve rock only while any land remains;
+             * protected flat rocks keep the unadjusted average altitude. */
+            int protected_rock = map_blk[cell] == 47 && (block || altitude);
+            if (protected_rock) block = 47;
             if (altitude && !block) { --altitude; block = 15; }
             if (!altitude && block && block != 15) block += 16;
             map_alt[cell] = altitude;
+            if (protected_rock) block = 47;
             map_blk[cell] = block;
             if (!block) map_bk2[cell] = 0;
             A4_WORD(0xff88 + cell * 2) = 0;
@@ -974,9 +1001,165 @@ static void _place_first_people(void)
     }
 }
 
+/* Generator-only raise: no player powers, mana or settlement restrictions.
+ * asm:1274-1416; discard out-of-map neighbours before reading their heights. */
+static int original_raise_point(int column, int row)
+{
+    if (column < 0 || column > 64 || row < 0 || row > 64) return 0;
+    int height = core_vertex(column, row);
+    if (height >= 8) return height;
+    core_set_vertex(column, row, ++height);
+    A4_WORD(0x2f88) = (int16_t)((uint16_t)A4_WORD(0x2f88) + 1u);
+    static const int neighbours[8][2] = {
+        {1,0}, {1,1}, {0,1}, {-1,1}, {-1,0}, {-1,-1}, {0,-1}, {1,-1}
+    };
+    for (int index = 0; index < 8; ++index) {
+        int next_column = column + neighbours[index][0];
+        int next_row = row + neighbours[index][1];
+        if (next_column >= 0 && next_column <= 64 && next_row >= 0 && next_row <= 64 &&
+            height - core_vertex(next_column, next_row) > 1)
+            original_raise_point(next_column, next_row);
+    }
+    if (column < A4_WORD(0x2f8a)) A4_WORD(0x2f8a) = column;
+    if (column > A4_WORD(0x2f8c)) A4_WORD(0x2f8c) = column;
+    if (row < A4_WORD(0x2f8e)) A4_WORD(0x2f8e) = row;
+    if (row > A4_WORD(0x2f90)) A4_WORD(0x2f90) = row;
+    return core_vertex(column, row);
+}
+
+typedef uint16_t (*WorldRandom)(void);
+static void original_make_thing(int spread_x, int spread_y, WorldRandom random)
+{
+    int column = random() % 64;
+    int row = random() % 64;
+    while (original_raise_point(column, row) != 6) {
+        column += (int)(random() % (2 * spread_x + 1)) - spread_x;
+        row += (int)(random() % (2 * spread_y + 1)) - spread_y;
+        if (column < 0) column = 0;
+        if (column > 64) column = 64;
+        if (row < 0) row = 0;
+        if (row > 64) row = 64;
+    }
+}
+
+/* asm:8535-8626: rejected attempts consume no variant random value. */
+static void original_woods(WorldRandom random)
+{
+    for (int cluster = 0; cluster < 22; ++cluster) {
+        int base_column = random() % 59;
+        int base_row = random() % 59;
+        for (int attempt = 0; attempt < 30; ++attempt) {
+            int column = base_column + random() % 9;
+            int row = base_row + random() % 9;
+            if (column >= 64 || row >= 64) continue;
+            int cell = row * 64 + column;
+            if (!map_blk[cell] || map_blk[cell] == 47) continue;
+            int variant = random() % 3;
+            if (cluster < 7) map_blk[cell] = 47 + variant;
+            else map_bk2[cell] = 50 + variant;
+        }
+    }
+}
+
+static int original_place_person(int owner, int cell, int leader)
+{
+    if (cell < 0 || cell >= 4096 || no_peeps >= 208 || map_who[cell]) return 0;
+    int person = no_peeps++;
+    peeps[person * 22] = 2;
+    peeps[person * 22 + 1] = owner;
+    peeps[person * 22 + 2] = peeps[person * 22 + 3] = 1;
+    set_peep_word(person, 4, 45);
+    set_peep_word(person, 8, cell);
+    /* _place_people starts frame 255 then calls _set_frame (asm:5732-5736). */
+    set_peep_word(person, 12, 0);
+    map_who[cell] = person + 1;
+    if (leader) core_leader(owner) = person + 1;
+    return 1;
+}
+
+/* Conquest searches, asm:7688-7856. Caller stages the whole world so any
+ * overlap/capacity/insufficient-land failure cannot publish a partial start. */
+static int original_place_people(int friendly_count, int enemy_count)
+{
+    /* Zero counts enter the original decrement-before-test loop and underflow.
+     * Reject that unsupported input rather than manufacture a different start. */
+    if (friendly_count <= 0 || enemy_count <= 0 || friendly_count + enemy_count > 208)
+        return 0;
+    for (int owner = 0; owner < 2; ++owner) {
+        int remaining = owner ? enemy_count : friendly_count;
+        int step = owner ? -1 : 1;
+        for (int cell = owner ? 3968 : 128;
+             remaining && cell >= 128 && cell < 4096; cell += step) {
+            if (map_blk[cell] != 15) continue;
+            --remaining;
+            /* Preferred scans do NOT filter occupancy in the original. */
+            if (!original_place_person(owner, cell, remaining <= 0)) return 0;
+        }
+        /* Original enemy fallback probes logical 4096 (outside the map).
+         * Safety exception: skip that probe; retain 4095..1, excluding zero. */
+        for (int cell = owner ? 4095 : 0;
+             remaining && cell >= (owner ? 1 : 0) && cell < 4096; cell += step) {
+            if (!map_blk[cell] || map_who[cell]) continue;
+            if (!owner) --remaining;
+            if (!original_place_person(owner, cell, remaining <= 0)) return 0;
+            if (owner) --remaining; /* enemy fallback never marks its last man leader */
+        }
+        if (remaining) return 0;
+    }
+    A4_LONG(0xae72) = friendly_count * 10;
+    return 1;
+}
+
+static void original_clear(WorldRandom random, unsigned internal_level)
+{
+    _clear_map();
+    memset(map_steps, 0, 4096 * 2);
+    memset(peeps, 0, 208 * 22);
+    no_peeps = 0;
+    for (int owner = 0; owner < 2; ++owner) {
+        core_tendency(owner) = 1;
+        core_target(owner) = 0x820;
+        core_leader(owner) = 0;
+        A4_LONG(0x9a02 + owner * 16) = 399;
+        int value = random() % 3;
+        A4_WORD(0x82d0 + owner * 46) = value;
+        A4_WORD(0x82ce + owner * 46) = value + random() % 5 + 1;
+    }
+    if (internal_level > 0x4d3) A4_LONG(0x9a12) = 2700; /* mana_values[3] + 200 */
+    A4_WORD(0xae76) = A4_WORD(0xae78) = 0x820;
+    pointer = 1; mode = 2; A4_WORD(0x8258) = -1;
+    right_button = left_button = 2;
+}
+
+static int original_generate(const LevelStart *start)
+{
+    const LevelRecord *record = &start->record;
+    in_conquest = A4_WORD(0xae7e) = start->internal_level;
+    conquest = record->rating; conq_01_speed = record->speed;
+    conq_02_enemypow = record->enemy_powers; conq_03_yourpow = record->your_powers;
+    conq_04_mode = record->mode_flags; conq_05_terrain = record->terrain;
+    A4_DISP(0x84c2)[0] = record->your_count; A4_DISP(0x84c3)[0] = record->enemy_count;
+    conq_08_seed = (int16_t)record->seed_offset;
+    seed = start_seed = (int16_t)start->initial_seed;
+    ground_in = record->terrain;
+    original_clear(___newrand, start->internal_level);
+    LAB_516DE = record->rating; LAB_516E2 = record->speed;
+    LAB_516E0 = (record->enemy_powers << 3) | 7;
+    LAB_516B2 = (record->your_powers << 3) | 7;
+    game_mode = record->mode_flags;
+    original_make_thing(2, 4, ___newrand);
+    original_make_thing(4, 2, ___newrand);
+    original_make_thing(3, 3, ___newrand);
+    _make_map();
+    original_woods(___newrand);
+    if (!original_place_people(record->your_count, record->enemy_count)) return 0;
+    seed = (int16_t)((uint16_t)seed + 1u);
+    return 1;
+}
+
 static void _animate(void)
 {
-    if (!game_reset(current_scenario)) { prg_status = EXIT_FAILURE; return; }
+    if (!game_reset_start(requested_start)) { prg_status = EXIT_FAILURE; return; }
     game_render();
     Uint32 next_tick = SDL_GetTicks() + 50;
     while (!prg_quit) {
@@ -995,7 +1178,14 @@ static void _animate(void)
 
 static int game_reset(int scenario)
 {
-    if (scenario < 0 || scenario >= 8) return 0;
+    return game_reset_start((StartSelection){START_SYNTHETIC, scenario});
+}
+
+static int game_reset_start(StartSelection selection)
+{
+    int scenario = selection.number;
+    if (scenario < 0 || (selection.kind != START_SYNTHETIC && selection.kind != START_ORIGINAL) ||
+        scenario >= (selection.kind == START_ORIGINAL ? LEVEL_COUNT : 8)) return 0;
     ensure_prg_screen();
     if (!prg_screen) return 0;
     LandRules loaded;
@@ -1007,17 +1197,40 @@ static int game_reset(int scenario)
     if (path_length < 0 || (size_t)path_length >= sizeof default_data) return 0;
     const char *directory = getenv("POPULOUS_DATA_DIR");
     if (!directory) directory = default_data;
-    if (!land_rules_load(directory, demo_levels[scenario][5], &loaded, error, sizeof error)) {
+    LevelStart original = {0};
+    unsigned terrain;
+    if (selection.kind == START_ORIGINAL) {
+        LevelTable levels;
+        if (!level_data_load(directory, &levels, error, sizeof error) ||
+            !level_data_select(&levels, (unsigned)scenario, &original)) {
+            fprintf(stderr, "Original level data: %s\n", error);
+            return 0;
+        }
+        terrain = original.record.terrain;
+    } else terrain = demo_levels[scenario][5];
+    if (!land_rules_load(directory, terrain, &loaded, error, sizeof error)) {
         fprintf(stderr,"Original LAND data: %s. Set POPULOUS_DATA_DIR to extracted land0..3.\n",error);
         return 0;
     }
-    GraphicsAssets *loaded_assets = graphics_load(asset_directory,demo_levels[scenario][5],loaded.sprite_set,error,sizeof error);
+    _Alignas(4) uint8_t staged[sizeof prg_a4_area] = {0};
+    if (selection.kind == START_ORIGINAL) {
+        uint8_t *live = prg_a4;
+        prg_a4 = staged + 32768;
+        int generated = original_generate(&original);
+        prg_a4 = live;
+        if (!generated) {
+            fprintf(stderr, "Original level %d rejected: overlapping, insufficient or unsupported starting population\n", scenario);
+            return 0;
+        }
+    }
+    GraphicsAssets *loaded_assets = graphics_load(asset_directory,terrain,loaded.sprite_set,error,sizeof error);
     if (!loaded_assets) { fprintf(stderr,"Original graphics: %s\n",error); return 0; }
     graphics_free(game_assets);
     game_assets = loaded_assets;
     diagnostic_view = 0;
+    current_start = selection;
     current_scenario = scenario;
-    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    memcpy(prg_a4_area, staged, sizeof prg_a4_area);
     const uint16_t *tables[] = {loaded.population_add,loaded.mana_add,loaded.weapons_add,loaded.battle_add1,loaded.battle_add2,loaded.weapons_order};
     const int offsets[] = {0x2fe2,0x2fb6,0x2fcc,0x2ffa,0x3010,0x2f96};
     for (int table = 0; table < 6; ++table)
@@ -1027,6 +1240,7 @@ static int game_reset(int scenario)
     for (int index = 0; index < 25; ++index) A4_WORD(0x842c+index*2) = core_offsets[index];
     for (int index = 0; index < 9; ++index) A4_WORD(0x8474+index*2) = core_city[index];
     for (int index = 0; index < 11; ++index) A4_LONG(0x8486+index*4) = (uint32_t)core_mana_values[index];
+    if (selection.kind == START_SYNTHETIC) {
     for (int owner = 0; owner < 2; ++owner) {
         A4_LONG(0x9a02+owner*16) = 399; /* _setup_display asm:1070 */
         core_tendency(owner) = 1; core_target(owner) = 0x820;
@@ -1047,7 +1261,25 @@ static int game_reset(int scenario)
     demo_shield_timer = growth_tick = 0;
     prg_quit = 0;
     _setup_display();
+    } else {
+        current_start_pop_you = original.record.your_count;
+        current_start_pop_enemy = original.record.enemy_count;
+        demo_mana = 50;
+        demo_shield_timer = growth_tick = 0;
+        prg_quit = 0;
+    }
+    core_result = core_battles = core_settlements = core_tool = 0;
     xoff = yoff = 6;
+    if (selection.kind == START_ORIGINAL) {
+        /* Host camera accommodation: original inhabitants are not on demo plots. */
+        int cell = peep_word(core_leader(0) - 1, 8);
+        xoff = cell % 64 - 3;
+        yoff = cell / 64 - 3;
+        if (xoff < 0) xoff = 0;
+        if (xoff > 56) xoff = 56;
+        if (yoff < 0) yoff = 0;
+        if (yoff > 56) yoff = 56;
+    }
     SDL_SetWindowTitle(prg_screen->window,"Populous - original-rule intermediate port");
     return 1;
 }
@@ -1609,7 +1841,8 @@ static void game_handle_event(const SDL_Event *event)
             if (key == SDLK_SPACE) pause = !pause;
             if (key == SDLK_p) paint_map = !paint_map;
             if (key == SDLK_d) { diagnostic_view = !diagnostic_view; xoff = yoff = diagnostic_view ? 0 : 6; }
-            if (key == SDLK_r && !game_reset(current_scenario)) { prg_status = EXIT_FAILURE; prg_quit = 1; }
+            if (key == SDLK_r && !game_reset_start(current_start))
+            fprintf(stderr, "Reset failed; keeping the current game.\n");
             if (!pause && !core_result && key >= SDLK_0 && key <= SDLK_3) core_tendency(0) = key-SDLK_0;
             if (key == SDLK_m) core_tool = !core_tool;
         }

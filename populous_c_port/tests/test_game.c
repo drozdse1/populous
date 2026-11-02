@@ -665,9 +665,282 @@ static void test_original_graphics_output(void)
     _closeall(); SDL_Quit();
 }
 
-int main(void)
+static unsigned scripted_calls;
+static uint16_t scripted_value;
+static uint16_t scripted_random(void)
 {
+    ++scripted_calls;
+    return scripted_value;
+}
+
+static const uint16_t *scripted_sequence;
+static size_t scripted_length, scripted_position;
+static uint16_t sequence_random(void)
+{
+    assert(scripted_position < scripted_length);
+    return scripted_sequence[scripted_position++];
+}
+
+static void test_original_generator(void)
+{
+    static const uint16_t clear_values[] = {5, 9, 7, 8};
+    scripted_sequence = clear_values; scripted_length = 4; scripted_position = 0;
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    original_clear(sequence_random, 1235);
+    assert(scripted_position == 4);
+    assert(A4_WORD(0x82d0) == 2 && A4_WORD(0x82ce) == 7);
+    assert(A4_WORD(0x82fe) == 1 && A4_WORD(0x82fc) == 5);
+    assert(core_mana(0) == 399 && core_mana(1) == 399);
+    scripted_position = 0;
+    original_clear(sequence_random, 1236);
+    assert(core_mana(1) == 2700);
+    static const uint16_t edge_values[] = {63,63,4,8,2,4,2,4,2,4,2,4,2,4};
+    scripted_sequence = edge_values; scripted_length = 14; scripted_position = 0;
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    original_make_thing(2, 4, sequence_random);
+    assert(scripted_position == 14 && core_vertex(64,64) == 6);
+    assert(core_vertex(63,63) == 5);
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    assert(original_raise_point(-1, 0) == 0);
+    for (int repeat = 1; repeat <= 8; ++repeat)
+        assert(original_raise_point(64, 64) == repeat);
+    assert(original_raise_point(64, 64) == 8);
+    assert(core_vertex(63, 63) == 7 && core_vertex(62, 64) == 6);
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    for (int repeat = 0; repeat < 5; ++repeat) original_raise_point(0, 0);
+    scripted_calls = scripted_value = 0;
+    original_make_thing(2, 4, scripted_random);
+    assert(scripted_calls == 2 && core_vertex(0, 0) == 6);
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    scripted_calls = 0;
+    original_make_thing(2, 4, scripted_random);
+    assert(scripted_calls == 12 && core_vertex(0, 0) == 6);
+    memset(map_blk, 0, 4096);
+    map_blk[0] = 47; map_bk2[0] = 51;
+    _make_map();
+    assert(map_blk[0] == 47 && map_bk2[0] == 51);
+    assert(map_alt[0] == 5); /* protected block does not lower flat altitude */
+    memset(A4_DISP(0xae86), 0, 65 * 65 * 2);
+    _make_map();
+    assert(map_blk[0] == 0 && map_bk2[0] == 0);
+    for (int row = 0; row <= 64; ++row)
+        for (int column = 0; column <= 64; ++column) core_set_vertex(column, row, 2);
+    map_blk[0] = 47;
+    _make_map();
+    assert(map_blk[0] == 47 && map_alt[0] == 2);
+    memset(map_blk, 0, 4096);
+    scripted_calls = 0;
+    original_woods(scripted_random);
+    assert(scripted_calls == 1364);
+    map_blk[0] = 15;
+    scripted_calls = 0;
+    original_woods(scripted_random);
+    assert(scripted_calls == 1365 && map_blk[0] == 47);
+    memset(map_blk, 15, 4096);
+    scripted_value = 1; scripted_calls = 0;
+    original_woods(scripted_random);
+    assert(scripted_calls == 2024 && map_blk[130] == 48 && map_bk2[130] == 51);
+}
+
+static void test_original_placement(void)
+{
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    map_blk[128] = map_blk[129] = map_blk[3968] = map_blk[3967] = 15;
+    assert(original_place_people(2, 2));
+    assert(no_peeps == 4 && core_leader(0) == 2 && core_leader(1) == 4);
+    const int positions[] = {128, 129, 3968, 3967};
+    for (int index = 0; index < 4; ++index) {
+        assert(peep_word(index, 8) == positions[index]);
+        assert(peep_word(index, 4) == 45 && peep_word(index, 12) == 0);
+        assert(map_who[positions[index]] == index + 1);
+    }
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    map_blk[0] = map_blk[1] = map_blk[4095] = map_blk[4094] = 1;
+    assert(original_place_people(2, 2));
+    assert(peep_word(0, 8) == 0 && peep_word(1, 8) == 1);
+    assert(peep_word(2, 8) == 4095 && peep_word(3, 8) == 4094);
+    assert(core_leader(0) == 2 && core_leader(1) == 0); /* original fallback order */
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    map_blk[128] = 15;
+    assert(!original_place_people(1, 1)); /* preferred scans overlap: do not filter */
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    memset(map_blk, 15, 4096);
+    assert(!original_place_people(209, 1));
+    assert(!original_place_people(0, 1)); /* unsupported zero-count original loop */
+    memset(map_blk, 0, 4096);
+    assert(!original_place_people(1, 1));
+}
+
+static void test_original_selection(void)
+{
+    StartSelection selection;
+    char *arguments[] = {"populous", "--level", "494", NULL};
+    assert(parse_start(3, arguments, &selection));
+    assert(selection.kind == START_ORIGINAL && selection.number == 494);
+    arguments[2] = "495"; assert(!parse_start(3, arguments, &selection));
+    arguments[2] = "-1"; assert(!parse_start(3, arguments, &selection));
+    arguments[2] = "0"; assert(parse_start(3, arguments, &selection));
+    assert(!parse_start(2, arguments, &selection));
+    assert(parse_start(1, arguments, &selection));
+    assert(selection.kind == START_SYNTHETIC && selection.number == 0);
+}
+
+static void write_level_fixture(unsigned friendly, unsigned enemy)
+{
+    assert(!getenv("POPULOUS_TEST_REAL_DATA"));
+    uint8_t bytes[LEVEL_FILE_SIZE];
+    for (int index = 0; index < LEVEL_RECORD_COUNT; ++index) {
+        uint8_t record[] = {7, 9, 135, 63, 19, 2, friendly, enemy, 0xab, 0xcd};
+        memcpy(bytes + 10 * index, record, 10);
+    }
+    char path[512]; snprintf(path, sizeof path, "%s/level.dat", test_data_directory);
+    FILE *file = fopen(path, "wb");
+    assert(file && fwrite(bytes, 1, sizeof bytes, file) == sizeof bytes && !fclose(file));
+}
+
+static void assert_original_world(void)
+{
+    for (int row = 0; row <= 64; ++row)
+        for (int column = 0; column <= 64; ++column) {
+            int height = core_vertex(column, row);
+            assert(height >= 0 && height <= 8);
+            if (column < 64) assert(abs(height - core_vertex(column + 1, row)) <= 1);
+            if (row < 64) assert(abs(height - core_vertex(column, row + 1)) <= 1);
+        }
+    int occupied = 0;
+    for (int cell = 0; cell < 4096; ++cell) {
+        assert(map_blk[cell] <= 49 && map_alt[cell] <= 8);
+        assert(!map_bk2[cell] || (map_bk2[cell] >= 50 && map_bk2[cell] <= 52));
+        if (map_who[cell]) {
+            ++occupied;
+            assert(map_who[cell] <= no_peeps);
+            assert(peep_word(map_who[cell] - 1, 8) == cell);
+        }
+    }
+    assert(occupied == no_peeps);
+    for (int index = 0; index < no_peeps; ++index) {
+        assert(peep_word(index, 4) == 45 && peep_word(index, 12) == 0);
+        assert(map_who[peep_word(index, 8)] == index + 1);
+    }
+}
+
+static void test_original_reset(void)
+{
+    if (getenv("POPULOUS_TEST_REAL_DATA")) return;
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0)); /* no level.dat required */
+    uint8_t saved[sizeof prg_a4_area];
+    memcpy(saved, prg_a4_area, sizeof saved);
+    GraphicsAssets *assets = game_assets;
+    assert(!game_reset_start((StartSelection){START_ORIGINAL, 0}));
+    assert(!memcmp(saved, prg_a4_area, sizeof saved) && game_assets == assets);
+    write_level_fixture(1, 1);
+    const int levels[] = {0, 4, 5, 494};
+    const unsigned seeds[] = {0xabcd, 0xabd1, 0xabce, 0xabd3};
+    for (int index = 0; index < 4; ++index) {
+        assert(game_reset_start((StartSelection){START_ORIGINAL, levels[index]}));
+        assert_original_world();
+        assert(in_conquest == levels[index] * 5 && A4_WORD(0xae7e) == levels[index] * 5);
+        assert((uint16_t)start_seed == seeds[index] && (uint16_t)conq_08_seed == 0xabcd);
+        assert(LAB_516DE == 7 && LAB_516E2 == 9 && LAB_516E0 == 1087 && LAB_516B2 == 511);
+        assert(game_mode == 19 && ground_in == 2 && no_peeps == 2);
+        assert(core_mana(1) == (levels[index] == 494 ? 2700 : 399));
+        int leader_cell = peep_word(core_leader(0) - 1, 8);
+        assert(leader_cell % 64 >= xoff && leader_cell % 64 < xoff + 8);
+        assert(leader_cell / 64 >= yoff && leader_cell / 64 < yoff + 8);
+        memcpy(saved, prg_a4_area, sizeof saved);
+        SDL_Event reset = {.type = SDL_KEYDOWN}; reset.key.keysym.sym = SDLK_r;
+        game_handle_event(&reset);
+        assert(!memcmp(saved, prg_a4_area, sizeof saved));
+    }
+    assets = game_assets;
+    pause = 1;
+    diagnostic_view = 1;
+    core_tool = 1;
+    core_battles = 17;
+    memcpy(saved, prg_a4_area, sizeof saved);
+    char *saved_assets_directory = strdup(getenv("POPULOUS_ASSET_DIR"));
+    assert(saved_assets_directory);
+    assert(!setenv("POPULOUS_ASSET_DIR", "/populous-test-missing-original-assets", 1));
+    assert(!game_reset_start((StartSelection){START_ORIGINAL, 0}));
+    assert(!memcmp(saved, prg_a4_area, sizeof saved) && game_assets == assets);
+    assert(prg_a4 == prg_a4_area + 32768 && pause && diagnostic_view == 1);
+    assert(core_tool == 1 && core_battles == 17);
+    assert(current_start.kind == START_ORIGINAL && current_start.number == 494);
+    assert(!setenv("POPULOUS_ASSET_DIR", saved_assets_directory, 1));
+    free(saved_assets_directory);
+    write_level_fixture(209, 1);
+    assert(!game_reset_start((StartSelection){START_ORIGINAL, 0}));
+    assert(!memcmp(saved, prg_a4_area, sizeof saved) && game_assets == assets);
+    assert(current_start.kind == START_ORIGINAL && current_start.number == 494);
+    char path[512]; snprintf(path, sizeof path, "%s/level.dat", test_data_directory);
+    assert(!unlink(path));
+    SDL_Event reset = {.type = SDL_KEYDOWN}; reset.key.keysym.sym = SDLK_r;
+    game_handle_event(&reset);
+    assert(!memcmp(saved, prg_a4_area, sizeof saved) && !prg_quit && game_assets == assets);
+    assert(game_reset(0));
+    _closeall(); SDL_Quit();
+}
+
+static void test_all_original_levels(const char *directory)
+{
+    LevelTable table; char error[160];
+    assert(level_data_load(directory, &table, error, sizeof error));
+    assert(!setenv("POPULOUS_DATA_DIR", directory, 1));
+    char assets_directory[4096];
+    snprintf(assets_directory, sizeof assets_directory, "%s/..", directory);
+    assert(!setenv("POPULOUS_ASSET_DIR", assets_directory, 1));
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    static const unsigned rejected[] = {70,74,93,94,160,201,204,472,477,478,479};
+    unsigned failures = 0;
+    for (unsigned number = 0; number < LEVEL_COUNT; ++number) {
+        LevelStart start;
+        assert(level_data_select(&table, number, &start));
+        uint8_t saved[sizeof prg_a4_area];
+        memcpy(saved, prg_a4_area, sizeof saved);
+        GraphicsAssets *assets = game_assets;
+        StartSelection previous = current_start;
+        int expected_rejection = 0;
+        for (size_t index = 0; index < sizeof rejected / sizeof rejected[0]; ++index)
+            if (number == rejected[index]) expected_rejection = 1;
+        int success = game_reset_start((StartSelection){START_ORIGINAL, (int)number});
+        assert(success == !expected_rejection);
+        if (!success) {
+            assert(!memcmp(saved, prg_a4_area, sizeof saved) && game_assets == assets);
+            assert(current_start.kind == previous.kind && current_start.number == previous.number);
+            printf("Original level %u: safely rejected placement\n", number);
+            ++failures;
+            continue;
+        }
+        assert_original_world();
+        assert(no_peeps == start.record.your_count + start.record.enemy_count);
+        assert(in_conquest == start.internal_level && (uint16_t)start_seed == start.initial_seed);
+        game_render();
+        for (int tick = 0; tick < 100; ++tick) game_tick();
+        game_render();
+        SDL_Event reset = {.type = SDL_KEYDOWN}; reset.key.keysym.sym = SDLK_r;
+        game_handle_event(&reset);
+        assert_original_world();
+        assert(game_turn == 0 && current_start.number == (int)number);
+    }
+    assert(failures == sizeof rejected / sizeof rejected[0]);
+    _closeall(); SDL_Quit();
+    printf("Original starts: %u valid, %u safely rejected of 495 (not original-reference parity)\n",
+           LEVEL_COUNT - failures, failures);
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 3 && !strcmp(argv[1], "--levels")) {
+        test_all_original_levels(argv[2]);
+        return 0;
+    }
+    assert(argc == 1);
+    test_original_selection();
+    test_original_generator();
+    test_original_placement();
     prepare_rule_data();
+    test_original_reset();
     test_original_graphics_output();
     test_isometric_match();
     test_battle_casualties_and_rewards();

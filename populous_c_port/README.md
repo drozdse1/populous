@@ -10,9 +10,12 @@ agent-driven inputs at human rates. A human tester's winning strategy is not pro
 
 ## Current state
 
-All eight synthetic scenarios start on explicitly legal flat vertex terrain
-with both populations. `_make_map` now derives original block masks and cell
-altitudes from 65x65 vertex heights. The 22-byte A4 peep records drive movement,
+All eight synthetic scenarios still start on legal flat vertex terrain with both
+populations. An explicit `--level N` selects original world initialization from
+`level.dat`: level parameters, height generation, woods/rocks and initial inhabitants.
+It does not activate campaign progression or the still-unported powers/AI.
+`_make_map` derives original block masks and cell altitudes from 65x65 vertex heights.
+The 22-byte A4 peep records drive movement,
 settlement, eight-tick growth/mana, splitting, ordinary combat and outcomes.
 There is no second population simulator. The default SDL view now uses the
 original `qaz.pic` background, 8x8 isometric LAND terrain and settlement overlays,
@@ -33,8 +36,9 @@ Source labels and assembly ranges appear beside each implementation. The
 opponent uses the same settlement/exploration rules, not timer-created units.
 Special powers, knights, multi-party battle joining, original computer
 power/auto-level logic, celebration animations and exact Amiga movement
-interpolation remain unsupported. The eight scenarios are flat synthetic
-starting plots, not original maps. Rule-word overflow is bounded at 32000
+interpolation remain unsupported. The eight positional scenarios remain flat
+synthetic plots; `--level` instead uses the assembly-derived original generator.
+Rule-word overflow is bounded at 32000
 population and mana at -250..1999999 for host safety.
 
 The original `_load_ground` reads gameplay tables from `landN` files, including
@@ -90,9 +94,10 @@ full pictures, `pixels/` frame-major/row-major byte indices and keep masks,
 `values.json` with stored LAND tables, palettes and neutral level records, and
 `manifest.json` with source/artifact SHA-256 hashes, frame offsets/coordinates,
 present/missing assets and verified/inferred/unsupported format status. The
-manifest itself is not included in its own artifact hash table. Original files
-remain outside the repository. For the port, point `POPULOUS_DATA_DIR` at the
-export's `raw/` directory and `POPULOUS_ASSET_DIR` at the export root.
+manifest itself is not included in its own artifact hash table. This checkout
+contains the supplied ADF and export under `binaries/`. For the port, point
+`POPULOUS_DATA_DIR` at the export's `raw/` directory and `POPULOUS_ASSET_DIR` at
+the export root.
 
 LAND sheets use 70 32x24 frames after the 114-byte rule header. Small sprites use
 16x16 frames; large sprites use 32x32 frames. All complete file frames are kept:
@@ -226,11 +231,46 @@ make -C populous_c_port test
 make -C populous_c_port test-sanitize
 ```
 
-The optional argument is a decimal integer from 0 through `INT_MAX`; selection
-is `N % 8`, so 8 selects slot 0. No argument also selects slot 0. Negative values,
-non-digits, extra arguments and overflow return failure. The eight internal
-rows are synthetic configurations, not loaded original levels. Existing
-effective low-byte seed offsets are preserved explicitly.
+The optional positional argument is a decimal integer from 0 through `INT_MAX`;
+selection is `N % 8`, so 8 selects slot 0. No argument also selects slot 0. These
+eight configurations retain their synthetic terrain and low-byte seed offsets.
+
+### Original world starts
+
+```sh
+./populous_c_port/populous_init_port --level 0
+./populous_c_port/populous_init_port --level 494
+```
+
+`--level N` accepts decimal 0..494 without wrapping. Negative numbers, non-digits,
+overflow, unknown options and extra arguments fail. `r` repeats the selected
+original level or synthetic scenario. Original starts load `level.dat` from the
+same raw-data directory as LAND; the synthetic path does not need that file.
+
+`level_data.c` decodes exactly 990 bytes into 99 ten-byte records. Selection uses
+record `N/5`, internal level `5*N`, and seed `(seed_offset + ((5*N) & 7)) & 0xffff`.
+The parser rejects unsupported terrain outside 0..3, nonregular/symlink files,
+and wrong lengths, and preserves its output on failure. Other byte fields are
+retained rather than asserted authentic; startup rejects zero group counts,
+over-capacity populations and unplaceable/conflicting inhabitants. Installed
+power masks and enemy parameters do not implement the missing powers or AI.
+
+World creation consumes the four initial random draws, three original raise/walk
+passes, conditional decoration draws, and original first-inhabitant scans. It
+runs against staged A4 storage; a failed reset preserves live state and assets.
+The map update preserves original block 47 until submerged. Host safety deliberately
+skips the original enemy-fallback probe at logical cell 4096 and rejects overlapping
+preferred placements rather than retaining inconsistent occupancy. The enemy
+fallback's original leader-order quirk is preserved.
+
+With the supplied data, these 11 starts are rejected for overlapping placement:
+`70, 74, 93, 94, 160, 201, 204, 472, 477, 478, 479`. Resolving their original
+occupancy semantics remains migration work; they are not silently replaced with
+invented worlds. This is world initialization, not 495 completed campaign levels.
+An independent assembly-derived Python translation matched full height, block,
+altitude and overlay arrays for all 495 starts, and final seeds/leaders for the
+484 accepted starts. This is cross-implementation evidence, **not** an independent
+Amiga execution trace or proof of complete game parity.
 
 ## Controls
 
@@ -248,7 +288,8 @@ effective low-byte seed offsets are preserved explicitly.
 - Arrows/numpad: scroll by world cells. Click the upper-left diamond minimap to
   recenter anywhere (also while paused); its white outline marks the viewport.
   `d`: explicit top-down diagnostic view; `p`: dots in that diagnostic view only.
-  Space: pause. `r`: reset to original graphics and initial view (6,6).
+  Space: pause. `r`: reset the selected start and original graphics; synthetic
+  starts return to view (6,6), original starts center near the friendly leader.
   Escape/window close: quit. Pause/outcome stop rules, not navigation/drawing.
 
 The opponent independently settles, grows, explores, merges and fights. Flatten
@@ -258,6 +299,26 @@ population, including settlements. `q`, `v`, `a` and unported special powers are
 inactive. No timer or population target declares a winner.
 
 ## Verification
+
+`test-level` checks the standalone decoder, numbering, seed wrap and secure file
+loading. Synthetic `test-game` also covers generator RNG checkpoints, placement,
+block 47, camera selection and transactional original reset. Fixture writes are
+disabled in `POPULOUS_TEST_REAL_DATA` mode to keep original files read-only.
+
+The explicit supplied-export regression pins the 11 rejected starts and checks
+all 484 accepted starts through asset loading, rendering, 100 ticks and reset:
+
+```sh
+make -C populous_c_port test-level-local \
+  LEVEL_DATA_DIR="$PWD/binaries/populous-extracted/raw"
+SDL_VIDEODRIVER=dummy timeout 120s ./populous_c_port/tests/test_game_sanitize \
+  --levels "$PWD/binaries/populous-extracted/raw"
+```
+
+Build `test-sanitize` first for the second command. This exhaustive integration
+uses `LEVEL_TEST_TIMEOUT` (default 120s), separately from the 20s focused tests.
+Its exact rejection expectations apply to the supplied dataset, not arbitrary
+modified level tables. The export layout must have `raw/` alongside `pixels/`.
 
 `test-runtime` checks real SDL software rendering and partial-initialization
 cleanup, injected resource failures, launcher handoff, and invalid video driver
@@ -328,26 +389,25 @@ This acceptance covers the bounded intermediate port, not complete original-rule
 fidelity or a human-tested winning strategy. Synthetic starts and unsupported
 features listed above remain intentional limitations.
 
-The development environment used an unpacked toolchain under
-`/tmp/populous-toolchain` rather than system packages. Its reproducible command
-is (normal SDL installations do not need these overrides):
+### Existing local WSL toolchain
 
-```sh
-LD_LIBRARY_PATH=/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu:/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu/pulseaudio:/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu/sdl2-classic \
-/tmp/populous-toolchain/usr/bin/make -C populous_c_port all test test-sanitize \
-  SDL_CONFIG='/tmp/populous-toolchain/usr/bin/sdl2-config --prefix=/tmp/populous-toolchain/usr' \
-  LDLIBS=/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu/sdl2-classic/libSDL2-2.0.so.0.3200.10 \
-  CFLAGS='-std=c11 -O2 -I/tmp/populous-toolchain/usr/include/x86_64-linux-gnu'
+The historical `/tmp/populous-toolchain` did not survive a reboot. This development
+machine now has checksum-verified Ubuntu GNU Make 4.4.1 and SDL2 2.32.10 development
+files under `$HOME/.local/share/populous-toolchain`, with matching libraries under
+`$HOME/.local/share/populous-runtime`. In a new Bash shell, from the repo root:
+
+```bash
+source "$HOME/.local/share/populous-toolchain/env.sh"
+make -C populous_c_port all test test-sanitize
+SDL_VIDEODRIVER=x11 SDL_RENDER_DRIVER=software ./populous_c_port/populous_init_port
 ```
 
-Launch with that unpacked toolchain's runtime libraries:
-
-```sh
-LD_LIBRARY_PATH=/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu:/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu/pulseaudio:/tmp/populous-toolchain/usr/lib/x86_64-linux-gnu/sdl2-classic \
-./populous_c_port/populous_init_port
-```
-
-Use the same `LD_LIBRARY_PATH` for the opt-in original-data integration command.
+The environment script supplies tool, multiarch-header, linker, runtime-library
+and ALSA paths. Use it also before the opt-in original-data integration command.
+These user-local directories are not repository contents or a bootstrap installer:
+a fresh machine still needs the development dependencies listed above. A normal
+SDL2 installation does not need this environment script. Successful dummy-driver
+tests do not prove that WSLg forwards a visible window to the Windows desktop.
 
 ## Legal and credits
 
