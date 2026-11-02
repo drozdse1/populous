@@ -2401,10 +2401,12 @@ static void _move_peeps(void)
             if (peep_word(person,12) >= 8) set_peep_word(person,12,0);
             continue;
         }
-        if ((flags == 18 || flags == 0x15 || flags == 0x16) && map_blk[position]) {
+        if ((flags == 18 || flags == 0x15 || flags == 0x16 ||
+             flags == 0x32 || flags == 0x52 || flags == 0x72) && map_blk[position]) {
             /* asm:3484-3490,3544-3557: dry recovery still loses first.
              * Frame even a negative word, but never zero; ignore completion.
-             * Exact-2 dies before navigation; 5/6 finish celebration first. */
+             * Exact-2 dies before navigation; 5/6 finish celebration first;
+             * 0x22/42/62 finish waiting loss and any retry before cleanup. */
             if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
             uint16_t loss = (uint16_t)(2u*(uint16_t)A4_WORD(0x2fb0));
             set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)-loss));

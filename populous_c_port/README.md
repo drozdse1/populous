@@ -172,8 +172,8 @@ first frame update; a negative result still advances it before cleanup. Thus a
 survivor at frame 6 can move in this update, whereas frame 7 or 93 ends at frame 1
 without moving. Rescue terrain does not guarantee survival of the following
 recovery update. Other mixed-water states retain the previous host recovery
-behavior, except for the bounded victory states described below; this change does
-not establish full drowning, movement or cleanup parity.
+behavior, except for the bounded victory and waiting states described below;
+this change does not establish full drowning, movement or cleanup parity.
 `--water-recovery` covers literal full-A4 frame/loss outcomes, negative-population
 encounter prevention, swamp ordering, stopped ticks and rescue-to-death sequences.
 Full normal/sanitized suites, original-data matches and all 495 starts passed;
@@ -193,6 +193,22 @@ boundaries, zero versus negative cleanup, capacity scratch values, clipped town
 footprints, unrelated resident progress and deferred rescue without state injection.
 Focused/full normal and sanitized suites, original-data matches and all 495
 original starts passed; original-data outcomes remain unchanged.
+
+Dry waiting-water states `0x32/0x52/0x72` recover to `0x22/0x42/0x62`, retaining
+the original waiting consumer (`src/populous_prg.asm:4213-4268`). Wrapped doubled
+water loss precedes two waiting-frame calls and the separate word-sized waiting
+loss. The old unsigned timer decides retry after increment: values above 14 clear
+waiting bits, reframe as a walker and attempt movement even when population is
+zero or negative. Cleanup follows the retry, preserving the host's reciprocal
+battle-release safeguards. A negative resident cannot depart through the later
+movement guard, but can encounter a current-cell opponent first, as in the source.
+No extra ordinary walking loss or ordinary swamp-completion trap is inserted.
+Fatal mode still removes before recovery; unrelated mixed states remain deferred.
+`--water-wait` checks staged word losses, zero/negative retries, unsigned timers,
+open/blocked routes, current-cell battle cleanup, dead destination isolation,
+mailboxes, stopped ticks and deferred rescue with independent full-A4 expectations.
+Focused/full normal and sanitized suites, original-data matches and all 495
+original starts passed; original-data match outcomes are unchanged.
 
 Heading target selection (`_get_heading`) now has a bounded implementation:
 self when no enemy qualifies, otherwise the first nearest living different-owner
