@@ -1063,8 +1063,14 @@ static void core_battle(int first, int second)
     int second_strength = (___newrand()%3+1)*peep_word(second,4);
     int first_strength = (___newrand()%3+1)*peep_word(first,4);
     int lesser = first_strength < second_strength ? first_strength : second_strength;
-    int first_pop = peep_word(first,4)-(lesser/100*peeps[second*22+3]+10);
-    int second_pop = peep_word(second,4)-(lesser/100*peeps[first*22+3]+10);
+    /* SUB.W wraps before TST.W and before either raw-nonzero frame test.
+     * Keep host storage normalized without losing the signed source residual. */
+    uint16_t first_bits = (uint16_t)((uint32_t)peep_word(first,4)-
+        ((uint32_t)(lesser/100)*peeps[second*22+3]+10u));
+    uint16_t second_bits = (uint16_t)((uint32_t)peep_word(second,4)-
+        ((uint32_t)(lesser/100)*peeps[first*22+3]+10u));
+    int first_pop = first_bits <= INT16_MAX ? (int)first_bits : (int)first_bits-65536;
+    int second_pop = second_bits <= INT16_MAX ? (int)second_bits : (int)second_bits-65536;
     set_peep_word(first,4,first_pop > 0 ? first_pop : 0);
     set_peep_word(second,4,second_pop > 0 ? second_pop : 0);
     core_frame_battle(first,second,first_pop!=0);
@@ -1072,9 +1078,6 @@ static void core_battle(int first, int second)
     if (first_pop > 0 && second_pop > 0) return;
     if (first_pop <= 0 && second_pop <= 0) { core_remove(first); core_remove(second); return; }
     int winner = first_pop > 0 ? first : second, loser = winner == first ? second : first;
-    /* Keep host casualty overflow semantics: pop 32000/weapon 255/seed 123
-     * dies here although the source SUB.W wraps back to a surviving population.
-     * Only pre-clamp nonzero crosses into completion, never a wrapped decision. */
     bool raw_loser_nonzero=(loser==first ? first_pop : second_pop)!=0;
     core_battle_over(winner,loser,raw_loser_nonzero);
 }

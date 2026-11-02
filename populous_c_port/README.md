@@ -38,9 +38,9 @@ Original computer power/auto-level logic and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
 Merge helpers cap population at 32000; general mana helpers clamp to -250..1999999.
-Raw terrain commands, single-winner battle completion, ordinary town economy and
-already-wet non-combat water loss instead preserve their source word/32-bit
-arithmetic, using unsigned operations rather than C signed overflow.
+Raw terrain commands, battle casualties and single-winner completion, ordinary
+town economy and already-wet non-combat water loss instead preserve their source
+word/32-bit arithmetic, using unsigned operations rather than C signed overflow.
 
 The exact `0x80` peep remnant now consumes its original unsigned 16-bit timer
 (`src/populous_prg.asm:4283-4315`): it claims only empty occupancy and is removed
@@ -298,6 +298,22 @@ and 200 frozen pause/result/quit cases. Focused/full normal and sanitized suites
 original-data matches and all 495 starts passed with unchanged limits. The two
 victory sequences still finish at ticks 11938 and 11953; defeat remains tick 695.
 
+Battle casualties now use the original `SUB.W` result for survival decisions
+(`src/populous_prg.asm:6082-6200`). Both losses use the lesser pre-casualty rolled
+strength, divide before multiplying by the unsigned opposing weapon byte, then
+subtract modulo 65536. The signed wrapped result decides survival and whether
+combat/town framing runs. Thus `32000 - 81610` survives at 15926, while
+`10974 - 76510` wraps to exactly zero and skips framing. Negative wrapped results
+still frame before completion. The host continues storing nonpositive casualties
+as zero while carrying their signed residual locally; it does not reproduce the
+original transient negative record storage or simultaneous-death cleanup order.
+RNG order, battle scheduling, water exemptions and completion remain unchanged.
+`--battle-loss` exercises these word boundaries, independent full-A4 completion
+and simultaneous-death expectations, both argument orders, and same-pass resident
+continuation. Focused/full normal and sanitized suites, original-data matches and
+all 495 starts passed. Victory ticks remain 11938/11953 and defeat 695, with
+unchanged winner assertions, inputs and time limits.
+
 Heading target selection (`_get_heading`) now has a bounded implementation:
 self when no enemy qualifies, otherwise the first nearest living different-owner
 record without bit 7, using Manhattan distance and no path/occupancy filter.
@@ -327,10 +343,9 @@ A headed winner burns the town and leaves a timed remnant. An ordinary winner
 may occupy the defeated town, setting the original conquest timer and
 protecting the newly drawn town from loser cleanup. Higher-slot new states can
 already advance later in the same resident pass; no global deferral was added.
-Host casualty arithmetic/timing and `core_remove` semantics remain unchanged.
-In particular, extreme weapon/population combinations can differ from original
-wrapping `SUB.W` outcomes; this is not full combat parity. Original previous-cell
-cleanup remains separate work. `--battle-over` covers the unified completion
+Host scheduling and `core_remove` semantics remain unchanged; this is not full
+combat parity. Original previous-cell cleanup remains separate work.
+`--battle-over` covers the unified completion
 path, including full-A4 ordinary-town cases with signed rewards and successful
 or failed conquest. Full normal/sanitized suites and all 495 starts passed;
 ordinary match inputs and winner assertions are unchanged.
@@ -508,7 +523,7 @@ no casualty or RNG draw occurs at entry. A render-only representative fallback
 remains for malformed/legacy frames. Exact-zero town losses after normal entry
 retain their combat frame and use the original fallback reward of 100; direct
 completion fixtures without entry still exercise retained town-frame rewards.
-Source casualty arithmetic and full timing parity remain separate work. No
+Full combat timing parity remains separate work. No
 copper, large-sprite specials, original cursor/font,
 audio or functional power toolbar is claimed. A separate compact HUD explains
 the implemented keyboard controls. `--battle-frames` checks all 65,536 stored
