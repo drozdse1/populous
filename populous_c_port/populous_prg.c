@@ -1042,6 +1042,23 @@ static int core_heading_battle_over(int winner, int loser, bool raw_loser_nonzer
     if (peep_word(loser,4)<=0) core_remove(loser);
     return 1;
 }
+/* _set_frame asm:5759-5809: actual combat partner, opaque heading presence.
+ * The caller preserves the pre-clamp population test; water has source priority. */
+static int core_frame_battle(int person, int partner, bool raw_nonzero)
+{
+    if (no_peeps < 0 || no_peeps > 208 || person < 0 || person >= no_peeps ||
+        partner < 0 || partner >= no_peeps || person == partner || !raw_nonzero ||
+        !(peeps[person*22]&8) || (peeps[person*22]&0x10)) return 0;
+    uint32_t heading, partner_heading;
+    memcpy(&heading,peeps+person*22+14,sizeof heading);
+    memcpy(&partner_heading,peeps+partner*22+14,sizeof partner_heading);
+    int base=heading && partner_heading ? 138 : !heading && !partner_heading ? 70 :
+        peeps[(heading ? person : partner)*22+1]==0 ? 130 : 134;
+    int frame=(int16_t)((uint16_t)peep_word(person,12)+1u);
+    int reset=frame < base || frame >= base+3;
+    set_peep_word(person,12,reset ? base : frame);
+    return reset;
+}
 static void core_battle(int first, int second)
 {
     /* _do_battle:6082-6158: both casualties use the lesser rolled strength. */
@@ -1052,6 +1069,8 @@ static void core_battle(int first, int second)
     int second_pop = peep_word(second,4)-(lesser/100*peeps[first*22+3]+10);
     set_peep_word(first,4,first_pop > 0 ? first_pop : 0);
     set_peep_word(second,4,second_pop > 0 ? second_pop : 0);
+    core_frame_battle(first,second,first_pop!=0);
+    core_frame_battle(second,first,second_pop!=0);
     if (first_pop > 0 && second_pop > 0) return;
     if (first_pop <= 0 && second_pop <= 0) { core_remove(first); core_remove(second); return; }
     int winner = first_pop > 0 ? first : second, loser = winner == first ? second : first;
@@ -2210,7 +2229,13 @@ static void draw_original(int view_x, int view_y)
              * source's extra Y lift is already top-8 (_draw_it, asm:15831). */
             if (frame<0 || frame>=143) continue;
         } else if (flags==1) { frame=64+phase+owner*2; sx=left+16; sy=top-8; }
-        else if (flags&8) { frame=138+phase; sx=left+16; sy=top-8; }
+        else if (flags&8) {
+            int stored=peep_word(person,12);
+            /* Fresh encounters retain the host fallback until their first combat. */
+            frame=((stored>=70 && stored<=72) || (stored>=130 && stored<=132) ||
+                   (stored>=134 && stored<=136) || (stored>=138 && stored<=140)) ? stored : 138+phase;
+            sx=left+16; sy=top-8;
+        }
         else if (flags&16) frame=93+((uint16_t)game_turn&3)+owner*4;
         graphics_blit(game_pixels,64000,320,200,small,frame,sx,sy);
     }

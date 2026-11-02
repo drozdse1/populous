@@ -1802,7 +1802,7 @@ static void test_war_dispatch(void)
         if (water) map_blk[650]=0;
         _move_peeps();
         assert(peeps[0]==9 && peeps[22]==8 && peep_word(0,4)<100 && peep_word(1,4)<100);
-        assert(peep_word(0,12)==42 && peep_word(0,10)==-65 && map_bk2[650]==42);
+        assert(peep_word(0,12)==70 && peep_word(1,12)==70 && peep_word(0,10)==-65 && map_bk2[650]==42);
         assert(core_mana(0)==12345 && core_mana(1)==23456 && seed!=123);
     }
 }
@@ -5358,6 +5358,8 @@ static void test_heading_battle_controls(void)
         if (route==1) assert(peep_word(1,4)==978 && peep_word(2,4)==382);
         if (route==2) assert(!peep_word(1,4) && !peep_word(2,4));
         if (route) peeps[winner*22+17]=peeps[loser*22+14]=0x80;
+        /* Only the live combat frame words differ when both gain headings. */
+        if (route==1) { set_peep_word(1,12,138); set_peep_word(2,12,138); }
         memcpy(expected,prg_a4_area,sizeof expected);
         memcpy(prg_a4_area,before,sizeof before);
         if (route) peeps[winner*22+17]=peeps[loser*22+14]=0x80;
@@ -5761,8 +5763,216 @@ static void test_knight_original(const char *directory)
     _closeall(); SDL_Quit();
 }
 
+static void check_battle_frame_only(int person, int partner, bool raw, int want, int reset)
+{
+    uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+    memcpy(before,prg_a4_area,sizeof before);
+    if (person>=0 && person<208) set_peep_word(person,12,want);
+    memcpy(expected,prg_a4_area,sizeof expected);
+    memcpy(prg_a4_area,before,sizeof before);
+    assert(core_frame_battle(person,partner,raw)==reset);
+    assert(!memcmp(expected,prg_a4_area,sizeof expected));
+}
+
+static void test_battle_frame_helper(void)
+{
+    const int owners[]={0,1,255};
+    uint32_t headings[]={0,1,2,UINT32_MAX,0,0,0,0};
+    for (int byte=0; byte<4; ++byte) ((uint8_t *)&headings[4+byte])[byte]=0x80;
+    /* Crossed raw presence and arbitrary owners: only the headed owner's byte
+     * chooses 130/134. Neither target resolution nor partner state is admission. */
+    for (int own=0; own<3; ++own) for (int enemy=0; enemy<3; ++enemy)
+    for (int first=0; first<8; ++first) for (int second=0; second<8; ++second) {
+        setup_heading_battle(1,0);
+        peeps[23]=owners[own]; peeps[45]=owners[enemy];
+        memcpy(peeps+22+14,&headings[first],4); memcpy(peeps+44+14,&headings[second],4);
+        set_peep_word(1,6,-123); set_peep_word(2,6,6);
+        set_peep_word(1,8,-1); set_peep_word(2,8,32767);
+        peeps[44]=1; set_peep_word(2,4,0);
+        int want=70;
+        if (first && second) want=138;
+        else if (first) want=own==0 ? 130 : 134;
+        else if (second) want=enemy==0 ? 130 : 134;
+        check_battle_frame_only(1,2,true,want,1);
+    }
+    /* Independently enumerate every 16-bit encoding, using the three permitted
+     * predecessor words rather than duplicating the production signed bounds. */
+    const int bases[]={70,130,134,138};
+    for (int group=0; group<4; ++group) {
+        setup_heading_battle(1,group==2);
+        memset(peeps+22+14,0,4);
+        if (group) peeps[22+14]=1;
+        if (group==3) peeps[44+17]=0x80;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        for (unsigned bits=0; bits<65536; ++bits) {
+            int decoded=(bits&0x8000u) ? (int)bits-65536 : (int)bits;
+            set_peep_word(1,12,decoded);
+            int want=bases[group], reset=1;
+            if (bits==(unsigned)(bases[group]-1)) reset=0;
+            if (bits==(unsigned)bases[group]) { want=bases[group]+1; reset=0; }
+            if (bits==(unsigned)(bases[group]+1)) { want=bases[group]+2; reset=0; }
+            assert(core_frame_battle(1,2,true)==reset);
+            assert(peep_word(1,12)==want);
+        }
+        set_peep_word(1,12,102);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    for (int flags=0; flags<256; ++flags) for (int raw=0; raw<2; ++raw)
+    for (int population=-1; population<=1; ++population) {
+        setup_heading_battle(1,0); peeps[22]=flags;
+        set_peep_word(1,4,population); set_peep_word(1,12,130);
+        int admitted=raw && (flags/8)%2 && !((flags/16)%2);
+        check_battle_frame_only(1,2,raw,admitted ? 131 : 130,0);
+        set_peep_word(1,12,32767);
+        check_battle_frame_only(1,2,raw,admitted ? 130 : 32767,admitted);
+    }
+    const int counts[]={-32768,-1,0,1,2,3,4,207,208,209,32767};
+    const int indices[]={-32768,-1,0,1,2,3,206,207,208,32767};
+    for (unsigned count=0; count<sizeof counts/sizeof counts[0]; ++count)
+    for (unsigned first=0; first<sizeof indices/sizeof indices[0]; ++first)
+    for (unsigned second=0; second<sizeof indices/sizeof indices[0]; ++second) {
+        memset(prg_a4_area,0,sizeof prg_a4_area); no_peeps=counts[count];
+        for (int person=0; person<208; ++person) {
+            peeps[person*22]=8; set_peep_word(person,12,71);
+        }
+        int person=indices[first], partner=indices[second];
+        int valid=counts[count]>=0 && counts[count]<=208 && person>=0 &&
+            person<counts[count] && partner>=0 && partner<counts[count] && person!=partner;
+        check_battle_frame_only(person,partner,true,valid ? 72 : 71,0);
+    }
+}
+
+static void test_battle_frame_integration(void)
+{
+    /* Only population, the two frame words and the RNG may change while live. */
+    for (int heads=0; heads<4; ++heads) for (int owner=0; owner<2; ++owner) {
+        setup_heading_battle(1,owner);
+        memset(peeps+22+14,0,4);
+        if (heads&1) peeps[22+17]=0x80;
+        if (heads&2) peeps[44+14]=0xff;
+        set_peep_word(1,4,1000); set_peep_word(2,4,400);
+        peeps[25]=2; peeps[47]=3;
+        /* Counters are not the actual partner argument. */
+        set_peep_word(1,6,-123); set_peep_word(2,6,6);
+        const int bases[2][4]={{70,130,134,138},{70,134,130,138}};
+        int base=bases[owner][heads];
+        set_peep_word(1,12,base); set_peep_word(2,12,base+2);
+        uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+        memcpy(before,prg_a4_area,sizeof before);
+        set_peep_word(1,4,978); set_peep_word(2,4,382);
+        set_peep_word(1,12,base+1); set_peep_word(2,12,base);
+        seed=28505;
+        memcpy(expected,prg_a4_area,sizeof expected);
+        memcpy(prg_a4_area,before,sizeof before);
+        core_battle(1,2);
+        assert(peep_word(1,12)==base+1 && peep_word(2,12)==base);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+}
+
+static void test_battle_frame_deaths(void)
+{
+    for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
+    for (int heads=0; heads<4; ++heads) for (int both=0; both<2; ++both)
+    for (int negative=0; negative<4; ++negative) {
+        setup_heading_battle(winner,owner);
+        int loser=3-winner;
+        memset(peeps+winner*22+14,0,4);
+        if (heads&1) peeps[winner*22+17]=0x80;
+        if (heads&2) peeps[loser*22+14]=0xff;
+        const int bases[2][4]={{70,130,134,138},{70,134,130,138}};
+        int base=bases[owner][heads];
+        set_peep_word(1,12,base); set_peep_word(2,12,base+2);
+        if (both) set_peep_word(winner,4,10);
+        uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+        memcpy(before,prg_a4_area,sizeof before);
+        core_battle(1,2);
+        assert(seed==28505 && !peep_word(loser,4));
+        if (both) assert(!peep_word(winner,4));
+        else assert(peep_word(winner,4)==90 && peep_word(winner,12)==(heads ? 85 : 0));
+        /* Same host outcome for 9 and 10; only nonzero casualties animate the
+         * retained dead record. Explicit literal successor/wrap per slot. */
+        if (negative&(1<<(loser-1))) set_peep_word(loser,12,loser==1 ? base+1 : base);
+        if (both && (negative&(1<<(winner-1)))) set_peep_word(winner,12,winner==1 ? base+1 : base);
+        memcpy(expected,prg_a4_area,sizeof expected);
+        memcpy(prg_a4_area,before,sizeof before);
+        for (int person=1; person<=2; ++person)
+            if ((person==loser || both) && (negative&(1<<(person-1)))) set_peep_word(person,4,9);
+        core_battle(1,2);
+        assert(!memcmp(expected,prg_a4_area,sizeof expected));
+    }
+    for (int winner=1; winner<=2; ++winner) for (int both=0; both<2; ++both) {
+        setup_heading_battle(winner,0);
+        set_peep_word(1,4,32000); set_peep_word(2,4,32000);
+        peeps[winner*22+3]=255;
+        if (both) peeps[(3-winner)*22+3]=255;
+        core_battle(1,2);
+        assert(seed==28505 && !peep_word(3-winner,4));
+        assert(peep_word(3-winner,12)==130);
+        assert(peep_word(winner,4)==(both ? 0 : 31990));
+        assert(peep_word(winner,12)==(both ? 130 : 85));
+    }
+    /* Mixed water remains in host combat, but the source-priority helper skips it. */
+    setup_heading_battle(1,0); peeps[22]=0x18;
+    set_peep_word(1,4,1000); set_peep_word(2,4,400);
+    core_battle(1,2);
+    assert(peep_word(1,12)==102 && peep_word(2,12)==130);
+}
+
+static void test_battle_frame_render(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    const int frames[]={70,71,72,130,131,132,134,135,136,138,139,140};
+    const int invalid[]={0,35,73,129,133,137,141,32767,-32768,-1};
+    uint32_t headings[]={0,1,UINT32_MAX,0x80000000u,0x00008000u};
+    const int flags[]={8,9,0x18,0xff};
+    for (int owner=0; owner<2; ++owner) for (int turn=0; turn<8; ++turn)
+    for (unsigned raw=0; raw<sizeof headings/sizeof headings[0]; ++raw) {
+        for (unsigned frame=0; frame<sizeof frames/sizeof frames[0]; ++frame)
+            sprite_case(flags[frame%4],owner,frames[frame],headings[raw],turn,1,15,0,0,0,
+                        frames[frame],192,56);
+        for (unsigned frame=0; frame<sizeof invalid/sizeof invalid[0]; ++frame)
+            sprite_case(8,owner,invalid[frame],headings[raw],turn,1,15,0,0,0,
+                        turn<4 ? 138 : 139,192,56);
+    }
+    /* Actual current-cell and immediate destination encounters leave frames
+     * untouched. Both must remain visible before the first casualty pass. */
+    for (int destination=0; destination<2; ++destination) for (int phase=0; phase<2; ++phase) {
+        assert(game_reset(0)); sprite_scene(); game_turn=phase*4;
+        int cell=16*64+16;
+        for (int person=0; person<2; ++person) {
+            peeps[person*22]=2; peeps[person*22+1]=person;
+            set_peep_word(person,4,100);
+            set_peep_word(person,8,cell+(person && destination));
+            set_peep_word(person,12,person ? 35 : 0);
+        }
+        assert(set_peep_reference(0,1));
+        map_who[cell+destination]=2;
+        seed=123; core_move(0);
+        assert((peeps[0]&8) && (peeps[22]&8) && seed==123);
+        assert(peep_word(0,12)==0 && peep_word(1,12)==35);
+        assert(peep_word(0,8)==cell+destination);
+        assert(map_who[cell+destination]==(destination ? 2 : 1));
+        uint8_t expected[64000], before[sizeof prg_a4_area];
+        int occupant=map_who[cell+destination];
+        map_who[cell+destination]=0;
+        draw_original(16,16); memcpy(expected,game_pixels,sizeof expected);
+        sprite_mask_oracle(expected,phase ? 139 : 138,destination ? 208 : 192,destination ? 64 : 56);
+        map_who[cell+destination]=occupant;
+        memcpy(before,prg_a4_area,sizeof before); draw_original(16,16);
+        assert(!memcmp(before,prg_a4_area,sizeof before)); assert_sprite_pixels(expected);
+    }
+    _closeall(); SDL_Quit();
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--battle-frames")) {
+        test_battle_frame_helper(); test_battle_frame_integration(); test_battle_frame_deaths();
+        test_heading_battle();
+        prepare_rule_data(); test_battle_frame_render(); cleanup_rule_data();
+        puts("focused battle frames: PASS"); return 0;
+    }
     if (argc==3 && !strcmp(argv[1],"--knight")) { test_knight_original(argv[2]); return 0; }
     if (argc==2 && !strcmp(argv[1],"--knight")) {
         test_knight_input(); test_knight_guards(); test_knight_cast();
@@ -5894,6 +6104,7 @@ int main(int argc, char **argv)
         assert(!strcmp(argv[2],"collision")); test_remnant_collision(); return 0;
     }
     assert(argc == 1);
+    test_battle_frame_helper(); test_battle_frame_integration(); test_battle_frame_deaths();
     test_knight_input(); test_knight_guards(); test_knight_cast();
     test_heading_battle(); test_celebration();
     test_heading(); test_heading_navigation();
@@ -5929,7 +6140,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_swamp_render();
     test_original_reset();
     test_original_graphics_output();
-    test_special_sprites();
+    test_special_sprites(); test_battle_frame_render();
     test_isometric_match();
     test_colocated_hostile_encounter();
     test_no_hidden_town();

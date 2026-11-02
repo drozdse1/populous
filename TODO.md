@@ -200,7 +200,8 @@ Belege: `populous_c_port/populous_prg.c:1030-1062`, `:1509-1543`;
 - [ ] **Fehlt:** Originalen Mauszeiger und Auswahl-/Zielanzeigen statt Ersatzkreuz integrieren.
 - [ ] **Fehlt:** Bereits extrahierte 32x32-Grosssprites in Laufzeit-Assets, Zeichnen und passende Spielzustaende integrieren.
 - [x] Originalsprites fuer exakte Feierflags 5/6, Brandreste 0x80 und kanonische Heading-Geh-/Warte-/Wasserzustaende anbinden; originale Frameoffsets und Anker, volle Vierbyte-Praesenz statt Pointer-Halbwort, unveraenderter A4-Zustand beim Zeichnen.
-- [ ] **Teilweise:** Originale Bewegungsinterpolation, Kampf-, weitere Sonderfiguren- und Effektanimationen sowie gemischte Darstellungsflags statt Zellenspruengen/verkuerzten Framefolgen.
+- [x] Kampfframes nach beiden Verlustberechnungen und vor dem Abschluss weiterschalten: originale Dreierzyklen 70/130/134/138 nach roher Heading-Praesenz; exakt null ueberspringen, negative Vor-Clamp-Population beachten. Zeichnen nutzt gespeicherte gueltige Kampfframes ohne Zustandsmutation.
+- [ ] **Teilweise:** Originale Initialisierung beider Frames beim Kampfeintritt, Bewegungsinterpolation, weitere Sonderfiguren-/Effektanimationen und gemischte Darstellungsflags vervollstaendigen. Bis zum ersten Kampfupdate bleibt fuer uninitialisierte Frames die bisherige Ersatzdarstellung.
 - [ ] **Fehlt:** Mundanimation aus `mouths.pic`, inklusive Frames, Palette und Aufruf-/Anzeigesequenzen.
 - [ ] **Pruefen:** Ueberdeckung, Clipping, Vorderkanten, Sonderterrain, Minimap und Auswahl in allen Hoehen-/Kameralagen anhand von Originalbildern vergleichen.
 - [ ] **Pruefen:** Alle tatsaechlich sichtbaren Palettenwechsel und Sprite-/Bildschirmsonderpfade erfassen und im Renderer abbilden; Hardwareimplementierung siehe separater Abschnitt.

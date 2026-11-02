@@ -73,8 +73,8 @@ Heading-involved victories produce these celebration states. The renderer uses
 the original celebration and remnant sprites, plus headed walker/wait/water
 variants for their canonical states. Heading presence reads all four host bytes,
 not the original pointer's high halfword. Sprite selection does not mutate A4
-or add interpolation; mixed-state and simulation-driven battle-frame parity
-remain separate work. `--special-sprites` compares literal frame/anchor cases
+or add interpolation; mixed-state and battle-entry framing parity remain separate
+work. `--special-sprites` compares literal frame/anchor cases
 against an independent pixel-mask oracle, including clipping, hidden residents,
 non-flat terrain and an exact 143-frame sheet. Full normal/sanitized suites,
 original-data matches and all 495 starts passed with unchanged test time limits.
@@ -328,9 +328,20 @@ Walkers use direction frames 0,2,..14 plus owner and animation phase; settlement
 use 64+phase+owner*2. Frames animate from simulation ticks and stop when paused.
 The canonical core commits movement destinations immediately, so sprites use
 that authoritative cell without the original sub-cell movement interpolation.
-Battle animation is representative, not original battle timing. No copper,
-large-sprite specials, original cursor/font, audio or functional power toolbar
-is claimed. A separate compact HUD explains the implemented keyboard controls.
+Battle updates now advance the original three-frame cycles: 70-72 for ordinary
+combat, 130-132 or 134-136 for one headed participant (by its owner), and 138-140
+for two. Both frame calls follow casualties and precede completion; exact-zero
+population skips framing, while a negative pre-clamp result still advances.
+The renderer uses those stored frames; newly entered or otherwise uninitialized
+battles retain the previous representative fallback until a combat update.
+Battle-entry initialization, source casualty arithmetic and full timing parity
+remain separate work. No copper, large-sprite specials, original cursor/font,
+audio or functional power toolbar is claimed. A separate compact HUD explains
+the implemented keyboard controls. `--battle-frames` checks all 65,536 stored
+word values for each base, death/zero distinctions and stored-frame pixels;
+the full suite also checks once-per-pair resident updates. Full normal/sanitized
+suites, original-data matches and all
+495 starts passed with unchanged winner assertions.
 
 `test-graphics` checks synthetic AND/OR conflicts, clipped/invalid blits, malformed
 asset lengths/indices/masks, and projection/picking. `test-game` checks literal
