@@ -2146,8 +2146,216 @@ static void test_quake_input(void)
     _closeall(); SDL_Quit();
 }
 
+static void flood_fixture(int height)
+{
+    quake_fixture(height);
+    A4_LONG(0x84a2)=40000;
+    A4_LONG(0x9a02)=A4_LONG(0x9a12)=40000;
+    A4_WORD(0x82c4)=A4_WORD(0x82c4+46)=0x80;
+    A4_WORD(0x2f8a)=7; A4_WORD(0x2f8c)=13;
+    A4_WORD(0x2f8e)=23; A4_WORD(0x2f90)=29;
+    core_battles=core_settlements=core_tool=core_swamp_selected=0;
+}
+
+static void test_flood_cast(void)
+{
+    /* Admission must be transactional, including P, either side, and RNG. */
+    for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint)
+    for (int gate=0;gate<9;++gate) {
+        flood_fixture(2); paint_map=paint;
+        int side=owner;
+        if (gate==0) side=-1;
+        if (gate==1) side=2;
+        if (gate==2) A4_LONG(0x9a02+owner*16)=39999;
+        if (gate==3) A4_WORD(0x82c4+owner*46)=0xff7f;
+        if (gate==4) pause=1;
+        if (gate==5) A4_WORD(0xae80)=1;
+        if (gate>=6) core_result=gate-5;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        assert(!core_flood(side));
+        assert(!memcmp(before,prg_a4_area,sizeof before) && seed==321);
+        assert(core_result==(gate>=6 ? gate-5 : 0));
+    }
+    /* An empty world still pays, scores, signals effect, and clears history. */
+    for (int owner=0;owner<2;++owner) for (int local=0;local<2;++local)
+    for (int paint=0;paint<2;++paint) for (int height=0;height<3;++height)
+    for (int extra=0;extra<2;++extra) {
+        flood_fixture(height); player=local; paint_map=paint;
+        A4_LONG(0x9a02+owner*16)=40000+extra; A4_LONG(0xae72)=17;
+        assert(core_flood(owner));
+        assert(core_mana(owner)==extra && core_mana(1-owner)==40000);
+        assert(A4_LONG(0xae72)==(owner==local ? 267u : 17u));
+        assert(A4_WORD(0x2fac)==74 && seed==321 && A4_WORD(0x2f88)==123);
+        assert(A4_WORD(0x2f8a)==7 && A4_WORD(0x2f8c)==13);
+        assert(A4_WORD(0x2f8e)==23 && A4_WORD(0x2f90)==29);
+        for (int row=0;row<=64;++row) for (int column=0;column<=64;++column)
+            assert(core_vertex(column,row)==(height ? height-1 : 0));
+        for (int cell=0;cell<4096;++cell) {
+            assert(!A4_WORD(0xff88+cell*2) && !map_alt[cell]);
+            assert(map_blk[cell]==(height==2 ? 15 : 0));
+            assert(map_bk2[cell]==(height==2 ? 42 : 0));
+        }
+    }
+    /* Discontinuous signed input catches recursive smoothing, unsigned tests,
+     * clamping negatives, and a missing final vertex/outer row or column. */
+    flood_fixture(0);
+    static const int heights[]={0,1,2,8,-1,-32768,32767};
+    for (int index=0;index<4225;++index)
+        core_set_vertex(index%65,index/65,heights[index%7]);
+    assert(core_flood(0));
+    for (int index=0;index<4225;++index) {
+        int original=heights[index%7];
+        assert(core_vertex(index%65,index/65)==(original>0 ? original-1 : original));
+    }
+    assert(seed==321 && A4_WORD(0x2f88)==123);
+    assert(A4_WORD(0x2f8a)==7 && A4_WORD(0x2f8c)==13);
+    assert(A4_WORD(0x2f8e)==23 && A4_WORD(0x2f90)==29);
+
+    /* Full conversion, unlike quake's local history invalidation. Land rock
+     * survives; water rock and overlays disappear, but people do not change. */
+    flood_fixture(1);
+    for (int row=0;row<=64;++row) for (int column=0;column<=31;++column)
+        core_set_vertex(column,row,2);
+    memset(map_blk,47,4096);
+    no_peeps=2; peeps[0]=1; peeps[22]=2; peeps[23]=1;
+    set_peep_word(0,4,100); set_peep_word(0,8,650);
+    set_peep_word(1,4,200); set_peep_word(1,8,3000);
+    map_who[650]=1; map_who[3000]=2;
+    core_leader(0)=1; core_leader(1)=2;
+    core_target(0)=650; core_target(1)=3000;
+    game_mode=GAME_MODE_NO_BUILD|GAME_MODE_BUILD_ONLY_UP|GAME_MODE_BUILD_NEAR_TOWNS;
+    uint8_t people[208*22],occupancy[4096],magnets[32];
+    memcpy(people,peeps,sizeof people); memcpy(occupancy,map_who,sizeof occupancy);
+    memcpy(magnets,A4_DISP(0x99f6),sizeof magnets);
+    /* Mana is part of magnet records; expect only the fixed debit. */
+    memset(magnets+12,0,4);
+    assert(core_flood(0));
+    assert(core_mana(0)==0);
+    assert(!memcmp(magnets,A4_DISP(0x99f6),sizeof magnets));
+    assert(!memcmp(people,peeps,sizeof people) && !memcmp(occupancy,map_who,sizeof occupancy));
+    assert(no_peeps==2 && !core_battles && !core_settlements);
+    for (int cell=0;cell<4096;++cell) {
+        assert(!A4_WORD(0xff88+cell*2));
+        assert(map_blk[cell]==(cell%64<32 ? 47 : 0));
+        assert(map_bk2[cell]==(cell%64<32 ? 42 : 0));
+    }
+}
+
+static void test_flood_delayed_hazards(void)
+{
+    /* No direct damage: existing next-tick water handling owns loss/removal,
+     * leader/magnet cleanup, and town teardown. */
+    for (int fatal=0;fatal<2;++fatal) for (int town=0;town<2;++town) {
+        flood_fixture(1); memset(map_bk2,0,4096);
+        no_peeps=1; peeps[0]=town ? 1 : 2; peeps[2]=peeps[3]=1;
+        set_peep_word(0,4,100); set_peep_word(0,8,650); set_peep_word(0,12,town ? 42 : 7);
+        map_who[650]=1; core_leader(0)=1; core_target(0)=900;
+        if (town) core_set_town(0,0);
+        game_mode=fatal ? GAME_MODE_WATER_FATAL : 0; A4_WORD(0x2fb0)=1;
+        assert(core_flood(0));
+        assert(peep_word(0,4)==100 && peeps[0]==(town ? 1 : 2));
+        assert(map_who[650]==1 && core_leader(0)==1 && core_target(0)==900);
+        assert(!map_blk[650] && !map_bk2[650]);
+        _move_peeps();
+        assert(peep_word(0,4)==(fatal ? 0 : 98));
+        assert(peeps[0]==(fatal ? 0 : 18) && map_who[650]==(fatal ? 0 : 1));
+        assert(core_leader(0)==(fatal ? 0 : 1) && core_target(0)==(fatal ? 650 : 900));
+    }
+    /* Battle bit 8 is explicitly exempt from water handling in _move_peeps;
+     * flood must not invent fatal drowning for a still-active battle. */
+    flood_fixture(1); memset(map_bk2,0,4096); no_peeps=2;
+    peeps[0]=8; peeps[22]=10; peeps[23]=1; peeps[3]=peeps[25]=1;
+    for (int person=0;person<2;++person) {
+        set_peep_word(person,4,100); set_peep_word(person,8,650);
+        set_peep_word(person,6,1-person);
+    }
+    map_who[650]=1; game_mode=GAME_MODE_WATER_FATAL; seed=123;
+    assert(core_flood(0));
+    assert(peep_word(0,4)==100 && peep_word(1,4)==100 && seed==123);
+    _move_peeps();
+    assert(peep_word(0,4)==89 && peep_word(1,4)==89);
+    assert(peeps[0]==8 && peeps[22]==10 && map_who[650]==1);
+
+    /* A surviving isolated flat town loses its city capacity (3050 -> 65).
+     * Reframing and the existing excess-population split happen only on tick. */
+    flood_fixture(1); memset(map_bk2,0,4096);
+    for (int row=10;row<=11;++row) for (int column=10;column<=11;++column)
+        core_set_vertex(column,row,2);
+    no_peeps=1; peeps[0]=1; peeps[2]=peeps[3]=1;
+    set_peep_word(0,4,100); set_peep_word(0,8,650); set_peep_word(0,12,42);
+    map_who[650]=1; core_leader(0)=1; core_set_town(0,0);
+    assert(core_flood(0));
+    assert(peep_word(0,12)==42 && peep_word(0,4)==100 && no_peeps==1);
+    game_turn=1; _move_peeps();
+    assert(peeps[0]==1 && peep_word(0,12)==34 && peep_word(0,4)==100);
+    assert(map_bk2[650]==34 && no_peeps==1);
+    game_turn=8; _move_peeps();
+    assert(no_peeps==2 && peep_word(0,4)==32 && peep_word(1,4)==68);
+    assert(peeps[22]==2 && core_leader(0)==2 && map_who[650]==2);
+}
+
+static void test_flood_input(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_f;
+    /* Camera, mouse, diagnostic mode and armed S never retarget a global cast. */
+    for (int owner=0;owner<2;++owner) for (int view=0;view<3;++view)
+    for (int diagnostic=0;diagnostic<2;++diagnostic) for (int tool=0;tool<2;++tool) {
+        flood_fixture(2); player=owner; xoff=view*28; yoff=56-view*28;
+        mousex=view*159; mousey=view*127; diagnostic_view=diagnostic;
+        core_tool=tool; core_swamp_selected=1;
+        game_handle_event(&key);
+        assert(core_mana(owner)==0 && A4_LONG(0xae72)==250 && A4_WORD(0x2fac)==74);
+        assert(core_tool==tool && core_swamp_selected==1 && seed==321);
+        assert(xoff==view*28 && yoff==56-view*28 && mousex==view*159 && mousey==view*127);
+        for (int row=0;row<=64;++row) for (int column=0;column<=64;++column)
+            assert(core_vertex(column,row)==1);
+    }
+    for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint)
+    for (int gate=0;gate<10;++gate) {
+        flood_fixture(2); player=owner; paint_map=paint;
+        core_tool=core_swamp_selected=1; xoff=56; yoff=0; mousex=319; mousey=255;
+        if (gate==0) key.key.repeat=1;
+        if (gate==1) pause=1;
+        if (gate==2) A4_WORD(0xae80)=1;
+        if (gate>=3 && gate<=5) core_result=gate-2;
+        if (gate==6) A4_WORD(0x82c4+owner*46)=0xff7f;
+        if (gate==7) A4_LONG(0x9a02+owner*16)=39999;
+        if (gate==8) player=-1;
+        if (gate==9) player=2;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        game_handle_event(&key); key.key.repeat=0;
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(core_tool==1 && core_swamp_selected==1);
+    }
+    assert(game_reset(0)); game_render();
+    assert(strstr(SDL_GetWindowTitle(prg_screen->window),"F flood 40000"));
+    /* Verify visible text rather than only the window title; four-pixel glyph
+     * pitch leaves the entire flood label inside the 320-pixel HUD. */
+    uint32_t line[320*7]; memcpy(line,prg_screen->chunky_buffer+231*320,sizeof line);
+    hud_text(64,231,"F FLOOD 40000");
+    assert(!memcmp(line,prg_screen->chunky_buffer+231*320,sizeof line));
+    _closeall(); SDL_Quit();
+}
+
+static void test_flood_input_smoke(void)
+{
+    quake_fixture(1);
+    A4_LONG(0x84a2)=40000; A4_LONG(0x9a02)=40000; A4_WORD(0x82c4)=0x80;
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_f;
+    game_handle_event(&key);
+    assert(core_mana(0)==0 && A4_WORD(0x2fac)==74 && A4_LONG(0xae72)==250);
+    assert(core_vertex(64,64)==0);
+}
+
 int main(int argc, char **argv)
 {
+    if (argc==2 && !strcmp(argv[1],"--flood")) {
+        test_flood_input_smoke(); test_flood_cast(); test_flood_delayed_hazards();
+        prepare_rule_data(); test_flood_input(); cleanup_rule_data();
+        puts("focused flood regression: PASS");
+        return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--lower")) { test_original_lower(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--quake-core")) { test_quake_cast(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--quake")) {
@@ -2199,6 +2407,7 @@ int main(int argc, char **argv)
         return 0;
     }
     assert(argc == 1);
+    test_flood_input_smoke(); test_flood_cast(); test_flood_delayed_hazards();
     test_original_lower();
     test_quake_cast();
     test_swamp_cast();
@@ -2211,6 +2420,7 @@ int main(int argc, char **argv)
     test_original_generator();
     test_original_placement();
     prepare_rule_data();
+    test_flood_input();
     test_quake_input();
     test_swamp_input();
     test_swamp_render();

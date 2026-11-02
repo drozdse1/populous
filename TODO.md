@@ -146,7 +146,8 @@ Belege: `populous_c_port/populous_prg.c:803-915`, `:1509-1549`;
 - [x] Gameplay-Sumpfkraft: aktive Freigabe, 5000 Mana, 30 Versuche/60 RNG-Ziehungen, Punkte, Block 53 und einmalige Zielwahl ueber Port-Taste S. Originale Vertex-minus-eins-Bytekoordinaten erhalten; Bounds vor Kartenlesezugriff pruefen.
 - [ ] **Teilweise:** Sumpf in Originaltoolbar, Editor-Freimodus und Computer-KI integrieren; Audio fehlt. Diagnose-P darf keine kostenfreien Kraefte freischalten; War-Abbruch behaelt die bewaffnete Zielwahl wie im Original.
 - [ ] **Fehlt:** Rittererzeugung und zugehoeriges Verhalten.
-- [ ] **Fehlt:** Flut.
+- [x] Gameplay-Flut: aktive Freigabe 0x80, 40000 Mana, 250 Spielerpunkte, globale einmalige Absenkung positiver Hoehen und vollstaendige Kartenableitung ohne RNG; Port-Taste F.
+- [ ] **Teilweise:** Originale Folge-Tick-/Ertrinkensparitaet (insbesondere Kaempfe), Flut-Audio, Toolbar, KI und Editor-Freimodus migrieren.
 - [ ] **Fehlt:** Armageddon/Krieg.
 - [ ] **Fehlt:** Fuer jede Kraft die gesamte Wirkungskette integrieren: Auswahl, Freigabe, Mana/Punkte, Weltveraenderung, Bewohnerfolgen, Animation und spaeter Audio. Ein grafischer Effekt allein erfuellt den Punkt nicht.
 - [ ] **Pruefen:** Originale Tendenz-/Befehlsmodi und Aktionsnachrichten vollstaendig zuordnen; dies bildet auch die spaetere Multiplayer-Grundlage.

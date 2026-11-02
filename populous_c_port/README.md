@@ -34,7 +34,7 @@ ordinary `_where_do_i_go`/magnet navigation, settlement growth/mana/splitting,
 ordinary `_do_battle`/`_battle_over`, joining, water loss and vertex sculpting.
 Source labels and assembly ranges appear beside each implementation. The
 opponent uses the same settlement/exploration rules, not timer-created units.
-Special powers other than swamp and earthquake, knights, original computer
+Special powers other than swamp, earthquake and flood, knights, original computer
 power/auto-level logic, celebration animations and exact Amiga movement
 interpolation remain unsupported. The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
@@ -344,6 +344,22 @@ This milestone implements terrain rules and effect code 76, **not** the original
 by -4/-1 scanlines, not the entire framebuffer or a horizontal 120 pixels. Full
 presentation, editor bypass and original toolbar wiring remain TODOs.
 
+## Flood power
+
+`F` is a port-specific immediate global flood binding. It requires active permission
+`0x80`, at least 40000 mana, and no pause/war/finished match. It needs no selected
+vertex and does not consume an armed swamp target; keyboard repeats are ignored.
+Accepted casts charge 40000, award the player-caster 250 score, and set effect 74.
+
+Every positive height in the entire 65x65 vertex map decreases by one, without
+recursive propagation or RNG. The whole 64x64 cell map is regenerated, clearing
+all movement-history words; dirty bounds and build counter stay unchanged. Even
+an all-water cast pays and rebuilds the map. Population and occupancy do not
+change during casting; subsequent ticks apply existing water/settlement rules.
+Those rules still use the port's immediate movement model, including its battle
+water exemption, not full original drowning/tick parity. Sound, editor bypass,
+original toolbar and AI power selection remain deferred. `P` never makes it free.
+
 ## Controls
 
 - Blue is your population; red is the opponent. Original houses/castles show
@@ -357,6 +373,7 @@ presentation, editor bypass and original toolbar wiring remain TODOs.
 - `0`: gather walkers at the initial magnet (32,32). After a leader reaches it,
   `m` selects magnet placement; left-click moves the target for 200 mana. `m`
   again returns to terrain. Settlements release walkers when over capacity.
+- `f`: global flood, if allowed, for 40000 mana.
 - `q`: earthquake on the current viewport, if allowed, for 2500 mana.
 - `s`: select one-shot swamp targeting when allowed and mana exceeds 5000;
   left-click targets, then the previous terrain/magnet tool returns.

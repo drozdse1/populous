@@ -1156,6 +1156,23 @@ static int original_lower_point(int column, int row)
     return core_vertex(column, row);
 }
 
+/* _do_flood asm:7567-7648, gameplay only: P is diagnostic, not editor.
+ * The signed BLE guard leaves negative heights unchanged. This is not a
+ * recursive lower/sculpt operation; water and town consequences wait for tick. */
+static int core_flood(int owner)
+{
+    if (owner < 0 || owner > 1 || pause || A4_WORD(0xae80) || core_result ||
+        core_mana(owner) < (int32_t)A4_LONG(0x84a2) ||
+        !(A4_WORD(0x82c4+owner*46)&0x80)) return 0;
+    A4_LONG(0x9a02+owner*16) -= A4_LONG(0x84a2);
+    if (owner == player) A4_LONG(0xae72) += 250;
+    A4_WORD(0x2fac) = 74;
+    for (int index = 0; index < 4225; ++index)
+        if (A4_WORD(0xae86+index*2) > 0) --A4_WORD(0xae86+index*2);
+    _make_map();
+    return 1;
+}
+
 typedef uint16_t (*WorldRandom)(void);
 /* _do_quake asm:7863-8042, gameplay only (P is not the editor).
  * Terrain-only pre-mutation shake and audio remain separate work. */
@@ -1855,7 +1872,7 @@ static void draw_original(int view_x, int view_y)
         "S SWAMP ARMED 5000 / LMB TARGET / RMB INERT" :
         "LMB RAISE / RMB LOWER / ARROWS SCROLL / MAP CLICK");
     hud_text(4,222,"0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET / S SWAMP 5000");
-    hud_text(4,231,"Q QUAKE 2500 / SPACE PAUSE / R RESET / ESC QUIT / D VIEW");
+    hud_text(4,231,"Q QUAKE 2500 / F FLOOD 40000 / SPACE PAUSE / R RESET / ESC QUIT / D VIEW");
     hud_text(4,240,core_swamp_selected ?
         (core_tool ? "AFTER TARGET: MAGNET / ORIGINAL TOOLBAR DECORATIVE" :
                      "AFTER TARGET: TERRAIN / ORIGINAL TOOLBAR DECORATIVE") :
@@ -1915,7 +1932,7 @@ static void _draw_it(int16_t y, int16_t x)
     }
     } else draw_original(x,y);
     char title[512];
-    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; Q quake 2500; mouse raise/lower; Space pause R reset Esc quit",
+    snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; Q quake 2500; F flood 40000; mouse raise/lower; Space pause R reset Esc quit",
         core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : "RUNNING",
         core_population(0),core_population(1),core_mana(0),core_swamp_selected ?
         (core_tool ? "SWAMP ARMED (5000) LMB target then MAGNET / RMB inert" :
@@ -1924,6 +1941,7 @@ static void _draw_it(int16_t y, int16_t x)
     SDL_SetWindowTitle(prg_screen->window,title);
 }
 
+static void _do_flood(void) { core_flood(player); }
 static void _do_quake(void) { core_quake(player,xoff,yoff,___newrand); }
 static void _do_funny(void) {}
 /* Ordinary _set_frame branches, asm:5728-5743,5846-5861. */
@@ -2069,6 +2087,7 @@ static void game_handle_event(const SDL_Event *event)
             if (!pause && !core_result && key >= SDLK_0 && key <= SDLK_3) core_tendency(0) = key-SDLK_0;
             if (key == SDLK_m) core_tool = !core_tool;
             if (key == SDLK_q) _do_quake();
+            if (key == SDLK_f) _do_flood();
             /* Host S mapping for source selection asm:2021-2042 (> cost). */
             if (key == SDLK_s && player >= 0 && player <= 1 &&
                 core_mana(player) > (int32_t)A4_LONG(0x8496) &&
