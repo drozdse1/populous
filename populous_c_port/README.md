@@ -333,8 +333,7 @@ heading metadata or war deliberately bypasses that cleanup: it leaves a walker
 record with the post-loss population, which the next pass skips if nonpositive.
 The first frame call also affects whether subsequent footprint maintenance sees
 a frame change. Existing capacity overrides, split initialization and protected
-occupancy apply; no extra movement occurs in the recovery update. Town AI terrain
-work, candidate selection, full-pool special figures and original cleanup parity
+occupancy apply; no extra movement occurs in the recovery update. Candidate selection, full-pool special figures and original cleanup parity
 remain outside this bounded change. `--water-town` covers full-A4 state/loss
 matrices, selective splits and growth revival, clipped footprints, deferred rescue,
 and 200 frozen pause/result/quit cases. Focused/full normal and sanitized suites,
@@ -906,6 +905,20 @@ turn 4801 (128 battles, 182 towns, 0/199237); `--rescue-legacy-every-tick` and
 `--rescue-legacy-match` pin that defeat. The default scripts use the same legal
 inputs every tick from tick 3000 and win at turn 4185: diagnostic 102 battles,
 159 towns, 6713/0; isometric 102 battles, 162 towns, 6987/0. Defeat stays at 695.
+These 4185/4801/695 values are historical (before the computer AI).
+
+Computer AI (`--set-devil-magnet`, `--devil-effect`, `--computer-effect`,
+`--make-level`, `--opcode-magnet`, `--opcode-action`, `--opcode-effects`): each
+unlatched owner runs `_set_devil_magnet` then `_devil_effect` (asm 3254-3270);
+towns run `_make_level`. Opcodes 3 quake, 4 swamp, 5 magnet, 6 volcano and 14
+tendency/war/flood/knight are consumed. Assumption: the early `_make_level` exit
+stores the low byte of the owner's `_stats` address in peep+20 (0xa4/0xd2 at the
+disassembly base); this depends on the load address and was not measured, yet it
+feeds battle countdown, a signed table index and an exact compare. With the AI
+and unchanged inputs: both views win at turn 4696 (32 battles, 78 towns,
+1434/0); the legacy scripts lose at 3103 (33/79/0/30472); the defeat phase ends
+at 830 (0/6323). Open: opcodes 7-13, `good_pop` accumulation, `_toggle` mana,
+edge-of-map targets (host rejects x/y>56) and null pointer reads (address 8).
 The 11928 results below are historical (immediate-commit movement).
 
 Original-data integration is explicit:

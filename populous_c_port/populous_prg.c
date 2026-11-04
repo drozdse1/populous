@@ -1247,6 +1247,230 @@ static void core_one_block_flat(int position, int owner)
         }
     }
 }
+/* _move_peeps frame local -36 (asm:3331-3335 init $4e1f, asm:3738-3765):
+ * per-owner youngest town age; -40 (asm:3640-3645): per-owner city count;
+ * -32 (asm:3276-3289): good_castles*3+good_towns read at pass start. */
+static uint16_t core_youngest_town_age[2];
+static int16_t core_city_count[2], core_town_strength[2];
+/* _a_flat asm:25174-25184 (A4+$9704): 81 signed (dx,dy) byte pairs. */
+static const int8_t core_a_flat[162] = {
+    -4,-4,-4,-3,-4,-2,-4,-1,-4,0,-4,1,-4,2,-4,3,-4,4,
+    -3,-4,-3,-3,-3,-2,-3,-1,-3,0,-3,1,-3,2,-3,3,-3,4,
+    4,-4,4,-3,4,-2,4,-1,4,0,4,1,4,2,4,3,4,4,
+    3,-4,3,-3,3,-2,3,-1,3,0,3,1,3,2,3,3,3,4,
+    -2,-4,-2,-3,-2,-2,-2,-1,-2,0,-2,1,-2,2,-2,3,-2,4,
+    2,-4,2,-3,2,-2,2,-1,2,0,2,1,2,2,2,3,2,4,
+    -1,-4,-1,-3,-1,-2,-1,-1,-1,0,-1,1,-1,2,-1,3,-1,4,
+    1,-4,1,-3,1,-2,1,-1,1,0,1,1,1,2,1,3,1,4,
+    0,-4,0,-3,0,-2,0,-1,0,0,0,1,0,2,0,3,0,4
+};
+/* _make_level's early exit (asm:9017-9031) returns D0 untouched, which still
+ * holds the _stats element address A4+$82b6+owner*46; the town pass stores
+ * its low byte in peep +20 (asm:3793-3797). These are the low bytes at the
+ * disassembly base (A4 = $493ee: $516a4 and $516d2). The real value depends
+ * on the load address and has not been measured on real hardware. It is not
+ * just a flag: peep +20 is decremented in battle (asm:6477-6498), used as a
+ * signed table index (asm:8689-8737) and compared with exactly 1 (asm:8771). */
+#define MAKE_LEVEL_EXIT_BYTE_OWNER0 ((uint8_t)(0x516a4 + 0*46))
+#define MAKE_LEVEL_EXIT_BYTE_OWNER1 ((uint8_t)(0x516a4 + 1*46))
+/* _make_level asm:9017-9147: queue one raise/lower toward the town vertex
+ * height over the 9x9 a_flat neighbourhood. Returns D0: 0 when a command was
+ * queued, 1 when already level, else the exit byte above. */
+static uint8_t core_make_level(int position, int owner)
+{
+    int s = 0x82b6 + owner*46;
+    if (!(A4_WORD(s+14)&1) || (game_mode&GAME_MODE_NO_BUILD)) return owner ? MAKE_LEVEL_EXIT_BYTE_OWNER1 : MAKE_LEVEL_EXIT_BYTE_OWNER0;
+    int16_t x = (int16_t)(position & 63), y = (int16_t)((int16_t)position >> 6);
+    int16_t height = A4_WORD(0xae86 + (int16_t)(y*65 + x)*2);
+    for (int index = 0; index < 162; index += 2) {
+        int16_t cx = (int16_t)(core_a_flat[index] + x), cy = (int16_t)(core_a_flat[index+1] + y);
+        if (cx < 0 || cx > 64 || cy < 0 || cy > 64) continue;
+        /* ASL.W #6 + ADD.W: x == 64 or y == 64 reads past row/map, as the original. */
+        int16_t cell = (int16_t)(cy*64 + cx);
+        int command = 0;
+        if (map_blk[cell] == 0x2f && !(game_mode&GAME_MODE_BUILD_ONLY_UP)) {
+            ++map_blk[cell];
+            command = 2;
+        } else {
+            int16_t diff = (int16_t)(height - A4_WORD(0xae86 + (int16_t)(cy*65 + cx)*2));
+            if (diff > 0) command = 1;
+            else if ((diff < 0 || map_blk[cell] == 0x42 || map_blk[cell] == 0x35) &&
+                     !(game_mode&GAME_MODE_BUILD_ONLY_UP)) command = 2;
+        }
+        if (command) {
+            A4_DISP(s)[0] = (uint8_t)command;
+            A4_DISP(s+1)[0] = (uint8_t)cx; A4_DISP(s+2)[0] = (uint8_t)cy;
+            A4_WORD(s+8) = 1;
+            return 0;
+        }
+    }
+    return 1;
+}
+/* Host guard: the AI dereferences _magnet leaders and _stats pointers as
+ * peep records without validation. Outside the 208-slot table the original
+ * reads unrelated memory; the port then skips that AI routine for the pass. */
+static int core_ai_slot(int slot) { return slot >= 0 && slot < 208; }
+/* Signed CMP.L of mana against (threshold + bonus), ADD.L wrapping. */
+static int core_ai_mana_above(int owner, int threshold, uint32_t bonus)
+{
+    return (int32_t)A4_LONG(0x9a02+owner*16) > (int32_t)(A4_LONG(threshold)+bonus);
+}
+static void core_ai_put(int s, int command, int16_t cell)
+{
+    A4_DISP(s)[0] = (uint8_t)command;
+    A4_DISP(s+1)[0] = (uint8_t)(cell & 63);
+    A4_DISP(s+2)[0] = (uint8_t)(cell >> 6); /* ASR.W #6, low byte */
+}
+/* _do_computer_effect asm:9526-9600: aim at the computer's own magnet when
+ * an enemy stands there and the computer has a leader; else 3 cells above
+ * and left of the _stats+$26 peep (slot+1), each clamped at zero only. */
+static void core_do_computer_effect(int owner)
+{
+    int s = 0x82b6 + owner*46;
+    if (core_leader(owner)) {
+        int16_t target = core_target(owner);
+        int who = target >= 0 && target < 4096 ? map_who[target] : 0; /* host bound */
+        if (who && peep_owner(who-1) != owner) {
+            core_ai_put(s, A4_DISP(s)[0], target);
+            return;
+        }
+    }
+    int subject = (int)A4_LONG(s+0x26) - 1;
+    int16_t cell = peep_word(subject,8);
+    int16_t x = (int16_t)((cell & 63) - 3), y = (int16_t)((cell >> 6) - 3);
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    A4_DISP(s+1)[0] = (uint8_t)x; A4_DISP(s+2)[0] = (uint8_t)y;
+}
+/* _devil_effect asm:9300-9525. Called per owner from _move_peeps asm:3266-3270
+ * while the _stats+8 latch is clear. The permission word is copied to a local:
+ * BTST on its high byte is bit 8 (war), on its low byte bits 0..7. */
+static void core_devil_effect(int owner)
+{
+    int s = 0x82b6 + owner*46, enemy = owner ? 0 : 1;
+    if (A4_WORD(s+8)) return;
+    if ((core_leader(owner) && !core_ai_slot(core_leader(owner)-1)) ||
+        (core_leader(enemy) && !core_ai_slot(core_leader(enemy)-1)) ||
+        A4_LONG(s+0x26) > 208) return;
+    uint16_t flags = (uint16_t)A4_WORD(s+14);
+    /* asm:9317-9349: armageddon when richer by >999 and more populous. */
+    if ((flags&0x100) && core_ai_mana_above(owner,0x84a6,999) &&
+        (int32_t)A4_LONG(0x99fe + owner*16) > (int32_t)A4_LONG(0x99fe + enemy*16)) {
+        A4_DISP(s)[0] = 14; A4_DISP(s+2)[0] = 3; A4_WORD(s+8) = 1;
+        return;
+    }
+    /* asm:9350-9365: flood. */
+    if ((flags&0x80) && core_ai_mana_above(owner,0x84a2,1999)) {
+        A4_DISP(s)[0] = 14; A4_DISP(s+2)[0] = 4; A4_WORD(s+8) = 1;
+        return;
+    }
+    /* asm:9366-9396: knight for a leader above 3000; returns either way. */
+    if ((flags&0x20) && core_leader(owner) && peep_word(core_leader(owner)-1,4) > 3000) {
+        if (core_ai_mana_above(owner,0x849a,500)) {
+            A4_DISP(s)[0] = 14; A4_DISP(s+2)[0] = 5; A4_WORD(s+8) = 1;
+        }
+        return;
+    }
+    if (!A4_LONG(s+0x26)) return;
+    /* asm:9398-9419: volcano. */
+    if (core_ai_mana_above(owner,0x849e,500) && (flags&0x40)) {
+        A4_DISP(s)[0] = 6;
+        core_do_computer_effect(owner);
+        A4_WORD(s+8) = 1; A4_WORD(s+0x12) = 0;
+        return;
+    }
+    /* asm:9420-9482: swamp on the enemy leader; no latch write. */
+    if (core_ai_mana_above(owner,0x8496,500) && (flags&0x10)) {
+        int16_t count = A4_WORD(s+0x12);
+        if (!(count < A4_WORD(s+0x1a) && (flags&8)) && !(count > A4_WORD(s+0x18) && (flags&0x40))) {
+            int16_t theirs = (int16_t)(core_leader(enemy)-1), ours = (int16_t)(core_leader(owner)-1);
+            if (theirs != -1 && (ours == -1 || peep_word(theirs,4) > peep_word(ours,4))) {
+                A4_WORD(s+0x12) = (int16_t)(count+1);
+                core_ai_put(s, 4, peep_word(theirs,8));
+                return;
+            }
+        }
+    }
+    /* asm:9483-9524: earthquake on the target town. */
+    if (core_ai_mana_above(owner,0x8492,500) && peeps[((int)A4_LONG(s+0x26)-1)*22] == 1 && (flags&8)) {
+        if (A4_WORD(s+0x12) >= A4_WORD(s+0x1a) && (flags&0x50)) return;
+        A4_DISP(s)[0] = 3;
+        core_do_computer_effect(owner);
+        A4_WORD(s+8) = 1;
+        A4_WORD(s+0x12) = (int16_t)(A4_WORD(s+0x12)+1);
+    }
+}
+static void core_ai_tendency(int s, uint8_t value)
+{
+    A4_DISP(s)[0] = 14; A4_DISP(s+2)[0] = 1; A4_DISP(s+1)[0] = value; A4_WORD(s+8) = 1;
+}
+/* _stats+$22/$2a are Amiga pointers (slot+1 here). With none, the original
+ * dereferences address 8 (an OS exception vector); that compare is not
+ * modelled: the magnet branch is skipped and the fallback runs. */
+static int core_ai_town_cell(int s, int field, int16_t *cell)
+{
+    uint32_t reference = A4_LONG(s+field);
+    if (!reference || reference > 208) return 0;
+    *cell = peep_word((int)reference-1,8);
+    return 1;
+}
+/* _set_devil_magnet asm:9601-9800. Called per owner from _move_peeps
+ * asm:3257-3261 while the latch is clear. One newrand draw on the early
+ * tendency path only (asm:9628-9633). */
+static void core_set_devil_magnet(int owner)
+{
+    int s = 0x82b6 + owner*46, enemy = owner ? 0 : 1;
+    int16_t towns = (int16_t)(A4_WORD(s+0x16)+A4_WORD(s+0x14));
+    int16_t level = A4_WORD(s+0xc);
+    if (towns < (int16_t)(level*2+15) ||
+        (uint16_t)((uint16_t)game_turn % 90u) < (uint16_t)(level+10)) {
+        if (!core_tendency(owner)) {
+            A4_DISP(s)[0] = 14; A4_DISP(s+2)[0] = 1;
+            A4_DISP(s+1)[0] = (uint8_t)((int16_t)___newrand()%3 + 1);
+            A4_WORD(s+8) = 1;
+        }
+        return;
+    }
+    int theirs = core_leader(enemy) ? core_leader(enemy)-1 : -1;
+    int ours = core_leader(owner) ? core_leader(owner)-1 : -1;
+    if ((theirs != -1 && !core_ai_slot(theirs)) || (ours != -1 && !core_ai_slot(ours))) return;
+    if (ours < 0) {
+        if (core_tendency(owner)) { core_ai_tendency(s,0); A4_WORD(s+0x1c) = 0; }
+        return;
+    }
+    if (peep_word(ours,8) == A4_WORD(s+0x1e) && A4_WORD(s+0x1c))
+        A4_WORD(s+0x1c) = (int16_t)(A4_WORD(s+0x1c)-1);
+    int16_t cell;
+    if (peep_word(ours,4) < 6000) {
+        if (A4_WORD(s+0x1c)) {
+            if (core_target(owner) != A4_WORD(s+0x1e)) {
+                core_ai_put(s,5,A4_WORD(s+0x1e)); A4_WORD(s+8) = 1;
+                return;
+            }
+        } else if (core_ai_town_cell(s,0x2a,&cell) && core_target(owner) != cell) {
+            core_ai_put(s,5,cell); A4_WORD(s+0x1e) = cell; A4_WORD(s+0x1c) = 2; A4_WORD(s+8) = 1;
+            return;
+        }
+        if (core_tendency(owner)) core_ai_tendency(s,0);
+        return;
+    }
+    /* asm:9784-9864: a leader 500 above the enemy's, enemy tendency 0. */
+    if (theirs >= 0 && peep_word(ours,4) > (int16_t)(peep_word(theirs,4)+500) && !core_tendency(enemy)) {
+        if (A4_WORD(s+14)&4) {
+            if (core_tendency(owner)) core_ai_tendency(s,0);
+            else if (core_target(owner) != core_target(enemy)) {
+                core_ai_put(s,5,core_target(enemy)); A4_WORD(s+8) = 1;
+            }
+        }
+        return;
+    }
+    /* asm:9865-9898: magnet onto the enemy's best town. */
+    if (A4_WORD(s+14)&2) {
+        if (core_ai_town_cell(s,0x22,&cell) && core_target(owner) != cell && !A4_WORD(s+0x1c)) {
+            core_ai_put(s,5,cell); A4_WORD(s+0x1e) = cell; A4_WORD(s+0x1c) = 2; A4_WORD(s+8) = 1;
+        } else if (core_tendency(owner)) core_ai_tendency(s,0);
+    }
+}
 static void core_settle_tick(int person)
 {
     int owner = peep_owner(person), position = peep_word(person,8), capacity = core_check_life(owner,position);
@@ -1264,6 +1488,7 @@ static void core_settle_tick(int person)
     core_frame_town(person,capacity);
     /* asm:3658-3661: LAB_52DEA counts non-city frames during the pass. */
     if (capacity < 3050) A4_WORD(0x99fc+owner*16) = (uint16_t)A4_WORD(0x99fc+owner*16)+1;
+    else if (owner < 2) ++core_city_count[owner]; /* asm:3637-3645 */
     /* asm:3667-3677: reclaim a departed walker's slot, never another occupant. */
     if (!map_who[position]) map_who[position] = person+1;
     /* asm:3684-3705: a capacity strictly above the pass maximum (signed
@@ -1278,6 +1503,21 @@ static void core_settle_tick(int person)
     if (owner < 2 && !(core_oldest_town_age[owner] > age)) {
         core_oldest_town_age[owner] = age;
         A4_LONG(0x82dc+(owner ? 0 : 1)*46) = (uint32_t)(person+1);
+    }
+    /* asm:3738-3765: the strictly youngest town (unsigned) is this owner's
+     * own _stats+0x2a pointer. */
+    if (owner < 2 && core_youngest_town_age[owner] > age) {
+        core_youngest_town_age[owner] = age;
+        A4_LONG(0x82e0+owner*46) = (uint32_t)(person+1);
+    }
+    /* asm:3766-3817: town levelling while this owner's latch is clear. Flat
+     * cells keep the result in peep +20 and skip an unchanged, unflagged frame. */
+    if (owner < 2 && !A4_WORD(0x82be + owner*46)) {
+        if (!map_alt[position]) {
+            if (!peeps[person*22+20] || peep_word(person,12) != old_frame || A4_WORD(0x2fb2))
+                peeps[person*22+20] = core_make_level(position,owner);
+        } else if (core_town_strength[owner] < 3 && (uint16_t)game_turn > 250)
+            core_make_level(position,owner);
     }
     if (!((uint16_t)game_turn&7)) {
         int level = peep_word(person,12)-32;
@@ -1468,6 +1708,13 @@ static void core_clear_terrain_mailboxes(void)
 
 /* _get_message asm:17929-17995,18218-18229. No serial/editor/UI producers yet.
  * Cadence clears the latch independently of the opcode, including empty slots. */
+static int core_quake(int owner, int column, int row, uint16_t (*random)(void));
+static int core_swamp(int owner, int column, int row, uint16_t (*random)(void));
+static int core_volcano(int owner, int column, int row, uint16_t (*random)(void));
+static int core_war(int owner);
+static int core_flood(int owner);
+static int core_knight(int owner);
+static int core_do_magnet(int owner, int x, int y);
 static void core_consume_terrain_mailboxes(void)
 {
     for (int owner = 0; owner < 2; ++owner) {
@@ -1480,12 +1727,49 @@ static void core_consume_terrain_mailboxes(void)
             }
             if ((uint16_t)game_turn % divisor == 0) A4_WORD(0x82be + displacement) = 0;
         }
-        if (A4_DISP(0x82b6 + displacement)[0] == 1)
-            core_raw_raise(owner, A4_DISP(0x82b7 + displacement)[0], A4_DISP(0x82b8 + displacement)[0]);
-        else if (A4_DISP(0x82b6 + displacement)[0] == 2)
-            core_do_lower_point(owner, A4_DISP(0x82b7 + displacement)[0], A4_DISP(0x82b8 + displacement)[0]);
+        int x = A4_DISP(0x82b7 + displacement)[0], y = A4_DISP(0x82b8 + displacement)[0];
+        /* Jump table asm:18200-18216. 7..13 (place people, tree, rock,
+         * clear cell) have no producer here and stay unconsumed. */
+        switch (A4_DISP(0x82b6 + displacement)[0]) {
+        case 1: core_raw_raise(owner, x, y); break;
+        case 2: core_do_lower_point(owner, x, y); break;
+        case 3: core_quake(owner, x, y, ___newrand); break;
+        case 4: core_swamp(owner, x, y, ___newrand); break;
+        case 5: core_do_magnet(owner, x, y); break;
+        case 6: core_volcano(owner, x, y, ___newrand); break;
+        case 14:
+            /* _do_action asm:18406-19032, switch on y; these cases return 0. */
+            if (y == 1) core_tendency(owner) = (int16_t)x; /* _set_tend_icons is UI only */
+            else if (y == 3) core_war(owner);
+            else if (y == 4) core_flood(owner);
+            else if (y == 5) core_knight(owner);
+            break;
+        default: break;
+        }
     }
     core_clear_terrain_mailboxes();
+}
+/* _set_magnet_to asm:8271-8293. */
+static void core_set_magnet_to(int owner, int16_t cell)
+{
+    if (pause) return;
+    core_target(owner) = cell;
+    A4_WORD(owner ? 0xae76 : 0xae78) = cell;
+}
+/* _do_magnet asm:6769-6820: signed CMP.L, leader and war gates, then
+ * payment before the 0..63 clamps. */
+static int core_do_magnet(int owner, int x, int y)
+{
+    if ((int32_t)A4_LONG(0x9a02+owner*16) < (int32_t)A4_LONG(0x848e) ||
+        !core_leader(owner) || A4_WORD(0xae80)) return 0;
+    A4_WORD(0x2fac) = 77;
+    A4_LONG(0x9a02+owner*16) -= A4_LONG(0x848e);
+    if (x >= 64) x = 63;
+    if (x < 0) x = 0;
+    if (y >= 64) y = 63;
+    if (y < 0) y = 0;
+    core_set_magnet_to(owner,(int16_t)(y*64+x));
+    return 1;
 }
 
 /* _lower_point asm:2571-2713: ADDQ.W build_count, then SUBQ.W height.
@@ -2480,9 +2764,17 @@ static void core_collision_wait(int person)
 }
 static void _move_peeps(void)
 {
-    /* asm:3290-3335: per-pass AI bookkeeping (good_pop stays host-computed). */
+    /* asm:3254-3270: the computer player acts on last pass's pointers while
+     * its latch is clear; the latch is re-read between the two calls. */
     for (int owner = 0; owner < 2; ++owner) {
+        if (!A4_WORD(0x82be + owner*46)) core_set_devil_magnet(owner);
+        if (!A4_WORD(0x82be + owner*46)) core_devil_effect(owner);
+    }
+    /* asm:3271-3335: per-pass AI bookkeeping (good_pop stays host-computed). */
+    for (int owner = 0; owner < 2; ++owner) {
+        core_town_strength[owner] = (int16_t)(A4_WORD(0x82ca+owner*46)*3 + A4_WORD(0x82cc+owner*46));
         A4_WORD(0x99fc+owner*16) = 0;
+        core_city_count[owner] = 0; core_youngest_town_age[owner] = 0x4e1f;
         A4_LONG(0x82d8+owner*46) = A4_LONG(0x82dc+owner*46) = A4_LONG(0x82e0+owner*46) = 0;
         core_oldest_town_age[owner] = 0; core_best_town_capacity[owner] = 0;
     }
@@ -2619,6 +2911,11 @@ static void _move_peeps(void)
             core_collision_wait(person);
             if (peep_word(person,4)<=0) core_remove(person);
         }
+    }
+    /* asm:4349-4370: publish this pass's town and city counts. */
+    for (int owner = 0; owner < 2; ++owner) {
+        A4_WORD(0x82cc+owner*46) = A4_WORD(0x99fc+owner*16);
+        A4_WORD(0x82ca+owner*46) = core_city_count[owner];
     }
 }
 static void _show_the_shield(void) {}
