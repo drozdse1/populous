@@ -220,7 +220,8 @@ original campaign trace or a human-playability claim.
 The every-eight-ticks sinking strategy used before nonwar rescue is no longer a
 verified victory strategy with this producer enabled: at tick 12000 the isometric
 run still has populations 65387/9594 (225 battles), and the diagnostic run has
-26818/177062 (316 battles). Those earlier victory timings are historical evidence,
+28842/142403 (325 battles; changed from 26818/177062 by one
+collision-wait mark at turn 10625). Those earlier victory timings are historical evidence,
 not current rescue-enabled results. `--rescue-legacy-match` preserves both old
 scripts as explicit ongoing-at-12000 regressions. The default victory scripts now
 use the same legal lowering inputs every tick after tick 6000, rather than every
@@ -886,7 +887,14 @@ occupied-slot preservation, exact seeded battle casualties/rewards and near-town
 sculpt acceptance/rejection. Isolated rule fixtures set up controlled state;
 the bounded match tests use only reset, normal ticks and legal SDL inputs.
 Normal tests generate synthetic LAND files under a temporary directory and
-remove them. Original-data integration is explicit:
+remove them. Collision wait (`--collision-wait`, asm:4058-4067/4145-4184): an exact-2 walker
+still alive after framing (and any move/loss) marks the `map_who` occupant of its
+own cell with 0x20, frame 101 and counter 0, unless it is itself, slot >= 208,
+already framed or bit 0x10. With immediate destination occupancy this only fires
+when a walker stays on a cell represented by another peep; marks arising from
+phased departure remain open.
+
+Original-data integration is explicit:
 
 ```sh
 POPULOUS_TEST_REAL_DATA=1 \

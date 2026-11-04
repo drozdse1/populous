@@ -2387,6 +2387,20 @@ static int core_frame_walker(int person)
     }
     return 0;
 }
+/* _move_peeps asm:4058-4067,4145-4184: an exact-2 walker still alive after
+ * framing (and any move) marks the peep map_who names at its own cell. No
+ * owner, liveness or no_peeps test. With the port's immediate destination
+ * occupancy a successful move names the walker itself, so this fires only
+ * when it stays on a cell represented by another peep. */
+static void core_collision_wait(int person)
+{
+    if (peep_word(person,4) <= 0) return;
+    int other = map_who[peep_word(person,8)]-1;
+    if (other == person || other == -1 || peep_word(other,12) || other >= 208 ||
+        (peeps[other*22]&0x10)) return;
+    peeps[other*22] |= 0x20;
+    set_peep_word(other,12,101); set_peep_word(other,6,0);
+}
 static void _move_peeps(void)
 {
     /* asm:3357-3424: release heading-bearing leaders before war recenters.
@@ -2494,7 +2508,10 @@ static void _move_peeps(void)
             set_peep_word(person,6,(uint16_t)(previous-1u));
             if (!previous || peep_word(person,4)<=0) core_remove(person);
         } else {
-            if (!core_frame_walker(person)) continue;
+            if (!core_frame_walker(person)) {
+                if (flags == 2) core_collision_wait(person);
+                continue;
+            }
             int position = peep_word(person,8);
             /* asm:4061-4081: ordinary frame completion, before move/loss. */
             if (flags == 2 && map_blk[position] == 53) {
@@ -2509,6 +2526,7 @@ static void _move_peeps(void)
             }
             core_move(person);
             if (peep_word(person,4)>0) set_peep_word(person,4,peep_word(person,4)-A4_WORD(0x2fb0));
+            if (flags == 2) core_collision_wait(person);
             if (peep_word(person,4)<=0) core_remove(person);
         }
     }

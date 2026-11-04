@@ -357,10 +357,13 @@ static void test_colocated_hostile_encounter(void)
         uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
         game_render(); assert(!memcmp(saved,prg_a4_area,sizeof saved));
     }
-    /* Keep the existing eight-tick dispatch, not the original frame-101 handshake. */
+    /* asm:4148-4184 handshake: slot 0's incomplete first frame marks the
+     * represented slot 1 (0x22, frame 101, counter 0); it waits until slot 0
+     * completes its eighth frame and attacks the waiting resident. */
     setup_colocated_walkers(0);
     for (int tick=0; tick<7; ++tick) _move_peeps();
-    assert(!core_battles && peeps[0]==2 && peeps[22]==2);
+    assert(!core_battles && peeps[0]==2 && peeps[22]==0x22);
+    assert(peep_word(0,12)==7 && peep_word(1,6)==7 && peep_word(1,12)==102);
     _move_peeps();
     assert(core_battles==1 && (peeps[0]&8) && (peeps[22]&8));
     assert(map_who[50*64+50]==1 && !core_settlements);
@@ -1202,6 +1205,180 @@ static void celebration_expected_word(uint8_t *expected, int displacement, int16
     memcpy(expected+(A4_DISP(displacement)-prg_a4_area),&value,sizeof value);
 }
 
+/* Collision-wait producer, _move_peeps asm:4058-4067,4145-4184: an exact-2
+ * walker alive after framing (and any move) marks map_who[own cell]'s peep. */
+static void setup_collision(int a, int owner_a, int b, int owner_b, int b_flags,
+                            int b_life, int b_frame)
+{
+    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(map_blk,47,4096);
+    no_peeps=2; core_battles=core_settlements=0; core_result=0; prg_quit=0;
+    A4_WORD(0x2fb0)=1; seed=123;
+    core_tendency(0)=core_tendency(1)=1;
+    peeps[a*22]=2; peeps[a*22+1]=owner_a; peeps[a*22+2]=peeps[a*22+3]=1;
+    peeps[a*22+21]=0x77;
+    set_peep_word(a,4,100); set_peep_word(a,6,0x4321); set_peep_word(a,8,650);
+    peeps[b*22]=b_flags; peeps[b*22+1]=owner_b; peeps[b*22+2]=peeps[b*22+3]=1;
+    for (int byte=14; byte<18; ++byte) peeps[b*22+byte]=0;
+    peeps[b*22+21]=0x99;
+    set_peep_word(b,4,b_life); set_peep_word(b,6,0x1234); set_peep_word(b,8,700);
+    set_peep_word(b,10,-63); set_peep_word(b,12,b_frame);
+    map_blk[650]=map_blk[700]=1; map_who[650]=b+1;
+    core_leader(owner_a)=a+1; view_who=a+1;
+}
+
+static void collision_expect_flags(uint8_t *expected, int person, int flags)
+{
+    expected[peeps-prg_a4_area+person*22]=flags;
+}
+
+static void collision_check(const uint8_t *expected, const char *label, int index)
+{
+    if (memcmp(expected,prg_a4_area,65536)) {
+        fprintf(stderr,"collision %s case=%d\n",label,index);
+        for (size_t byte=0; byte<65536; ++byte)
+            if (expected[byte]!=prg_a4_area[byte])
+                fprintf(stderr,"A4 %04zx expected=%02x actual=%02x\n",(byte-32768)&0xffff,expected[byte],prg_a4_area[byte]);
+    }
+    assert(!memcmp(expected,prg_a4_area,65536));
+}
+
+static void test_collision_wait_mark(void)
+{
+    /* Dead B is skipped by its own slot, so only the producer can touch it.
+     * Bits outside 0x10 survive; no owner, liveness or no_peeps predicate. */
+    const int flags[]={0,2,0x40,0x80,0x20,0x8a};
+    const int marked[]={0x20,0x22,0x60,0xa0,0x20,0xaa};
+    static uint8_t expected[65536]; int checked=0;
+    for (int owner=0; owner<2; ++owner) for (int foreign=0; foreign<2; ++foreign)
+        for (int order=0; order<2; ++order) for (unsigned f=0; f<6; ++f) {
+            int a=order, b=1-order;
+            setup_collision(a,owner,b,foreign ? 1-owner : owner,flags[f],0,0);
+            memcpy(expected,prg_a4_area,sizeof expected);
+            celebration_expected_word(expected,0x9c26+a*22+12,1);
+            collision_expect_flags(expected,b,marked[f]);
+            celebration_expected_word(expected,0x9c26+b*22+12,101);
+            celebration_expected_word(expected,0x9c26+b*22+6,0);
+            _move_peeps();
+            collision_check(expected,"mark",checked++);
+            assert(!core_battles && !core_settlements);
+        }
+    /* Slot 207 is the last accepted index, even beyond no_peeps. */
+    setup_collision(0,0,1,1,2,0,0); map_who[650]=208;
+    memcpy(expected,prg_a4_area,sizeof expected);
+    celebration_expected_word(expected,0x9c26+12,1);
+    collision_expect_flags(expected,207,0x20);
+    celebration_expected_word(expected,0x9c26+207*22+12,101);
+    _move_peeps();
+    collision_check(expected,"slot207",0);
+    /* Frame completion: blocked move (0x42, counter 7, frame 0), loss, then mark. */
+    for (int owner=0; owner<2; ++owner) {
+        setup_collision(0,owner,1,1-owner,0,0,0); set_peep_word(0,12,7);
+        memcpy(expected,prg_a4_area,sizeof expected);
+        collision_expect_flags(expected,0,0x42);
+        celebration_expected_word(expected,0x9c26+6,7);
+        celebration_expected_word(expected,0x9c26+12,0);
+        celebration_expected_word(expected,0x9c26+4,99);
+        /* One exploration draw: (123*0x24a1+0x24df)&0x7fff = 0x3e3a. */
+        celebration_expected_word(expected,0x99e2,0x3e3a);
+        collision_expect_flags(expected,1,0x20);
+        celebration_expected_word(expected,0x9c26+22+12,101);
+        celebration_expected_word(expected,0x9c26+22+6,0);
+        _move_peeps();
+        collision_check(expected,"complete",owner);
+    }
+    printf("collision-wait mark A4 cases: %d\n",checked+3);
+}
+
+static void test_collision_wait_gates(void)
+{
+    static uint8_t expected[65536]; int checked=0;
+    /* map_who: empty, self, slot 208; B frame nonzero; B bit 0x10. */
+    struct { int who, frame, flags; } cases[]={
+        {0,0,2},{-1,0,2},{209,0,2},{2,1,2},{2,-1,2},{2,101,2},{2,0,0x10},{2,0,0x12},{2,0,0x32}};
+    for (int owner=0; owner<2; ++owner) for (unsigned c=0; c<sizeof cases/sizeof cases[0]; ++c) {
+        setup_collision(0,owner,1,1-owner,cases[c].flags,0,cases[c].frame);
+        map_who[650]=cases[c].who<0 ? 1 : cases[c].who;
+        memcpy(expected,prg_a4_area,sizeof expected);
+        celebration_expected_word(expected,0x9c26+12,1);
+        _move_peeps();
+        collision_check(expected,"gate",checked++);
+    }
+    /* Only exact 2 produces: other ordinary flags never frame or mark. */
+    const int walker[]={0,3,0x82};
+    for (unsigned w=0; w<3; ++w) {
+        setup_collision(0,0,1,1,2,0,0); peeps[0]=walker[w];
+        memcpy(expected,prg_a4_area,sizeof expected);
+        _move_peeps();
+        collision_check(expected,"walker",checked++);
+    }
+    /* Death after completion skips the producer (asm:4145-4147). */
+    for (int owner=0; owner<2; ++owner) {
+        setup_collision(0,owner,1,1-owner,2,0,0);
+        set_peep_word(0,12,7); set_peep_word(0,4,1);
+        uint8_t other[22]; memcpy(other,peeps+22,sizeof other);
+        _move_peeps();
+        assert(!peep_word(0,4) && !memcmp(other,peeps+22,sizeof other) && map_who[650]==2);
+        ++checked;
+    }
+    /* A live earlier-slot B frames 0->1 before A looks: no mark. */
+    setup_collision(1,0,0,1,2,100,0);
+    memcpy(expected,prg_a4_area,sizeof expected);
+    celebration_expected_word(expected,0x9c26+12,1);
+    celebration_expected_word(expected,0x9c26+22+12,1);
+    _move_peeps();
+    collision_check(expected,"earlier",checked++);
+    printf("collision-wait gate cases: %d\n",checked);
+}
+
+static void test_collision_wait_tick(void)
+{
+    static uint8_t expected[65536];
+    for (int owner=0; owner<2; ++owner) {
+        /* Stopped ticks change nothing. */
+        for (int gate=0; gate<3; ++gate) {
+            setup_collision(0,owner,1,1-owner,2,100,0);
+            if (gate==0) pause=1; else if (gate==1) core_result=2; else prg_quit=1;
+            memcpy(expected,prg_a4_area,sizeof expected);
+            game_tick();
+            collision_check(expected,"stopped",gate);
+            prg_quit=0;
+        }
+        /* Later live B is marked then consumed in the same tick. */
+        setup_collision(0,owner,1,1-owner,2,100,0);
+        memcpy(expected,prg_a4_area,sizeof expected);
+        celebration_expected_word(expected,0xae6a,1);
+        celebration_expected_word(expected,0x9c26+12,1);
+        collision_expect_flags(expected,1,0x22);
+        celebration_expected_word(expected,0x9c26+22+12,102);
+        celebration_expected_word(expected,0x9c26+22+6,1);
+        celebration_expected_word(expected,0x9c26+22+4,99);
+        uint32_t friendly=owner ? 99 : 100, enemy=owner ? 100 : 99;
+        memcpy(expected+(A4_DISP(0x99fe)-prg_a4_area),&friendly,4);
+        memcpy(expected+(A4_DISP(0x9a0e)-prg_a4_area),&enemy,4);
+        game_tick();
+        collision_check(expected,"tick1",owner);
+        for (int tick=2; tick<=16; ++tick) {
+            game_tick();
+            assert(game_turn==tick && !core_result && peep_word(1,8)==700);
+            if (tick<16) {
+                assert(peeps[22]==0x22 && peep_word(1,6)==tick);
+                assert(peep_word(1,12)==(tick%2 ? 102 : 101));
+            } else assert(peeps[22]==0x42 && peep_word(1,6)==7 && peep_word(1,12)==0);
+            assert(peep_word(1,4)==100-tick);
+            if (tick<8) assert(peeps[0]==2 && peep_word(0,12)==tick && peep_word(0,4)==100);
+            else if (tick==8) assert(peeps[0]==0x42 && peep_word(0,6)==7 && !peep_word(0,12) && peep_word(0,4)==99);
+            else {
+                assert(peeps[0]==0x42 && peep_word(0,6)==tick-1 && peep_word(0,4)==107-tick);
+                assert(peep_word(0,12)==(tick%2 ? 101 : 102));
+            }
+            assert(peep_word(0,8)==650 && map_who[650]==2 && peeps[21]==0x77 && peeps[43]==0x99);
+            assert(core_leader(owner)==1 && view_who==1 && !core_battles);
+        }
+    }
+    puts("collision-wait tick cases: 8");
+}
+
 static void setup_town_celebration(int owner, int fertile, int city)
 {
     setup_celebration(owner); peeps[0]=5;
@@ -1919,6 +2096,14 @@ static void test_water_recovery_state(void)
         expected[peeps-prg_a4_area]=remaining ? 2 : 0;
         int16_t frame=fatal ? cases[sample].frame : cases[sample].after;
         memcpy(expected+(peeps-prg_a4_area)+12,&frame,2);
+        /* asm:4148-4184: the surviving exact-2 walker (second frame never
+         * completes) sees map_who name battle peep 1 at frame 0: bit 8 is no
+         * gate, so 0x28/101/0; its battle slot then has no later partner. */
+        if (remaining && occupancy==2) {
+            expected[peeps-prg_a4_area+22]=0x28;
+            celebration_expected_word(expected,0x9c26+22+12,101);
+            celebration_expected_word(expected,0x9c26+22+6,0);
+        }
         _move_peeps();
         assert(peep_word(0,4)==remaining && peep_word(0,12)==frame);
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -3928,8 +4113,8 @@ static void test_match_events_cadence(int interval, int legacy)
     fprintf(stderr,"match result=%d turns=%u battles=%d towns=%d pop=%d/%d\n",core_result,(uint16_t)game_turn,core_battles,core_settlements,core_population(0),core_population(1));
     if (legacy) {
         assert(getenv("POPULOUS_TEST_REAL_DATA"));
-        assert(!core_result && game_turn==12000 && core_battles==316);
-        assert(core_population(0)==26818 && core_population(1)==177062);
+        assert(!core_result && game_turn==12000 && core_battles==325);
+        assert(core_population(0)==28842 && core_population(1)==142403);
         _closeall(); SDL_Quit(); return;
     }
     assert(core_battles>0 && core_settlements>0 && core_result);
@@ -8792,6 +8977,24 @@ static void test_water_town_split_and_growth(void)
                 celebration_expected_word(expected,0x99f8+owner*16,core_target(owner));
                 celebration_expected_word(expected,owner ? 0xae76 : 0xae78,A4_WORD(owner ? 0xae76 : 0xae78));
             }
+            /* asm:4148-4184: the exact-2 child (frame 0->1) stands on 650,
+             * which names enemy peep 2 at frame 0: mark 0x20/101/0, then
+             * slot 2 consumes the wait (frame 102, counter 1, walking loss). */
+            if (occupant==2) {
+                celebration_expected_word(expected,0x9c26+44+12,102);
+                celebration_expected_word(expected,0x9c26+44+6,1);
+                if (cases[sample].loss==1) {
+                    expected[peeps-prg_a4_area+44]=0x22;
+                    celebration_expected_word(expected,0x9c26+44+4,76);
+                } else { /* 77-30000 and 77-16385 die: core_remove. */
+                    expected[peeps-prg_a4_area+44]=0;
+                    celebration_expected_word(expected,0x9c26+44+4,0);
+                    expected[map_who-prg_a4_area+650]=0;
+                    celebration_expected_word(expected,0x99f6+(1-owner)*16,0);
+                    celebration_expected_word(expected,0x99f8+(1-owner)*16,650);
+                    celebration_expected_word(expected,owner ? 0xae78 : 0xae76,650);
+                }
+            }
         }
         _move_peeps();
         if (memcmp(expected,prg_a4_area,sizeof expected)) {
@@ -9590,6 +9793,11 @@ int main(int argc, char **argv)
         test_water_wait(); test_water_celebration(); test_water_recovery(); test_water_loss();
         puts("focused dry water remnant: PASS (15360 state, 40 frame, 6 expiry, 144 edge, 96 gate/skip/tick, 120 mixed, 14 deferred)"); return 0;
     }
+    if (argc==2 && !strcmp(argv[1],"--collision-wait")) {
+        test_collision_wait_mark(); test_collision_wait_gates(); test_collision_wait_tick();
+        test_blocked_retry(); test_wait_boundaries(); test_wait_water_and_death();
+        puts("focused collision-wait production: PASS"); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--water-wait")) {
         test_water_wait(); test_water_wait_rescue();
         test_water_celebration(); test_water_recovery(); test_water_loss(); test_water_entry();
@@ -9801,6 +10009,7 @@ int main(int argc, char **argv)
     test_blocked_retry();
     test_wait_boundaries();
     test_wait_water_and_death();
+    test_collision_wait_mark(); test_collision_wait_gates(); test_collision_wait_tick();
     test_original_selection();
     test_original_generator();
     test_original_placement();

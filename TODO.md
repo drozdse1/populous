@@ -74,7 +74,7 @@ Belege: `populous_c_port/Makefile:1-35`,
 - [x] Block 47 bei Kartenupdates gemaess Original erhalten beziehungsweise bei vollstaendiger Ueberflutung entfernen.
 - [ ] **Pruefen:** Weitere Karten-Sonderfaelle und Wechselwirkungen mit spaeteren Spezialterrainbloecken migrieren.
 - [x] Ueberlappende Conquest-Startbelegung gemaess Original zulassen: alle Bewohnerdatensaetze erhalten, letzter Eintrag repraesentiert die Zelle. Feindlichen aktuellen Bewohner vor Gruendung/Abmarsch behandeln; verdeckte/doppelte Stadtgruendung verhindern. Keine Verlegung der Originalstarts.
-- [ ] **Teilweise:** Custom-/Serial-Startmodi sowie originale Kollisionswarte-Erzeugung und phasenweise Bewegung fehlen weiterhin. Conquest-Suchpfade und Blockade-Retry sind implementiert; der historische Zugriff auf Zelle 4096 bleibt sicher ausgelassen.
+- [ ] **Teilweise:** Custom-/Serial-Startmodi sowie phasenweise Bewegung (und davon abhaengige Kollisionswarte-Markierungen) fehlen weiterhin. Conquest-Suchpfade und Blockade-Retry sind implementiert; der historische Zugriff auf Zelle 4096 bleibt sicher ausgelassen.
 - [ ] **Pruefen:** Kartenrotation, Kartenbearbeitung und weitere Welt-/Modusfunktionen aus dem Routineninventar nach tatsaechlicher Originalverwendung zuordnen und migrieren.
 
 **Abhaengigkeiten:** LAND-Lader und RNG sind vorhanden. Conquest benoetigt diesen
@@ -95,7 +95,7 @@ Amiga-Ausfuehrung. Die vorher abgewiesenen Starts 70, 74, 93, 94, 160, 201, 204,
 
 Die Begegnungslogik bleibt an der bisherigen C-Bewegungsschranke. Blockadeflag
 0x40 und der Wartezustands-Verbrauch sind inzwischen migriert (siehe unten);
-Erzeugung des Kollisions-Warteflags 0x20 und phasenabhaengige vorherige Belegung
+Erzeugung des Kollisions-Warteflags 0x20 ist migriert; phasenabhaengige vorherige Belegung
 fehlen weiterhin. Keine tickgenaue Gesamtparitaet behauptet.
 Der exhaustive Originalstart-Test `test-level-local` hat wegen Assetladen/Simulation
 ein separates 120s-Zeitlimit. Testdatenisolation und transaktionaler Reset bleiben
@@ -133,7 +133,7 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 ## P1 - Bewohner, Navigation und Kampf vervollstaendigen
 
 - [x] Blockierte Navigation (`999` -> Flag 0x40, Zaehler 7), Warteframes 101/102, Verlust pro Wartetick und Retry bei vorherigem Zaehler >14 migrieren; keine doppelte Bewegungsverlustbuchung beim Retry.
-- [ ] **Teilweise:** Gesamten Bewohner-Zustandsautomaten abgleichen: Erzeugung der Kollisions-Warteflags 0x20, weitere Flagkombinationen, phasenweise Bewegung, Anfuehrer-/Folgerzustand und Uebergaenge zwischen Bewegung, Stadt und Kampf.
+- [ ] **Teilweise:** Gesamten Bewohner-Zustandsautomaten abgleichen: Kollisions-Warteflag 0x20 implementiert (nur ohne Phasenbewegung), weitere Flagkombinationen, phasenweise Bewegung, Anfuehrer-/Folgerzustand und Uebergaenge zwischen Bewegung, Stadt und Kampf.
 - [x] Gewoehnliche Magnetnavigation: Original-Richtungstabelle mit Nordschritt am Ziel, Anfuehrer-/Ansichtserwerb, Folgerziel, gegenueberliegende Ausweichhistorie und Historie bei acht Fehlversuchen; direkter Block-47-Schritt im Krieg, keine Felsfreigabe fuer Ausweichschritte.
 - [x] Originale `_get_heading`-Zielwahl als isolierte Grundlage: Selbstreferenz ohne passenden Gegner, sonst erster naechster lebender Fremdbesitzer ohne Bit 7; Manhattanabstand, keine Weg-/Belegungsfilter. Sichere vierbytebreite Einserindizes im A4-Hostzustand statt nativer Pointer.
 - [x] Bestehende Heading-Referenzen in Navigation aktivieren: gueltiges Ziel beibehalten, einmaliger Zielwechsel bei Tot/Freund/Bit 7/gleicher Zelle; Anfuehrerfreigabe vor Kriegszielreset, keine Stadtgruendung, Sumpfvermeidung und Kriegs-Wasserbefehle. Opaque ungueltige Referenzen bleiben ohne Dereferenz erhalten.
