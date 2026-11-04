@@ -12,3 +12,18 @@ c_sdl_port/*.tmp
 # IDE
 .vscode/
 .idea/
+
+# C port test binaries (built by make)
+populous_c_port/tests/test_game
+populous_c_port/tests/test_game_sanitize
+populous_c_port/tests/test_graphics
+populous_c_port/tests/test_graphics_sanitize
+populous_c_port/tests/test_land
+populous_c_port/tests/test_land_sanitize
+populous_c_port/tests/test_level
+populous_c_port/tests/test_level_sanitize
+populous_c_port/tests/test_runtime
+populous_c_port/tests/test_runtime_sanitize
+
+# Cortex Code local state
+.cortex/
