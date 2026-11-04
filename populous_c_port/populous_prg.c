@@ -757,6 +757,9 @@ static int core_population(int owner)
         if (peep_owner(person) == owner && peep_word(person,4) > 0) total += peep_word(person,4);
     return total;
 }
+/* good_pop/bad_pop: signed longs at A4+$99fe, stride 16 (asm:25331). The
+ * index is the raw owner byte or word, scaled without an owner range check. */
+#define core_good_pop(owner) A4_LONG(0x99fe + (owner)*16)
 static void core_add_mana(int owner, int amount)
 {
     int64_t value = (int64_t)core_mana(owner) + amount;
@@ -1119,7 +1122,9 @@ static void core_join_battle(int newcomer, int encountered)
     if (metadata) memcpy(peeps+recipient*22+14,&metadata,sizeof metadata);
     if (peeps[newcomer*22+3] > peeps[recipient*22+3])
         peeps[recipient*22+3] = peeps[newcomer*22+3];
-    /* game_tick recomputes totals, so no original running-index correction. */
+    /* asm:6725-6740: a not-yet-visited recipient will count the merged word. */
+    if (recipient > newcomer)
+        core_good_pop(peeps[newcomer*22+1]) -= (uint32_t)(int32_t)peep_word(newcomer,4);
     core_remove(newcomer);
 }
 /* _join_forces asm:5540-5640: ordinary friendly merge, not battle joining. */
@@ -1144,8 +1149,10 @@ static void core_join_forces(int source, int target)
         peeps[target*22+3] = peeps[source*22+3];
     peeps[target*22] &= 0x9f;
     set_peep_word(target,12,0);
-    /* Host cleanup clears only source-owned occupancy; transfer refs first.
-     * game_tick recomputes totals, so omit the original running-index subtract. */
+    /* asm:5605-5620: a not-yet-visited target will count the merged word. */
+    if (target > source)
+        core_good_pop(peeps[source*22+1]) -= (uint32_t)(int32_t)peep_word(source,4);
+    /* Host cleanup clears only source-owned occupancy; transfer refs first. */
     core_remove(source);
 }
 static void core_move(int person)
@@ -2205,6 +2212,9 @@ static int game_reset_start(StartSelection selection)
     /* Conquest start asm:12762-12767 and speed asm:409-411, not static "abc".
      * Publish only after all fallible generation/asset work has succeeded. */
     core_clear_terrain_mailboxes();
+    /* Every start: _setup_display clears _surender (asm:1149) and
+     * _two_players derives _not_player from _player (asm:11779-11786). */
+    A4_WORD(0x8258) = -1; not_player = player ? 0 : 1;
     A4_WORD(0x82bc) = 0; A4_WORD(0x82bc + 46) = 1;
     A4_WORD(0x82be) = 1; A4_WORD(0x82be + 46) = 0;
     A4_WORD(0x82c6) = 1; A4_WORD(0x82c6 + 46) = selected_speed;
@@ -2229,9 +2239,11 @@ static void game_tick(void)
     if (pause || prg_quit || core_result) return;
     game_turn = (int16_t)((uint16_t)game_turn + 1u);
     _move_peeps();
-    int friendly = core_population(0), enemy = core_population(1);
-    A4_LONG(0x99fe) = friendly; A4_LONG(0x9a0e) = enemy;
-    if (!friendly || !enemy) core_result = !friendly ? (enemy ? 2 : 3) : 1;
+    /* _move_peeps asm:4323-4347, after the peep loop: the pass's pre-move
+     * good_pop or a surrender ends the game, _player first (___end_game(1)
+     * lost, else ___end_game(0) won). There is no draw. */
+    if (!core_good_pop(player) || player == A4_WORD(0x8258)) core_result = 2;
+    else if (!core_good_pop(not_player) || not_player == A4_WORD(0x8258)) core_result = 1;
     /* Preserve the C population/result timing; never modify terrain mid-movement. */
     if (core_result) core_clear_terrain_mailboxes();
     else core_consume_terrain_mailboxes();
@@ -2770,10 +2782,11 @@ static void _move_peeps(void)
         if (!A4_WORD(0x82be + owner*46)) core_set_devil_magnet(owner);
         if (!A4_WORD(0x82be + owner*46)) core_devil_effect(owner);
     }
-    /* asm:3271-3335: per-pass AI bookkeeping (good_pop stays host-computed). */
+    /* asm:3271-3335: per-pass AI bookkeeping, including the good_pop reset. */
     for (int owner = 0; owner < 2; ++owner) {
         core_town_strength[owner] = (int16_t)(A4_WORD(0x82ca+owner*46)*3 + A4_WORD(0x82cc+owner*46));
         A4_WORD(0x99fc+owner*16) = 0;
+        core_good_pop(owner) = 0;
         core_city_count[owner] = 0; core_youngest_town_age[owner] = 0x4e1f;
         A4_LONG(0x82d8+owner*46) = A4_LONG(0x82dc+owner*46) = A4_LONG(0x82e0+owner*46) = 0;
         core_oldest_town_age[owner] = 0; core_best_town_capacity[owner] = 0;
@@ -2799,6 +2812,8 @@ static void _move_peeps(void)
     /* Existing walker/town/battle/remnant consumption; nonwar AI remains disabled. */
     for (int person = 0; person < no_peeps; ++person) {
         if (peep_word(person,4) <= 0) continue;
+        /* asm:3459-3474: sum the pre-movement word (EXT.L) by owner byte. */
+        core_good_pop(peeps[person*22+1]) += (uint32_t)(int32_t)peep_word(person,4);
         int flags = peeps[person*22];
         int position = peep_word(person,8);
         /* Entry flag, before water mutation or land recovery (asm:3481-3543).

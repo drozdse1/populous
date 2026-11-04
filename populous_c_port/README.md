@@ -805,8 +805,7 @@ available. Armed swamp/tool selection is retained. There is no editor bypass.
 
 This is gameplay integration, not complete original-game parity: original toolbar,
 audio, editor/AI activation, other special figures, phased water behavior and original end-game
-accounting remain open. C still recomputes surviving population immediately and
-reports simultaneous extinction as a draw. In the controlled cast-through-SDL
+accounting beyond `good_pop` remain open. In the controlled cast-through-SDL
 island test, either caster activates war, a route is raised, combat starts at
 tick 41 and the stronger blue party wins at tick 43 (2963/0 population), identically
 in normal and sanitized runs. Funding and unequal armies are test fixtures;
@@ -915,9 +914,13 @@ tendency/war/flood/knight are consumed. Assumption: the early `_make_level` exit
 stores the low byte of the owner's `_stats` address in peep+20 (0xa4/0xd2 at the
 disassembly base); this depends on the load address and was not measured, yet it
 feeds battle countdown, a signed table index and an exact compare. With the AI
-and unchanged inputs: both views win at turn 4696 (32 battles, 78 towns,
-1434/0); the legacy scripts lose at 3103 (33/79/0/30472); the defeat phase ends
-at 830 (0/6323). Open: opcodes 7-13, `good_pop` accumulation, `_toggle` mana,
+and unchanged inputs: both views win at turn 4697 (32 battles, 78 towns,
+1434/0); the legacy scripts lose at 3104 (33/79/0/30639); the defeat phase ends
+at 831 (0/6323). `good_pop` (`--good-pop`, signed long at 0x99fe+owner*16) is
+reset per pass (asm 3296-3301), summed from pre-move words at the top of the peep
+loop (3459-3474) and corrected by slot-order joins (5605-5620, 6725-6740). The
+end check (4323-4347) tests the player first, honours surrender and has no draw,
+so outcomes appear one pass after the last death. Open: opcodes 7-13, `_toggle` mana,
 edge-of-map targets (host rejects x/y>56) and null pointer reads (address 8).
 The 11928 results below are historical (immediate-commit movement).
 

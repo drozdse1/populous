@@ -473,9 +473,35 @@ static void test_colocated_battle_death(void)
     _closeall(); SDL_Quit();
 }
 
+/* Every game start: _setup_display sets _surender = -1 (asm:1149) and
+ * _two_players derives _not_player (asm:11779-11786). The end-of-pass
+ * check (asm:4323-4347) compares both, so ticking fixtures need them. */
+static void start_state(void) { A4_WORD(0x8258)=-1; not_player=player ? 0 : 1; }
+/* _move_peeps asm:3296-3301,3459-3474: owner's signed pre-move word sum. */
+static void expect_good_pop(uint8_t *expected, int owner, int32_t value)
+{ memcpy(expected+(A4_DISP(0x99fe + owner*16)-prg_a4_area),&value,4); }
+static void expect_good_pop_add(uint8_t *expected, int owner, int32_t delta)
+{
+    int32_t value; memcpy(&value,expected+(A4_DISP(0x99fe + owner*16)-prg_a4_area),4);
+    expect_good_pop(expected,owner,value+delta);
+}
+/* Call just before a compared _move_peeps(): live A4 is the pre-pass state.
+ * asm:3296-3301 resets owners 0/1, asm:3459-3474 adds each positive word by
+ * owner byte. Explicit builder adjustments (mid-pass children) are kept. */
+static void expect_pass_good_pop(uint8_t *expected)
+{
+    int32_t sums[256]={0};
+    for (int person=0; person<no_peeps; ++person)
+        if (peep_word(person,4)>0) sums[peeps[person*22+1]]+=peep_word(person,4);
+    for (int owner=0; owner<256; ++owner) {
+        int32_t built,live=(int32_t)A4_LONG(0x99fe + owner*16);
+        memcpy(&built,expected+(A4_DISP(0x99fe + owner*16)-prg_a4_area),4);
+        if (owner<2 || sums[owner]) expect_good_pop(expected,owner,(owner<2 ? 0 : live)+sums[owner]+built-live);
+    }
+}
 static void setup_reinforcement(int newcomer, int owner, int colocated, int representative)
 {
-    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(prg_a4_area,0,sizeof prg_a4_area); start_state();
     memset(map_blk,1,4096);
     no_peeps=4; core_result=core_settlements=0; core_battles=17; prg_quit=0;
     int first=newcomer==0 ? 1 : 0, second=first+1;
@@ -630,7 +656,12 @@ static void test_reinforcement_tick_and_death(void)
         game_tick();
         assert(!peeps[newcomer*22] && !peep_word(newcomer,4));
         assert(peep_word(recipient,4)==135 && peep_word(opponent,4)==90);
-        assert(A4_LONG(0x99fe + owner*16)==135 && A4_LONG(0x99fe + (1-owner)*16)==90);
+        /* Each slot counts at its visit (asm:3459-3474): the newcomer's 45,
+         * minus 45 again when its recipient is a later slot (asm:6725-6740);
+         * the low battle slot before the 10/10 loss (100, or 145 once joined),
+         * the high slot after it. Owner 0 is low, owner 1 high. */
+        assert(A4_LONG(0x99fe + owner*16)==(owner ? 135u : 145u));
+        assert(A4_LONG(0x99fe + (1-owner)*16)==(owner ? 100u : 90u));
         assert(core_battles==17 && !core_result);
         set_peep_word(opponent,4,10);
         core_battle(first,first+1);
@@ -682,7 +713,7 @@ static void test_blocked_reinforcement_retry(void)
 
 static void setup_friendly_merge(int source, int owner)
 {
-    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(prg_a4_area,0,sizeof prg_a4_area); start_state();
     memset(map_blk,1,4096);
     no_peeps=3; core_result=core_battles=core_settlements=0; prg_quit=0;
     int target=1-source;
@@ -707,7 +738,8 @@ static void setup_friendly_merge(int source, int owner)
 static void test_friendly_merge_state(void)
 {
     /* Catch missing wait/frame resets, signed weapons, metadata overcopy,
-     * index-dependent totals, lost references and unrelated occupancy cleanup. */
+     * the index-dependent good_pop correction, lost references and unrelated
+     * occupancy cleanup. */
     const int flags[]={2,0x22,0x42,0x62,0x61,1};
     const int populations[][3]={{100,200,300},{16000,16000,32000},{32000,1,32000}};
     for (int source=0; source<2; ++source) for (int owner=0; owner<2; ++owner)
@@ -741,6 +773,10 @@ static void test_friendly_merge_state(void)
         if (variant!=2) map_who[649]=0;
         /* Variant 2 follows its co-located leader: magnet history north. */
         if (variant==2) peeps[source*22+21]=(uint8_t)-64;
+        /* asm:5605-5620: an unvisited (higher) target will count the merged
+         * word, so the source's word leaves its owner's running good_pop,
+         * even past the $7d00 clamp. */
+        if (target>source) A4_LONG(0x99fe + owner*16)-=(uint32_t)populations[variant][0];
         uint8_t wanted[sizeof prg_a4_area]; memcpy(wanted,prg_a4_area,sizeof wanted);
         memcpy(prg_a4_area,expected,sizeof expected);
         core_move(source);
@@ -889,7 +925,7 @@ static void test_friendly_merge_town_and_split(void)
 
 static void setup_blocked_walker(void)
 {
-    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(prg_a4_area,0,sizeof prg_a4_area); start_state();
     memset(map_blk,47,4096);
     no_peeps=1; core_battles=core_settlements=0;
     peeps[0]=2; peeps[2]=peeps[3]=1;
@@ -1368,7 +1404,7 @@ static void expect_make_level_exit(uint8_t *expected, int person)
 static void setup_collision(int a, int owner_a, int b, int owner_b, int b_flags,
                             int b_life, int b_frame)
 {
-    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(prg_a4_area,0,sizeof prg_a4_area); start_state();
     memset(map_blk,47,4096);
     no_peeps=2; core_battles=core_settlements=0; core_result=0; prg_quit=0;
     A4_WORD(0x2fb0)=1; seed=123;
@@ -1406,7 +1442,7 @@ static void collision_check(const uint8_t *expected, const char *label, int inde
  * 0, target 654) at 650 completes its frame and steps east (+1). */
 static void setup_phased(int pop, int word18)
 {
-    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(prg_a4_area,0,sizeof prg_a4_area); start_state();
     memset(map_blk,1,4096);
     no_peeps=2; core_battles=core_settlements=0; core_result=0; prg_quit=0;
     A4_WORD(0x2fb0)=1; seed=123;
@@ -1441,7 +1477,7 @@ static void test_phased_move(void)
         celebration_expected_word(expected,0xff88+650*2,1);
         expect_stats_pointer(expected,0); /* asm:4092-4106 */
         expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         collision_check(expected,"phased-depart",checked++);
     }
     /* Arrival on a cell another peep names: no encounter yet; the caller's
@@ -1460,7 +1496,7 @@ static void test_phased_move(void)
     celebration_expected_word(expected,0x9c26+22+12,101);
     expect_stats_pointer(expected,0); /* asm:4092-4106 */
     expect_ai_fixture_picks(expected);
-    _move_peeps();
+    expect_pass_good_pop(expected); _move_peeps();
     collision_check(expected,"phased-arrive",checked++);
     assert(!core_battles);
     /* Next departure meets the friendly occupant of its own cell:
@@ -1479,7 +1515,7 @@ static void test_phased_move(void)
     celebration_expected_word(expected,0x9c26+22+12,1);
     expect_stats_pointer(expected,0); /* asm:4092-4106 */
     expect_ai_fixture_picks(expected);
-    _move_peeps();
+    expect_pass_good_pop(expected); _move_peeps();
     collision_check(expected,"phased-join",checked++);
     /* Walk death after departure: _zero_population clears pos-(+10). */
     setup_phased(1,0);
@@ -1493,7 +1529,7 @@ static void test_phased_move(void)
     celebration_expected_word(expected,0xff88+650*2,1);
     expect_stats_pointer(expected,0); /* asm:4092-4106 */
     expect_ai_fixture_picks(expected);
-    _move_peeps();
+    expect_pass_good_pop(expected); _move_peeps();
     collision_check(expected,"phased-death",checked++);
     /* Hostile B is one step ahead (arrived 651->652, claim at 651). A's
      * departure meets it at A's own cell: _set_battle (asm:6568-6656)
@@ -1516,7 +1552,7 @@ static void test_phased_move(void)
     phased_byte(expected,map_who+651,1);
     expect_stats_pointer(expected,0); /* asm:4092-4106 */
     int16_t ai_seed=expect_ai_fixture_picks(expected);
-    _move_peeps();
+    expect_pass_good_pop(expected); _move_peeps();
     collision_check(expected,"phased-battle",checked++);
     assert(core_battles==1 && seed==ai_seed);
     printf("phased-move A4 cases: %d\n",checked);
@@ -1563,7 +1599,7 @@ static void test_walker_extras(void)
         }
         walker_extras_expected_depart(expected,owner);
         expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         collision_check(expected,"extras-first",checked++);
     }
     /* Only the first completed walker of the pass is stored. */
@@ -1591,7 +1627,7 @@ static void test_walker_extras(void)
          * walker's _one_block_flat (latch gate asm:9159-9163) queues nothing.
          * The raise itself is covered by direct core_one_block_flat calls. */
         expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         collision_check(expected,"extras-raise",checked++);
     }
     /* Lower: corners 2,1,1,1 (sum 5, q 1, rem 1): (10,10) is above 1. */
@@ -1601,7 +1637,7 @@ static void test_walker_extras(void)
     walker_extras_expected_depart(expected,0);
     /* As above: the AI pick latches owner 0 before _one_block_flat. */
     expect_ai_fixture_picks(expected);
-    _move_peeps();
+    expect_pass_good_pop(expected); _move_peeps();
     collision_check(expected,"extras-lower",checked++);
     /* The same lower, queued by a direct call (asm:9148-9310). */
     setup_phased(100,0); walker_extras_vertices(1); core_set_vertex(10,10,2);
@@ -1627,7 +1663,7 @@ static void test_walker_extras(void)
         memcpy(expected,prg_a4_area,sizeof expected);
         walker_extras_expected_depart(expected,0);
         expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         collision_check(expected,"extras-gate",checked++);
         game_mode=0;
     }
@@ -1698,7 +1734,7 @@ static void test_walker_extras(void)
         /* Gate 0: the owner's AI pick (tendency 0, asm:9612-9633) latches
          * first, so the 0x42 request sees a set latch and is not written. */
         expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         collision_check(expected,"extras-walker-lower",checked++);
     }
     /* Additional case: 15 published towns at turn 50 (50%90 >= 10) send
@@ -1715,7 +1751,7 @@ static void test_walker_extras(void)
         phased_byte(expected,A4_DISP(0x82b7+owner*46),10);
         phased_byte(expected,A4_DISP(0x82b8+owner*46),10);
         expect_ai_pick(expected,1-owner,1,15930); /* the other owner still picks */
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         collision_check(expected,"extras-walker-lower-idle-ai",checked++);
         game_mode=0;
     }
@@ -1757,7 +1793,7 @@ static void test_collision_wait_mark(void)
             celebration_expected_word(expected,0x9c26+b*22+12,101);
             celebration_expected_word(expected,0x9c26+b*22+6,0);
             expect_ai_fixture_picks(expected);
-            _move_peeps();
+            expect_pass_good_pop(expected); _move_peeps();
             collision_check(expected,"mark",checked++);
             assert(!core_battles && !core_settlements);
         }
@@ -1768,7 +1804,7 @@ static void test_collision_wait_mark(void)
     collision_expect_flags(expected,207,0x20);
     celebration_expected_word(expected,0x9c26+207*22+12,101);
     expect_ai_fixture_picks(expected);
-    _move_peeps();
+    expect_pass_good_pop(expected); _move_peeps();
     collision_check(expected,"slot207",0);
     /* Frame completion: blocked move (0x42, counter 7, frame 0), loss, then mark. */
     for (int owner=0; owner<2; ++owner) {
@@ -1785,7 +1821,7 @@ static void test_collision_wait_mark(void)
         celebration_expected_word(expected,0x9c26+22+6,0);
         expect_stats_pointer(expected,0);
         expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         collision_check(expected,"complete",owner);
     }
     printf("collision-wait mark A4 cases: %d\n",checked+3);
@@ -1803,7 +1839,7 @@ static void test_collision_wait_gates(void)
         memcpy(expected,prg_a4_area,sizeof expected);
         celebration_expected_word(expected,0x9c26+12,1);
         expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         collision_check(expected,"gate",checked++);
     }
     /* Only exact 2 produces: other ordinary flags never frame or mark. */
@@ -1812,7 +1848,7 @@ static void test_collision_wait_gates(void)
         setup_collision(0,0,1,1,2,0,0); peeps[0]=walker[w];
         memcpy(expected,prg_a4_area,sizeof expected);
         expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         collision_check(expected,"walker",checked++);
     }
     /* Death after completion skips the producer (asm:4145-4147). */
@@ -1830,7 +1866,7 @@ static void test_collision_wait_gates(void)
     celebration_expected_word(expected,0x9c26+12,1);
     celebration_expected_word(expected,0x9c26+22+12,1);
     expect_ai_fixture_picks(expected);
-    _move_peeps();
+    expect_pass_good_pop(expected); _move_peeps();
     collision_check(expected,"earlier",checked++);
     printf("collision-wait gate cases: %d\n",checked);
 }
@@ -1857,7 +1893,7 @@ static void test_collision_wait_tick(void)
         celebration_expected_word(expected,0x9c26+22+12,102);
         celebration_expected_word(expected,0x9c26+22+6,1);
         celebration_expected_word(expected,0x9c26+22+4,99);
-        uint32_t friendly=owner ? 99 : 100, enemy=owner ? 100 : 99;
+        uint32_t friendly=100, enemy=100; /* asm:3459-3474: before the walking loss */
         memcpy(expected+(A4_DISP(0x99fe)-prg_a4_area),&friendly,4);
         memcpy(expected+(A4_DISP(0x9a0e)-prg_a4_area),&enemy,4);
         game_tick();
@@ -1934,7 +1970,7 @@ static void test_celebration_frames(void)
                 celebration_expected_word(expected,0x2fb2,1);
             }
             expect_ai_fixture_picks(expected);
-            _move_peeps();
+            expect_pass_good_pop(expected); _move_peeps();
             assert(!memcmp(expected,prg_a4_area,sizeof expected));
             assert(!core_battles && !core_settlements && !core_result);
         }
@@ -1945,7 +1981,7 @@ static void test_celebration_frames(void)
             setup_celebration(owner); peeps[0]=flags; set_peep_word(0,4,skipped[sample]);
             uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
             expect_ai_fixture_picks(expected);
-            _move_peeps();
+            expect_pass_good_pop(expected); _move_peeps();
             assert(!memcmp(expected,prg_a4_area,sizeof expected));
         }
 }
@@ -1959,7 +1995,7 @@ static void test_celebration_ticks(void)
             uint8_t expected[sizeof prg_a4_area];
             celebration_expected(expected,tick==2 ? 2 : 6,frames[tick]);
             expect_ai_fixture_picks(expected);
-            _move_peeps();
+            expect_pass_good_pop(expected); _move_peeps();
             /* Full A4 checks population, timers, metadata, mana, RNG, position,
              * occupancy and every other resident; completion never moves/loses. */
             assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -1972,7 +2008,7 @@ static void test_celebration_ticks(void)
         for (int tick=1; tick<8; ++tick) {
             uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,2,tick);
             expect_ai_fixture_picks(expected);
-            _move_peeps();
+            expect_pass_good_pop(expected); _move_peeps();
             assert(!memcmp(expected,prg_a4_area,sizeof expected));
         }
         _move_peeps();
@@ -2010,7 +2046,7 @@ static void test_town_celebration_ticks(void)
                         celebration_expected_word(expected,0xae76,0x820);
                     }
                     expect_ai_fixture_picks(expected); /* first pass only */
-                    _move_peeps();
+                    expect_pass_good_pop(expected); _move_peeps();
                     /* Includes all records, footprint, map history, scratch,
                      * mana, growth/split tables, metadata, RNG and turn eight. */
                     assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -2053,7 +2089,7 @@ static void test_town_celebration_water(void)
                 if (city || (abs(row)<=1 && abs(column)<=1)) expected[map_bk2-prg_a4_area+cell]=0;
             }
             expect_ai_fixture_picks(expected);
-            _move_peeps();
+            expect_pass_good_pop(expected); _move_peeps();
             assert(!memcmp(expected,prg_a4_area,sizeof expected));
             assert(!core_battles && !core_settlements);
         }
@@ -2110,7 +2146,7 @@ static void test_celebration_dispatch(void)
                 memcpy(expected+offset+4,&population,2); memcpy(expected+offset+6,&timer,2);
             }
             expect_ai_fixture_picks(expected);
-            _move_peeps();
+            expect_pass_good_pop(expected); _move_peeps();
             assert(!memcmp(expected,prg_a4_area,sizeof expected));
             assert(!core_battles && !core_settlements);
         }
@@ -2133,7 +2169,7 @@ static void test_celebration_dispatch(void)
         uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,2,0);
         int16_t population=98; memcpy(expected+(peeps-prg_a4_area)+4,&population,2);
         expect_ai_fixture_picks(expected);
-        _move_peeps(); /* Loss, two celebration frames, then walker reframe only. */
+        expect_pass_good_pop(expected); _move_peeps(); /* Loss, two celebration frames, then walker reframe only. */
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
     }
 }
@@ -2208,7 +2244,7 @@ static void test_water_entry_state(void)
         uint8_t expected[sizeof prg_a4_area];
         water_entry_expected(expected,owner,flags[state],city,frames[sample].after);
         expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(peep_word(0,4)==populations[pop]);
         assert(peep_word(0,12)==frames[sample].after && peeps[0]==18);
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -2220,7 +2256,7 @@ static void test_water_entry_state(void)
         setup_water_entry(0,5,87,1); set_peep_word(0,4,dead[sample]);
         uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
         expect_ai_fixture_picks(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
     }
 }
 
@@ -2249,7 +2285,7 @@ static void test_water_entry_second_tick(void)
         uint8_t expected[sizeof prg_a4_area];
         water_entry_expected(expected,owner,0x80,0,0);
         expect_ai_fixture_picks(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         int16_t remaining=(!fatal && population==3) ? 1 : 0;
         expected[peeps-prg_a4_area]=remaining ? 18 : 0;
         memcpy(expected+(peeps-prg_a4_area)+4,&remaining,2);
@@ -2261,7 +2297,7 @@ static void test_water_entry_second_tick(void)
             celebration_expected_word(expected,0x82be + owner*46,1);
         }
         expect_ai_fixture_picks(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(!core_battles && !core_settlements && seed==15930); /* first pass's pick */
     }
     for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal) {
@@ -2278,14 +2314,14 @@ static void test_water_entry_second_tick(void)
             celebration_expected_word(expected,0xae68,0);
         }
         expect_ai_fixture_picks(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         /* Battle exemption: no valid partner, so no combat or water side effects. */
         const int combat[]={8,9,10,0x88};
         for (unsigned state=0; state<sizeof combat/sizeof combat[0]; ++state) {
             setup_water_entry(owner,combat[state],87,1); game_mode=fatal;
             memcpy(expected,prg_a4_area,sizeof expected);
             expect_ai_fixture_picks(expected);
-            _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         }
     }
 }
@@ -2317,9 +2353,12 @@ static void test_water_entry_tick_gates(void)
         game_tick(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(!core_result && !core_battles && !core_settlements);
         game_tick();
-        assert(game_turn==2 && core_result==(owner ? 1 : 2));
+        /* asm:3459-3474: tick 2 still counts the dying 1; asm:4323-4347
+         * ends the game on tick 3's zero sum. */
+        assert(game_turn==2 && !core_result && A4_LONG(0x99fe + owner*16)==1);
         assert(!peep_word(0,4) && peep_word(0,6)==123 && peep_word(0,12)==7);
         assert(peep_word(17,12)==2 && peep_word(17,4)==100 && map_who[900]==18);
+        game_tick(); assert(game_turn==3 && core_result==(owner ? 1 : 2));
     }
 }
 
@@ -2342,7 +2381,7 @@ static void test_water_entry_heading_payload(void)
         uint8_t expected[sizeof prg_a4_area];
         water_entry_expected(expected,owner,flags[state],1,0);
         expect_ai_fixture_picks(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(!memcmp(peeps+14,payloads[sample],4));
     }
 }
@@ -2362,7 +2401,7 @@ static void test_water_entry_death_cleanup(void)
         uint8_t expected[sizeof prg_a4_area];
         water_entry_expected(expected,owner,0x80,0,0);
         expect_ai_fixture_picks(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(core_leader(owner)==1 && view_who==1);
         expected[peeps-prg_a4_area]=0;
         int16_t zero=0;
@@ -2373,7 +2412,7 @@ static void test_water_entry_death_cleanup(void)
         celebration_expected_word(expected,0x99f8+owner*16,650);
         celebration_expected_word(expected,owner ? 0xae76 : 0xae78,650);
         expect_ai_fixture_picks(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(!core_leader(owner) && !view_who && core_leader(1-owner)==2);
         assert(map_who[650]==(representative==2 ? 2 : 0));
         assert(peep_word(1,4)==100 && !core_battles && !core_settlements);
@@ -2404,7 +2443,7 @@ static void test_water_entry_edge_footprints(void)
             if (city || (dy<=1 && dx<=1)) expected[map_bk2-prg_a4_area+cell]=0;
         }
         expect_ai_fixture_picks(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(!core_battles && !core_settlements);
     }
 }
@@ -2494,7 +2533,7 @@ static void test_water_loss_state(void)
         int remaining=fatal ? 0 : arithmetic[sample].result;
         water_loss_expected(expected,owner,650,remaining);
         int16_t ai_seed=expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(peep_word(0,4)==(remaining>0 ? remaining : 0));
         assert(peeps[0]==(remaining>0 ? flags[state] : 0));
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -2538,7 +2577,7 @@ static void test_water_loss_edges(void)
         uint8_t expected[sizeof prg_a4_area];
         water_loss_expected(expected,owner,position,fatal ? 0 : population-2);
         expect_ai_fixture_picks(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(!core_battles && !core_settlements);
     }
 }
@@ -2552,7 +2591,7 @@ static void test_water_loss_gates(void)
             set_peep_word(0,4,dead[sample]);
             uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
             expect_ai_fixture_picks(expected);
-            _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         }
         setup_water_entry(owner,0x96,-32768,0); game_mode=fatal;
         set_peep_word(0,4,3); no_peeps=18;
@@ -2569,13 +2608,17 @@ static void test_water_loss_gates(void)
         uint8_t expected[sizeof prg_a4_area]; water_loss_expected(expected,owner,650,fatal ? 0 : 1);
         int16_t frame=1; memcpy(expected+(peeps-prg_a4_area)+17*22+12,&frame,2);
         int16_t turn=game_turn+1; memcpy(expected+((uint8_t *)&game_turn-prg_a4_area),&turn,2);
-        int32_t friendly=owner ? 100 : !fatal, enemy=owner ? !fatal : 100;
+        /* asm:3459-3474: the pre-loss word counts, fatal or not; the fatal
+         * end (asm:4323-4347) therefore follows on the next pass. */
+        int32_t before=peep_word(0,4), friendly=owner ? 100 : before, enemy=owner ? before : 100;
+        assert(before>0);
         memcpy(expected+(A4_DISP(0x99fe)-prg_a4_area),&friendly,4);
         memcpy(expected+(A4_DISP(0x9a0e)-prg_a4_area),&enemy,4);
-        expect_ai_fixture_tick(expected,fatal);
+        expect_ai_fixture_tick(expected,0);
         game_tick(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
-        assert(core_result==(fatal ? (owner ? 1 : 2) : 0));
+        assert(!core_result);
         assert(peep_word(17,12)==1 && peep_word(17,4)==100 && map_who[900]==18);
+        if (fatal) { game_tick(); assert(core_result==(owner ? 1 : 2)); }
     }
     /* Mixed combat+water intentionally retains host recovery, not wet loss. */
     const int combat[]={0x18,0x19,0x1e,0x98};
@@ -2584,7 +2627,7 @@ static void test_water_loss_gates(void)
         setup_water_entry(owner,combat[sample],32767,1); game_mode=fatal;
         uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,2,1);
         expect_ai_fixture_picks(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
     }
 }
 
@@ -2635,7 +2678,7 @@ static void test_water_recovery_state(void)
             celebration_expected_word(expected,0x9c26+22+6,0);
         }
         int16_t ai_seed=expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(peep_word(0,4)==remaining && peep_word(0,12)==frame);
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(!core_battles && !core_settlements && !core_result && seed==ai_seed);
@@ -2661,7 +2704,7 @@ static void test_water_recovery_dead_noncombat_encounter(void)
         int16_t frame=7; memcpy(expected+(peeps-prg_a4_area)+12,&frame,2);
         frame=1; memcpy(expected+(peeps-prg_a4_area)+22+12,&frame,2);
         int16_t after=expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(!peeps[0] && !peep_word(0,4) && peep_word(0,12)==7);
         assert(peeps[22]==2 && peep_word(1,4)==100 && peep_word(1,12)==1);
         assert(peep_word(0,6)==123 && peep_word(1,6)==29);
@@ -2711,7 +2754,7 @@ static void test_water_recovery_movement(void)
             }
         }
         int16_t ai_seed=expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(peep_word(0,4)==(dead ? 0 : 97));
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(!core_battles && !core_settlements && seed==ai_seed);
@@ -2727,7 +2770,7 @@ static void test_water_recovery_gates(void)
             set_peep_word(0,4,dead[sample]);
             uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
             expect_ai_fixture_picks(expected);
-            _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         }
         setup_water_entry(owner,18,6,0); map_blk[650]=1; game_mode=fatal;
         set_peep_word(0,4,1); no_peeps=18;
@@ -2745,13 +2788,17 @@ static void test_water_recovery_gates(void)
         memcpy(expected+(peeps-prg_a4_area)+12,&frame,2);
         frame=1; memcpy(expected+(peeps-prg_a4_area)+17*22+12,&frame,2);
         int16_t turn=game_turn+1; memcpy(expected+((uint8_t *)&game_turn-prg_a4_area),&turn,2);
-        int32_t friendly=owner ? 100 : 0, enemy=owner ? 0 : 100;
+        /* asm:3459-3474: the dying peep's pre-loss word counts this pass, so
+         * the tick continues (picks consumed) and asm:4323-4347 ends next. */
+        int32_t dying=peep_word(0,4), friendly=owner ? 100 : dying, enemy=owner ? dying : 100;
+        assert(dying>0);
         memcpy(expected+(A4_DISP(0x99fe)-prg_a4_area),&friendly,4);
         memcpy(expected+(A4_DISP(0x9a0e)-prg_a4_area),&enemy,4);
-        expect_ai_fixture_tick(expected,1);
+        expect_ai_fixture_tick(expected,0);
         game_tick(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
-        assert(core_result==(owner ? 1 : 2) && peep_word(17,12)==1);
+        assert(!core_result && peep_word(17,12)==1);
         assert(!core_battles && !core_settlements);
+        game_tick(); assert(core_result==(owner ? 1 : 2) && !A4_LONG(0x99fe + owner*16));
     }
     /* General mixed flags, including combat recovery, deliberately retain the
      * current host no-loss/reset-frame behavior, on both land and swamp. */
@@ -2763,7 +2810,7 @@ static void test_water_recovery_gates(void)
         map_blk[650]=swamp ? 53 : 1;
         uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,2,1);
         expect_ai_fixture_picks(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
     }
 }
 
@@ -2831,7 +2878,7 @@ static void test_water_celebration_state(void)
         memcpy(expected+(peeps-prg_a4_area)+12,&frame,2);
         int16_t later=1; memcpy(expected+(peeps-prg_a4_area)+22+12,&later,2);
         int16_t ai_seed=expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(peep_word(0,4)==(remaining>0 ? remaining : 0));
         assert(peep_word(0,12)==frame && peeps[0]==expected[peeps-prg_a4_area]);
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -2884,7 +2931,7 @@ static void test_water_celebration_towns(void)
         }
         memcpy(expected+(peeps-prg_a4_area)+12,&frame,2);
         int16_t after=expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(peep_word(0,12)==frame);
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(!core_battles && !core_settlements && seed==after);
@@ -2901,7 +2948,7 @@ static void test_water_celebration_gates(void)
             set_peep_word(0,4,dead[sample]);
             uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
             expect_ai_fixture_picks(expected);
-            _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         }
         setup_water_entry(owner,state,87,1); map_blk[650]=1; game_mode=fatal;
         set_peep_word(0,4,1); no_peeps=18;
@@ -2923,13 +2970,17 @@ static void test_water_celebration_gates(void)
         }
         frame=1; memcpy(expected+(peeps-prg_a4_area)+17*22+12,&frame,2);
         int16_t turn=game_turn+1; memcpy(expected+((uint8_t *)&game_turn-prg_a4_area),&turn,2);
-        int32_t friendly=owner ? 100 : 0, enemy=owner ? 0 : 100;
+        /* asm:3459-3474: the dying peep's pre-loss word counts this pass, so
+         * the tick continues (picks consumed) and asm:4323-4347 ends next. */
+        int32_t dying=peep_word(0,4), friendly=owner ? 100 : dying, enemy=owner ? dying : 100;
+        assert(dying>0);
         memcpy(expected+(A4_DISP(0x99fe)-prg_a4_area),&friendly,4);
         memcpy(expected+(A4_DISP(0x9a0e)-prg_a4_area),&enemy,4);
-        expect_ai_fixture_tick(expected,1);
+        expect_ai_fixture_tick(expected,0);
         game_tick(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
-        assert(core_result==(owner ? 1 : 2) && peep_word(17,12)==1);
+        assert(!core_result && peep_word(17,12)==1);
         assert(!core_battles && !core_settlements);
+        game_tick(); assert(core_result==(owner ? 1 : 2) && !A4_LONG(0x99fe + owner*16));
     }
 }
 
@@ -2977,7 +3028,7 @@ static void test_water_wait_state(void)
         int16_t counter=fatal ? timer : timer+1;
         memcpy(expected+(peeps-prg_a4_area)+6,&counter,2);
         int16_t later=1; memcpy(expected+(peeps-prg_a4_area)+22+12,&later,2);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(peep_word(0,4)==(remaining>0 ? remaining : 0));
         assert(peep_word(0,12)==frame && peep_word(0,6)==counter);
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -3033,7 +3084,7 @@ static void test_water_wait_retry(void)
         const int16_t seeds[]={123,15930,28505,12248};
         int16_t final_seed=seeds[picks0+picks1+blocked];
         celebration_expected_word(expected,0x99e2,final_seed);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(peep_word(0,4)==(remaining>0 ? remaining : 0) && peep_word(0,12)==frame);
         assert(peep_word(0,6)==counter && peeps[0]==expected[peeps-prg_a4_area]);
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -3068,7 +3119,7 @@ static void test_water_wait_dead_encounter(void)
             memcpy(expected+(peeps-prg_a4_area)+22+10,&zero,2);
         }
         int16_t after=expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(core_battles==colocated && !core_settlements && !core_result && seed==after);
     }
@@ -3084,7 +3135,7 @@ static void test_water_wait_gates(void)
             set_peep_word(0,4,dead[sample]);
             uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
             expect_ai_fixture_picks(expected);
-            _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         }
         setup_water_entry(owner,states[state],5,1); map_blk[650]=1; game_mode=fatal;
         set_peep_word(0,4,1); set_peep_word(0,6,14); no_peeps=18;
@@ -3102,12 +3153,15 @@ static void test_water_wait_gates(void)
         memcpy(expected+(peeps-prg_a4_area)+6,&counter,2);
         frame=1; memcpy(expected+(peeps-prg_a4_area)+17*22+12,&frame,2);
         int16_t turn=game_turn+1; memcpy(expected+((uint8_t *)&game_turn-prg_a4_area),&turn,2);
-        int32_t friendly=owner ? 100 : 0, enemy=owner ? 0 : 100;
+        /* asm:3459-3474: the waiter's pre-loss 1 counts, so this tick does
+         * not end the game and the picks are consumed (asm:18410-18431). */
+        int32_t friendly=owner ? 100 : 1, enemy=owner ? 1 : 100;
         memcpy(expected+(A4_DISP(0x99fe)-prg_a4_area),&friendly,4);
         memcpy(expected+(A4_DISP(0x9a0e)-prg_a4_area),&enemy,4);
-        expect_ai_fixture_picks_cleared(expected);
+        expect_ai_fixture_tick(expected,0);
         game_tick(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
-        assert(core_result==(owner ? 1 : 2) && !core_battles && !core_settlements);
+        assert(!core_result && !core_battles && !core_settlements);
+        game_tick(); assert(core_result==(owner ? 1 : 2) && !A4_LONG(0x99fe + owner*16));
     }
     const int mixed[]={0x30,0x31,0x33,0x36,0x50,0x51,0x53,0x56,0x70,0x71,0x73,0x76,0x92,0xb2,0xd2,0xf2};
     for (unsigned sample=0; sample<sizeof mixed/sizeof mixed[0]; ++sample)
@@ -3115,7 +3169,7 @@ static void test_water_wait_gates(void)
         setup_water_entry(owner,mixed[sample],5,1); map_blk[650]=53; game_mode=fatal;
         uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,2,1);
         expect_ai_fixture_picks(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
     }
 }
 
@@ -3172,7 +3226,7 @@ static void test_water_remnant_state(void)
         water_remnant_expected(expected,owner,650,remaining,counter,dry);
         if (remaining<=0) expected[map_who-prg_a4_area+714]=0;
         int16_t later=1; memcpy(expected+(peeps-prg_a4_area)+22+12,&later,2);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(peep_word(0,6)==counter);
         assert(peeps[0]==(remaining>0 ? (dry ? 0x80 : 0x90) : 0));
         assert(peep_word(0,4)==(remaining>0 ? remaining : 0));
@@ -3197,11 +3251,11 @@ static void test_water_remnant_frames_and_expiry(void)
         set_peep_word(0,4,3); set_peep_word(0,6,1);
         uint8_t expected[sizeof prg_a4_area]; water_remnant_expected(expected,owner,650,1,0,1);
         expect_ai_tendency_pick(expected); /* first pass only: then latched */
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         /* Ordinary positive 0x80 expires only when the NEXT old timer is zero,
          * with no second water loss, frame change or swamp consumption. */
         water_remnant_expected(expected,owner,650,0,-1,1);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
     }
 }
 
@@ -3219,7 +3273,7 @@ static void test_water_remnant_edges(void)
         uint8_t expected[sizeof prg_a4_area];
         water_remnant_expected(expected,owner,position,fatal ? 0 : population-2,fatal ? 40 : 39,1);
         expect_ai_tendency_pick(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(!core_battles && !core_settlements && seed==15930);
     }
 }
@@ -3234,7 +3288,7 @@ static void test_water_remnant_gates(void)
             set_peep_word(0,4,dead[sample]);
             uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
             expect_ai_tendency_pick(expected);
-            _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         }
         setup_water_entry(owner,0x90,42,1); map_blk[650]=dry; game_mode=fatal;
         set_peep_word(0,4,1); set_peep_word(0,6,40); no_peeps=18;
@@ -3250,12 +3304,17 @@ static void test_water_remnant_gates(void)
         water_remnant_expected(expected,owner,650,0,dry && !fatal ? 39 : 40,dry);
         int16_t frame=1; memcpy(expected+(peeps-prg_a4_area)+17*22+12,&frame,2);
         int16_t turn=game_turn+1; memcpy(expected+((uint8_t *)&game_turn-prg_a4_area),&turn,2);
-        int32_t friendly=owner ? 100 : 0, enemy=owner ? 0 : 100;
+        /* asm:3459-3474: the remnant's pre-loss 1 counts this pass. */
+        int32_t friendly=owner ? 100 : 1, enemy=owner ? 1 : 100;
         memcpy(expected+(A4_DISP(0x99fe)-prg_a4_area),&friendly,4);
         memcpy(expected+(A4_DISP(0x9a0e)-prg_a4_area),&enemy,4);
-        expect_ai_pick_cleared(expected);
+        /* Not ending, game_tick consumes side 1's pick instead of clearing
+         * it: _do_action y=1 (asm:18410-18431) stores tendency x=1. */
+        expect_ai_pick_cleared(expected); celebration_expected_word(expected,0x99fa+16,1);
         game_tick(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
-        assert(core_result==(owner ? 1 : 2) && !core_battles && !core_settlements);
+        assert(!core_result && !core_battles && !core_settlements);
+        /* asm:4323-4347 then ends on the next pass's zero sum. */
+        game_tick(); assert(core_result==(owner ? 1 : 2) && !A4_LONG(0x99fe + owner*16));
     }
     /* All other unported dry water combinations retain reset/no-loss behavior.
      * Exact 0x90 and 0x11 have dedicated full-state coverage, never this oracle. */
@@ -3267,7 +3326,7 @@ static void test_water_remnant_gates(void)
         setup_water_entry(owner,mixed[sample],42,1); map_blk[650]=53; game_mode=fatal;
         uint8_t expected[sizeof prg_a4_area]; celebration_expected(expected,2,1);
         expect_ai_tendency_pick(expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
     }
 }
 
@@ -3326,6 +3385,7 @@ static void test_remnant_occupancy_and_state(void)
         for (int cell=0; cell<4096; ++cell) A4_WORD(0xff88+cell*2)=cell;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         expect_ai_tendency_pick(before); /* the only other first-pass write */
+        expect_pass_good_pop(before); /* and the pass's good_pop */
         _move_peeps();
         assert(map_who[650]==(representative ? representative : 1));
         assert(peep_word(0,6)==0);
@@ -3358,7 +3418,11 @@ static void test_remnant_tick_and_water(void)
         }
         game_tick();
         assert(game_turn==41 && !peep_word(0,4) && !map_who[650]);
-        assert(A4_LONG(owner ? 0x9a0e : 0x99fe)==0);
+        /* asm:3459-3474: the expiring remnant's 1 is counted before expiry,
+         * so asm:4323-4347 ends on pass 42. */
+        assert(A4_LONG(0x99fe)==1 && A4_LONG(0x9a0e)==1 && !core_result);
+        game_tick();
+        assert(game_turn==42 && A4_LONG(owner ? 0x9a0e : 0x99fe)==0);
         assert(A4_LONG(owner ? 0x99fe : 0x9a0e)==1 && core_result==(owner ? 1 : 2));
     }
     /* New water entry precedes the remnant timer and defers loss/fatal removal. */
@@ -3464,7 +3528,7 @@ static void test_remnant_collision(void)
 /* Consumer-only fixtures: no Armageddon producer or war navigation enabled. */
 static void setup_war_town(int owner, int position, int city)
 {
-    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(prg_a4_area,0,sizeof prg_a4_area); start_state();
     memset(map_blk,15,4096);
     no_peeps=1; core_result=prg_quit=core_battles=core_settlements=0;
     /* Direct consumer calls model the first town of a pass (asm:3331-3335). */
@@ -3761,7 +3825,7 @@ static void test_town_economy_words(void)
             memcpy(expected,prg_a4_area,sizeof expected); /* Resident-loop skip, not revival. */
         else town_expected_completion(expected,owner,remaining,turns[tick].economy,owner ? 23473 : 12362);
         if (!direct && cases[sample].population>0) expect_town_publish(expected,owner,0,1);
-        if (direct) core_settle_tick(0); else _move_peeps();
+        if (direct) core_settle_tick(0); else { expect_pass_good_pop(expected); _move_peeps(); }
         if (direct || cases[sample].population>0)
             assert(peep_word(0,4)==(remaining>0 ? remaining : 0));
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -3814,7 +3878,7 @@ static void test_town_economy_evacuation(void)
         assert(core_leader(owner)==1 && view_who==1 && map_who[650]==occupant);
         assert(!core_battles && !core_settlements && !core_result);
         /* No war/heading prepass in this case: next resident pass skips the raw slot. */
-        if (!trigger) { _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected)); }
+        if (!trigger) { expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected)); }
     }
 }
 
@@ -4027,15 +4091,34 @@ static void test_town_economy_ticks(void)
             expect_town_publish(expected,owner,0,1);
             celebration_expected_word(expected,0xae6a,8);
             celebration_expected_word(expected,0x9c26+22+12,86);
-            town_expected_long(expected,0x99fe + owner*16,0);
+            /* asm:3459-3474: the town's pre-overflow 1 counts this pass. */
+            town_expected_long(expected,0x99fe + owner*16,1);
             town_expected_long(expected,0x99fe + (1-owner)*16,77);
         }
         game_tick();
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
-        assert(core_result==(gate ? (gate>=3 ? gate-2 : 0) : (owner ? 1 : 2)));
+        assert(core_result==(gate>=3 ? gate-2 : 0));
         assert(!core_battles && !core_settlements);
         if (!gate) {
             assert(!peeps[0] && !peep_word(0,4) && peep_word(1,12)==86);
+            /* So asm:4323-4347 waits: turn 9 is an ordinary pass over the
+             * dead town (pass resets, nothing counted), then ends on its 0. */
+            memcpy(expected,prg_a4_area,sizeof expected);
+            celebration_expected_word(expected,0xae6a,9);
+            celebration_expected_word(expected,0x9c26+22+12,87);
+            town_expected_long(expected,0x82dc+(owner ? 0 : 1)*46,0);
+            town_expected_long(expected,0x82d8+(owner ? 0 : 1)*46,0);
+            town_expected_long(expected,0x82e0+owner*46,0);
+            expect_town_publish(expected,owner,0,0);
+            town_expected_long(expected,0x99fe + owner*16,0);
+            game_tick();
+            if (memcmp(expected,prg_a4_area,sizeof expected))
+                for (size_t byte=0; byte<sizeof expected; ++byte)
+                    if (expected[byte]!=prg_a4_area[byte])
+                        fprintf(stderr,"economy tick owner=%d A4 %04zx expected=%02x actual=%02x\n",
+                                owner,(byte-32768)&0xffff,expected[byte],prg_a4_area[byte]);
+            assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            assert(core_result==(owner ? 1 : 2));
             memcpy(expected,prg_a4_area,sizeof expected); game_tick();
             assert(!memcmp(expected,prg_a4_area,sizeof expected));
         }
@@ -4144,7 +4227,7 @@ static void test_town_footprint_predicate(void)
             }
             town_footprint_map(expected,owner,position,frame,cases[sample].refresh,0);
             if (!direct) expect_town_publish(expected,owner,frame!=42,frame==42);
-            if (direct) core_settle_tick(0); else _move_peeps();
+            if (direct) core_settle_tick(0); else { expect_pass_good_pop(expected); _move_peeps(); }
             assert(peep_word(0,12)==frame);
             assert(A4_WORD(0x2fb2)==cases[sample].flat && A4_WORD(0x2ff8)==cases[sample].all_city);
             assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -4258,7 +4341,7 @@ static void test_town_footprint_pass_and_clock(void)
         town_footprint_map(expected,owner,651,0,0,1);
         expect_town_bookkeeping(expected,0,41); /* 651 evacuates: neither */
         expect_town_publish(expected,owner,1,0); /* map_alt 2: no _make_level */
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(peeps[0]==1 && peeps[22]==2 && seed==123);
     }
@@ -4287,7 +4370,9 @@ static void test_town_footprint_pass_and_clock(void)
                  * and map_alt 2 keeps _make_level off before turn 251. */
                 expect_town_publish(expected,owner,1,0);
                 if (turn==9) expected[peeps-prg_a4_area+22]=2;
-                town_expected_long(expected,0x99fe + owner*16,turn==7 ? 1 : fatal ? 0 : 12);
+                /* asm:3459-3474: pre-move words (turn 8 reads the 1 before
+                 * growth or the fatal overflow). */
+                town_expected_long(expected,0x99fe + owner*16,turn<9 ? 1 : 12);
                 town_expected_long(expected,0x99fe + (1-owner)*16,77);
                 if (turn==8) {
                     celebration_expected_word(expected,0x9c26+4,fatal ? 0 : 12);
@@ -4302,8 +4387,27 @@ static void test_town_footprint_pass_and_clock(void)
                     }
                 }
                 town_footprint_map(expected,owner,650,41,turn==7,fatal && turn==8);
+            } else if (!gate) {
+                /* The fatal turn 8 counted the town's 1, so asm:4323-4347 did
+                 * not end the game: turn 9 is an ordinary pass over the dead
+                 * town (pass resets, no town counted), then ends on its 0. */
+                celebration_expected_word(expected,0xae6a,9);
+                celebration_expected_word(expected,0x9c26+22+12,0);
+                expected[peeps-prg_a4_area+22]=2;
+                celebration_expected_word(expected,0x99fc+owner*16,0);
+                town_expected_long(expected,0x82dc+(owner ? 0 : 1)*46,0);
+                town_expected_long(expected,0x82d8+(owner ? 0 : 1)*46,0);
+                expect_town_publish(expected,owner,0,0);
+                town_expected_long(expected,0x99fe + owner*16,0);
+                town_expected_long(expected,0x99fe + (1-owner)*16,77);
             }
             game_tick();
+            if (!gate && fatal) assert(core_result==(turn==9 ? (owner ? 1 : 2) : 0));
+            if (memcmp(expected,prg_a4_area,sizeof expected))
+                for (size_t byte=0; byte<sizeof expected; ++byte)
+                    if (expected[byte]!=prg_a4_area[byte])
+                        fprintf(stderr,"footprint owner=%d gate=%d fatal=%d turn=%d A4 %04zx expected=%02x actual=%02x\n",
+                                owner,gate,fatal,turn,(byte-32768)&0xffff,expected[byte],prg_a4_area[byte]);
             assert(!memcmp(expected,prg_a4_area,sizeof expected));
             assert(!core_battles && !core_settlements);
         }
@@ -4418,7 +4522,7 @@ static void test_town_capacity_words(void)
         uint8_t expected[sizeof prg_a4_area];
         if (direct) town_capacity_expected(expected,owner,signed_cases[sample].result,0,0,1,owner ? 23473 : 12362);
         else memcpy(expected,prg_a4_area,sizeof expected);
-        if (direct) core_settle_tick(0); else _move_peeps();
+        if (direct) core_settle_tick(0); else { expect_pass_good_pop(expected); _move_peeps(); }
         assert(!memcmp(expected,prg_a4_area,sizeof expected)); ++checked;
     }
     printf("town capacity literal A4 cases: %u\n",checked);
@@ -4769,7 +4873,7 @@ static void test_match_events_cadence(int interval, int start, const MatchOutcom
     assert(core_result==2 && core_population(0)==0 && core_population(1)>0);
     /* Measured deterministic defeat phase with the computer-player AI. */
     if (getenv("POPULOUS_TEST_REAL_DATA"))
-        assert((uint16_t)game_turn==830 && core_battles==0 && core_settlements==43 && core_population(1)==6323);
+        assert((uint16_t)game_turn==831 && core_battles==0 && core_settlements==43 && core_population(1)==6323);
     key.key.keysym.sym=SDLK_ESCAPE;
     assert(SDL_PushEvent(&key)==1); ___keyboard();
     assert(prg_quit);
@@ -4778,7 +4882,7 @@ static void test_match_events_cadence(int interval, int start, const MatchOutcom
 
 /* Winning script: from tick 3000 every enemy walker's footprint is lowered
  * each tick, drowning red before its walkers besiege blue's last towns. */
-static const MatchOutcome events_victory = {1,4696,32,78,1434,0};
+static const MatchOutcome events_victory = {1,4697,32,78,1434,0};
 static void test_match_events(void)
 {
     test_match_events_cadence(1,3000,&events_victory);
@@ -4900,7 +5004,7 @@ static void test_isometric_match_cadence(int interval, int start, const MatchOut
     fprintf(stderr,"isometric defeat turns=%u pop=%d/%d\n",(uint16_t)game_turn,core_population(0),core_population(1));
     assert(core_result==2 && core_population(0)==0);
     /* Measured deterministic defeat phase with the computer-player AI. */
-    if (getenv("POPULOUS_TEST_REAL_DATA")) assert((uint16_t)game_turn==830 && core_population(1)==6323);
+    if (getenv("POPULOUS_TEST_REAL_DATA")) assert((uint16_t)game_turn==831 && core_population(1)==6323);
     uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
     game_tick(); game_render(); assert(!memcmp(before,prg_a4_area,sizeof before));
     game_handle_event(&event); assert(!core_result && xoff==6 && yoff==6);
@@ -4923,16 +5027,16 @@ static void test_isometric_match_cadence(int interval, int start, const MatchOut
     _closeall(); SDL_Quit();
 }
 
-static const MatchOutcome isometric_victory = {1,4696,32,78,1434,0};
+static const MatchOutcome isometric_victory = {1,4697,32,78,1434,0};
 static void test_isometric_match(void)
 {
     test_isometric_match_cadence(1,3000,&isometric_victory);
 }
 
 /* Historical scripts that started rescuing only after tick 6000. With the
- * computer-player AI active, red takes blue's last town at turn 3103, before
+ * computer-player AI active, red takes blue's last town at turn 3104, before
  * any of their input fires, so they pin that deterministic defeat. */
-static const MatchOutcome late_rescue_defeat = {2,3103,33,79,0,30472};
+static const MatchOutcome late_rescue_defeat = {2,3104,33,79,0,30639};
 
 static void test_original_graphics_output(void)
 {
@@ -5504,7 +5608,7 @@ static uint16_t swamp_random(void)
 }
 static void swamp_fixture(void)
 {
-    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(prg_a4_area,0,sizeof prg_a4_area); start_state();
     memset(map_blk,15,4096);
     memset(map_bk2,42,4096);
     memset(map_alt,2,4096);
@@ -5801,7 +5905,7 @@ static uint16_t quake_random(void)
 }
 static void quake_fixture(int height)
 {
-    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(prg_a4_area,0,sizeof prg_a4_area); start_state();
     for (int row=0;row<=64;++row) for (int column=0;column<=64;++column)
         core_set_vertex(column,row,height);
     memset(map_blk,15,4096); memset(map_bk2,42,4096); memset(map_alt,2,4096);
@@ -6631,9 +6735,14 @@ static void test_terrain_mailbox_gates(void)
         terrain_mailbox_write(0,1,16,6); terrain_mailbox_write(1,1,20,30);
         game_tick();
         if (old_water) {
-            assert(core_result==2 && !peep_word(0,4) && A4_LONG(0x99fe)==0 && A4_LONG(0x9a0e)==45);
-            assert(core_vertex(16,6)==0 && core_mana(0)==10000 && A4_WORD(0x2f88)==123);
-            assert(A4_WORD(0x82be)==17 && A4_WORD(0x82be + 46)==17);
+            /* asm:3459-3474: the removed resident's 45 still counts, so
+             * asm:4323-4347 does not end this pass and the queued raise is
+             * consumed as below; the loss follows on the next pass. */
+            assert(!core_result && !peep_word(0,4) && A4_LONG(0x99fe)==45 && A4_LONG(0x9a0e)==45);
+            assert(core_vertex(16,6)==1 && core_mana(0)==9986 && A4_WORD(0x2f88)==1);
+            assert(A4_WORD(0x82be)==0 && A4_WORD(0x82be + 46)==17);
+            assert_mailbox_empty();
+            game_tick(); assert(core_result==2 && !A4_LONG(0x99fe) && A4_LONG(0x9a0e)==45);
         } else {
             assert(!core_result && peeps[0]==18 && peep_word(0,4)==45);
             assert(peep_word(0,6)==100 && peep_word(0,12)==7);
@@ -6789,7 +6898,7 @@ static void test_terrain_mailbox_isolation(void)
         terrain_mailbox_write(0,1,16,6);
         game_tick();
         assert(peep_word(0,4)==(old_water ? 39 : 45));
-        assert(A4_LONG(0x99fe)==(old_water ? 39u : 45u) && !core_result);
+        assert(A4_LONG(0x99fe)==45u && !core_result); /* asm:3459-3474: pre-loss */
         assert(core_vertex(16,6)==1 && map_blk[400]==17);
         assert_mailbox_empty();
     }
@@ -6973,14 +7082,18 @@ static void test_war_terrain_order_and_death(void)
         assert(A4_WORD(0x2f8a)==last%64 && A4_WORD(0x2f8e)==last/64);
         assert_mailbox_empty(); assert(seed==28505);
     }
-    /* Earlier producer is discarded if the last enemy dies later in the pass. */
+    /* The last enemy dying later in the pass still counted its pre-loss 1
+     * (asm:3459-3474), so asm:4323-4347 does not end this pass: both owners'
+     * producers execute, and the win follows on the next pass. */
     war_terrain_fixture(); no_peeps=2;
     peeps[22]=18; peeps[23]=1; set_peep_word(1,4,1); set_peep_word(1,8,900);
     map_blk[900]=0; map_who[900]=2;
     game_tick();
-    assert(core_result==1 && !peep_word(1,4) && peep_word(0,4)==99);
-    assert(core_vertex(10,10)==0 && core_vertex(4,14)==0 && seed==28505);
+    assert(!core_result && !peep_word(1,4) && peep_word(0,4)==99);
+    assert(A4_LONG(0x99fe)==100 && A4_LONG(0x9a0e)==1);
+    assert(core_vertex(10,10)==1 && core_vertex(4,14)==1 && seed==28505);
     assert_mailbox_empty();
+    game_tick(); assert(core_result==1 && !A4_LONG(0x9a0e));
     /* A dying old-water producer belongs to the owner, not the person. */
     war_terrain_fixture(); no_peeps=3; peeps[0]=18; map_blk[650]=0; set_peep_word(0,4,1);
     for (int person=1;person<3;++person) {
@@ -7067,8 +7180,10 @@ static void test_water_recovery_rescue(void)
         assert(core_population(0)==100 && core_population(1)==100); assert_mailbox_empty();
         game_tick();
         assert(!peeps[0] && !peep_word(0,4) && peep_word(0,12)==7 && !map_who[650]);
-        assert(core_result==(owner ? 1 : 2) && peep_word(1,4)==100);
+        /* asm:3459-3474: the removed resident's pre-removal 100 counts. */
+        assert(!core_result && A4_LONG(0x99fe + owner*16)==100 && peep_word(1,4)==100);
         assert(core_vertex(10,10)==0 && seed==28505 /* two AI picks */ && !core_battles); assert_mailbox_empty();
+        game_tick(); assert(core_result==(owner ? 1 : 2)); /* asm:4323-4347 */
     }
 }
 
@@ -7144,11 +7259,14 @@ static void test_water_remnant_rescue(void)
         game_tick();
         assert(!peeps[0] && !peep_word(0,4) && peep_word(0,6)==(dry ? 39 : 40));
         assert(peep_word(0,12)==42 && !map_who[650]);
-        assert(core_result==(terminal ? (owner ? 1 : 2) : 0));
-        /* Terminal discards; a dying nonterminal producer still raises for its owner. */
-        assert(core_vertex(10,10)==!terminal && map_blk[650]==(terminal ? (dry ? 17 : 0) : 17));
+        /* asm:3459-3474: the dying remnant's 1 counts this pass, so the game
+         * continues and the dying producer still raises for its owner. */
+        assert(!core_result && A4_LONG(0x99fe + owner*16)==(terminal ? 1 : 101));
+        assert(core_vertex(10,10)==1 && map_blk[650]==17);
         assert(peep_word(1,12)==1 && !core_battles && !core_settlements && seed==28505 /* two AI picks */);
         assert_mailbox_empty();
+        /* asm:4323-4347: the terminal end follows on the next pass. */
+        if (terminal) { game_tick(); assert(core_result==(owner ? 1 : 2)); }
     }
 }
 
@@ -7219,8 +7337,12 @@ static void test_war_terrain_obstacle(void)
      * The two first-tick AI picks start the battle rolls at 28505: tick 50
      * rolls 3,1 (lesser 993, loss 9*100+10: 993 -> 83), tick 51 rolls 1,2
      * (loss 10: -> 73), tick 52 rolls 2,3 (lesser 146, loss 110): both die
-     * on turn 52 (from seed 123 the same fight ended on turn 53). */
-    assert(raised && first_battle==49 && core_result==3 && game_turn==52);
+     * on turn 52 (from seed 123 the same fight ended on turn 53). Slot 0 is
+     * counted (asm:3459-3474) before it dispatches the battle (asm:4270-4282);
+     * slot 1 dies there before its own visit and is never counted, so the
+     * asm:4323-4347 check sees 73/0: won, not a draw (the original has none). */
+    assert(raised && first_battle==49 && core_result==1 && game_turn==52);
+    assert(A4_LONG(0x99fe)==73 && A4_LONG(0x9a0e)==0);
 }
 static void test_war_terrain(void)
 {
@@ -7405,7 +7527,7 @@ static void test_armageddon_islands(void)
     for (int local=0;local<2;++local) {
         /* Controlled legal-height setup only. Funding is a fixture, not a
          * claim that a human earned mana. No world injection after SDL A. */
-        war_terrain_fixture(); A4_WORD(0xae80)=0; player=local;
+        war_terrain_fixture(); A4_WORD(0xae80)=0; player=local; start_state();
         memset(map_who,0,4096); memset(map_blk,0,4096);
         for (int row=30;row<=34;++row) for (int column=26;column<=37;++column)
             if (column<=29 || column>=34) core_set_vertex(column,row,1);
@@ -7436,8 +7558,11 @@ static void test_armageddon_islands(void)
         }
         printf("Armageddon cast islands: caster=%d raised=%d battle=%d outcome=%d tick=%d populations=%d/%d\n",
                local,raised,first_battle,core_result,game_turn,core_population(0),core_population(1));
-        assert(raised && first_battle && core_result==1 && core_population(0)>0 && !core_population(1));
+        /* asm:4323-4347 is _player-relative: owner 1 wiped out is a win for
+         * player 0 but ___end_game(1), lost, for player 1. */
+        assert(raised && first_battle && core_result==(local ? 2 : 1) && core_population(0)>0 && !core_population(1));
     }
+    player=0; start_state();
 }
 
 static void test_armageddon_input_smoke(void)
@@ -7492,7 +7617,7 @@ static void test_armageddon_original(const char *directory)
 /* Host references are slot identities, not serialized Amiga addresses. */
 static void heading_fixture(int count)
 {
-    memset(prg_a4_area,0xa5,sizeof prg_a4_area);
+    memset(prg_a4_area,0xa5,sizeof prg_a4_area); start_state();
     no_peeps=count;
     for (int person=0;person<208;++person) {
         peeps[person*22]=2; peeps[person*22+1]=0;
@@ -7973,7 +8098,7 @@ static void test_heading_seeded_encounter(void)
 
 static void setup_heading_battle(int winner, int owner)
 {
-    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(prg_a4_area,0,sizeof prg_a4_area); start_state();
     memset(map_blk,15,4096); memset(map_bk2,37,4096);
     no_peeps=4; core_result=core_settlements=0; core_battles=17; prg_quit=0;
     int loser=3-winner;
@@ -8379,8 +8504,8 @@ static void test_heading_town_ticks(void)
         assert(seed==7095);
         /* Dry baseline: keep existing walking and zero loss, not water timing.
          * Source accumulates population BEFORE each resident (asm:3462-3474),
-         * so expiry's source total still includes 1 until the following pass.
-         * Host totals are post-pass: zero and terminal on invocation 41. */
+         * so expiry's source total still includes 1 until the following pass:
+         * asm:4323-4347 therefore ends the game on pass 42, not 41. */
         setup_heading_town(winner,owner,10); set_peep_word(3,4,0);
         core_battle(1,2);
         uint8_t winner_heading[4], loser_heading[4];
@@ -8403,7 +8528,7 @@ static void test_heading_town_ticks(void)
         game_tick();
         assert(game_turn==41 && !peep_word(loser,4));
         assert((uint16_t)peep_word(loser,6)==0xffff);
-        assert(A4_LONG(owner ? 0x99fe : 0x9a0e)==0 && core_result==(owner ? 2 : 1));
+        assert(A4_LONG(owner ? 0x99fe : 0x9a0e)==1 && !core_result);
         assert(A4_LONG(owner ? 0x9a0e : 0x99fe)>0);
         assert(!core_leader(1-owner) && core_target(1-owner)==650);
         assert(A4_WORD(owner ? 0xae78 : 0xae76)==650);
@@ -8411,6 +8536,9 @@ static void test_heading_town_ticks(void)
         assert(map_who[(int16_t)(peep_word(winner,8)-peep_word(winner,10))]==winner+1);
         assert(!memcmp(winner_heading,peeps+winner*22+14,4));
         assert(!memcmp(loser_heading,peeps+loser*22+14,4));
+        game_tick();
+        assert(game_turn==42 && A4_LONG(owner ? 0x99fe : 0x9a0e)==0 && core_result==(owner ? 2 : 1));
+        assert(A4_LONG(owner ? 0x9a0e : 0x99fe)>0);
     }
     /* Successful conquest must feed the town consumer in resident order. */
     for (int winner=1; winner<=2; ++winner) for (int owner=0; owner<2; ++owner)
@@ -8977,7 +9105,7 @@ static void test_battle_frame_helper(void)
     for (unsigned count=0; count<sizeof counts/sizeof counts[0]; ++count)
     for (unsigned first=0; first<sizeof indices/sizeof indices[0]; ++first)
     for (unsigned second=0; second<sizeof indices/sizeof indices[0]; ++second) {
-        memset(prg_a4_area,0,sizeof prg_a4_area); no_peeps=counts[count];
+        memset(prg_a4_area,0,sizeof prg_a4_area); start_state(); no_peeps=counts[count];
         for (int person=0; person<208; ++person) {
             peeps[person*22]=8; set_peep_word(person,12,71);
         }
@@ -9291,8 +9419,14 @@ static void test_battle_loss_ticks(void)
             assert(map_who[650]==win+1 && view_who==win+1);
         }
         if (tick) {
-            assert(A4_LONG(owner ? 0x9a0e : 0x99fe)==(route ? 29990u : 15926u));
-            assert(A4_LONG(owner ? 0x99fe : 0x9a0e)==(route ? 10u+headed : 15936u));
+            /* asm:3459-3474 adds each word at its own visit: the low slot
+             * before it dispatches the battle (asm:4270-4282), the high slot
+             * after, so with the post-battle word. */
+            uint32_t own=winner==1 ? (route ? 30000u : 32000u) : (route ? 29990u : 15926u);
+            uint32_t foe=10u+(winner==1 ? (route ? (uint32_t)headed : 15926u)
+                                        : (route ? (route==1 ? 10974u : 10973u) : 32000u));
+            assert(A4_LONG(owner ? 0x9a0e : 0x99fe)==own);
+            assert(A4_LONG(owner ? 0x99fe : 0x9a0e)==foe);
         }
     }
 }
@@ -9406,7 +9540,7 @@ static void test_battle_entry_wait_retry(void)
         set_peep_word(3,6,99); map_who[900]=4;
         memcpy(expected,prg_a4_area,sizeof expected); memcpy(prg_a4_area,before,sizeof before);
         expect_ai_fixture_picks(expected);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         assert(peep_word(1,12)==70 && !peep_word(1,4));
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(core_battles==18 && !core_settlements && !core_result);
@@ -9623,7 +9757,7 @@ static void test_water_town_state(void)
                 }
             }
         }
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         if (memcmp(expected,prg_a4_area,sizeof expected))
             fprintf(stderr,"water town owner=%d fatal=%d war=%d heading=%d plot=%u pop=%u turn=%d flags=%x pop=%d frame=%d\n",
                     owner,fatal,war,heading,plot,sample,turn,peeps[0],peep_word(0,4),peep_word(0,12));
@@ -9631,7 +9765,7 @@ static void test_water_town_state(void)
         assert(!core_battles && !core_settlements && seed==123);
         if (!fatal && evacuate && population<=0) {
             memcpy(expected,prg_a4_area,sizeof expected);
-            _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+            expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         }
         ++checked;
     }
@@ -9677,14 +9811,14 @@ static void test_water_town_edges_and_skips(void)
             celebration_expected_word(expected,0x2fb2,0);
             town_footprint_map(expected,owner,position,0,0,1);
         }
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
     }
     const int dead[]={0,-1,-32768};
     for (int owner=0; owner<2; ++owner) for (int fatal=0; fatal<2; ++fatal)
     for (unsigned sample=0; sample<3; ++sample) {
         setup_water_town(owner,5,650); game_mode=fatal; set_peep_word(0,4,dead[sample]);
         uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
     }
 }
 
@@ -9722,6 +9856,8 @@ static void test_water_town_split_and_growth(void)
         uint8_t expected[sizeof prg_a4_area];
         town_capacity_expected(expected,owner,cases[sample].mother,cases[sample].child,
                                cases[sample].final_latch,1,owner ? 23473 : 12362);
+        /* asm:3461-3474: the later child slot is visited and counted too. */
+        if (cases[sample].child>0) expect_good_pop_add(expected,owner,cases[sample].child);
         expect_town_publish(expected,owner,0,1);
         /* A wet town keeps frame 42 unless the water loss empties it, which
          * reframes it before the consumer: then a clear latch reaches
@@ -9756,7 +9892,7 @@ static void test_water_town_split_and_growth(void)
                 }
             }
         }
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         if (memcmp(expected,prg_a4_area,sizeof expected)) {
             fprintf(stderr,"water split owner=%d occupant=%d stale=%d sample=%u\n",owner,occupant,stale,sample);
             for (size_t byte=0; byte<sizeof expected; ++byte)
@@ -9801,12 +9937,15 @@ static void test_water_town_deferred_raise(void)
         assert(peep_word(0,6)==1234 && peep_word(0,10)==(fertile ? -65 : 0));
         assert(peep_word(1,12)==2 && core_population(1-owner)==100);
         assert(core_population(owner)==(terminal ? 0 : 100)+(fertile ? initial+7 : initial==5));
-        assert(core_result==(!fertile && terminal && initial<5 ? (owner ? 1 : 2) : 0));
+        /* asm:3459-3474: the dying town's pre-loss word still counts this
+         * pass; the asm:4323-4347 end follows on the next pass. */
+        assert(!core_result);
         assert(!core_battles && !core_settlements && seed==123); assert_mailbox_empty();
         if (!fertile && initial<5) {
             uint8_t record[22]; memcpy(record,peeps,22);
             game_tick(); assert(!memcmp(record,peeps,22));
             assert(map_who[650]==1 && view_who==1 && core_leader(owner)==1);
+            assert(core_result==(terminal ? (owner ? 1 : 2) : 0));
         }
     }
 }
@@ -9914,6 +10053,7 @@ static void test_water_rescue_admission(void)
         celebration_expected_word(expected,0x9c26+4,population);
         celebration_expected_word(expected,0x9c26+12,removed ? 0 : cases[sample].frame);
         if (!flags) expected[map_who-prg_a4_area+position]=0;
+        if (cases[sample].initial>0) expect_good_pop(expected,owner,cases[sample].initial);
         _move_peeps();
         if (memcmp(expected,prg_a4_area,sizeof expected))
             fprintf(stderr,"water rescue owner=%d controller=%d war=%x mode=%x case=%u\n",
@@ -10007,10 +10147,14 @@ static void test_water_rescue_deferred(void)
             water_rescue_fixture(owner,1,terminal);
             game_tick();
             assert(!peeps[0] && !peep_word(0,4) && !map_who[650]);
-            assert(core_result==(terminal ? (owner ? 1 : 2) : 0));
-            assert(core_vertex(10,10)==!terminal && core_mana(owner)==(terminal ? 100 : 86));
+            /* asm:3459-3474: the drowning 1 (plus the non-terminal battler's
+             * 100) counts this pass, so the asm:4323-4347 end waits a pass
+             * and the mailbox is consumed. */
+            assert(!core_result && A4_LONG(0x99fe + owner*16)==(terminal ? 1 : 101));
+            assert(core_vertex(10,10)==1 && core_mana(owner)==86);
             assert(core_population(1-owner)==100 && core_population(owner)==(terminal ? 0 : 100));
             assert_mailbox_empty();
+            if (terminal) { game_tick(); assert(core_result==(owner ? 1 : 2)); }
         }
         for (int gate=0; gate<5; ++gate) {
             water_rescue_fixture(owner,100,0); terrain_mailbox_write(owner,2,27,31);
@@ -10049,7 +10193,7 @@ static void test_water_rescue_order(void)
             expected[peeps-prg_a4_area+22]=0;
             expected[map_who-prg_a4_area+positions[1]]=0;
         }
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
     }
     /* Fatal old-water cannot erase an earlier pending owner command. */
     for (int owner=0; owner<2; ++owner) for (int war=0; war<2; ++war) {
@@ -10057,7 +10201,7 @@ static void test_water_rescue_order(void)
         terrain_mailbox_write(owner,1,27,31); A4_WORD(0x82be + owner*46)=7;
         uint8_t expected[sizeof prg_a4_area]; water_loss_expected(expected,owner,650,0);
         expect_ai_pick(expected,1-owner,1,15930);
-        _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
+        expect_pass_good_pop(expected); _move_peeps(); assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(A4_DISP(0x82b7+owner*46)[0]==27 && A4_WORD(0x82be + owner*46)==7);
     }
 }
@@ -10112,6 +10256,8 @@ static void test_water_rescue_town_latch(void)
             celebration_expected_word(expected,0xae5e,3);
             expected[peeps-prg_a4_area+town*22+2]=4;
             expected[map_who-prg_a4_area+650]=3;
+            /* asm:3461-3463 re-reads _no_peeps: the child is visited too. */
+            expect_good_pop_add(expected,owner,154);
         }
         expect_town_bookkeeping(expected,town,42);
         expect_town_publish(expected,owner,0,1);
@@ -10119,7 +10265,7 @@ static void test_water_rescue_town_latch(void)
          * town owner's latch is clear: _make_level's permission-0 exit
          * leaves its _stats address low byte in +20 (asm:9025-9031). */
         if (ordering!=2 && (ordering || foreign)) expect_make_level_exit(expected,town);
-        _move_peeps();
+        expect_pass_good_pop(expected); _move_peeps();
         if (memcmp(expected,prg_a4_area,sizeof expected))
             fprintf(stderr,"rescue town owner=%d ordering=%d foreign=%d\n",owner,ordering,foreign);
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -10242,10 +10388,14 @@ static void test_magnet_rescue_mixed(void)
             A4_LONG(0x9a02+person*16)=0;
         }
         uint8_t expected[sizeof prg_a4_area]; memcpy(expected,prg_a4_area,sizeof expected);
+        uint32_t sums[2]={0,0};
         for (int person=0; person<2; ++person) {
             int walker=person==reverse, side=separate && !walker ? 1-owner : owner;
             int position=person ? 780 : 650;
             int removed=walker ? dying : old && (fatal || dying);
+            sums[side]+=dying ? 1 : 100; /* asm:3459-3474: pre-move word */
+            memcpy(A4_DISP(0x99fe)-prg_a4_area+expected,sums,4);
+            memcpy(A4_DISP(0x9a0e)-prg_a4_area+expected,sums+1,4);
             expected[peeps-prg_a4_area+person*22]=removed ? 0 : walker ? 0x42 : 18;
             celebration_expected_word(expected,0x9c26+person*22+4,
                                       removed ? 0 : walker ? 99 : old ? 98 : dying ? 1 : 100);
@@ -10450,10 +10600,13 @@ static void test_swamp_rescue_deferred(void)
         for (int terminal=0; terminal<2; ++terminal) {
             swamp_rescue_fixture(owner,1,terminal); game_tick();
             assert(!peeps[0] && !peep_word(0,4) && !map_who[650]);
-            assert(core_result==(terminal ? (owner ? 1 : 2) : 0));
-            assert(map_blk[651]==(terminal ? 53 : 17));
-            assert(core_vertex(11,10)==!terminal && core_mana(owner)==(terminal ? 100 : 86));
+            /* asm:3459-3474: the dying walker's pre-loss 1 still counts in
+             * good_pop this pass, so asm:4323-4347 does not end the game and
+             * the mailbox is consumed; the terminal end follows next pass. */
+            assert(!core_result && map_blk[651]==17);
+            assert(core_vertex(11,10)==1 && core_mana(owner)==86);
             assert_mailbox_empty();
+            if (terminal) { game_tick(); assert(core_result==(owner ? 1 : 2)); }
         }
         for (int gate=0; gate<5; ++gate) {
             swamp_rescue_fixture(owner,100,0); terrain_mailbox_write(owner,2,27,31);
@@ -10527,7 +10680,7 @@ static void test_swamp_rescue(void)
  * player's latch is held so only owner 1 (_stats at $82e4) acts. */
 static void ai_fixture(void)
 {
-    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(prg_a4_area,0,sizeof prg_a4_area); start_state();
     no_peeps=0; seed=123; game_turn=50; player=0;
     A4_WORD(0x82be)=1;
     A4_LONG(0x848e)=50;  A4_LONG(0x8492)=100; A4_LONG(0x8496)=200; A4_LONG(0x849a)=300;
@@ -10535,12 +10688,12 @@ static void ai_fixture(void)
     core_tendency(1)=1; core_target(0)=core_target(1)=0x820;
 }
 /* _move_peeps bookkeeping on an empty pass: asm:3290-3335 clears the
- * pointers and town counts, asm:4349-4370 publishes zero counts. */
+ * pointers, town counts and good_pop, asm:4349-4370 publishes zero counts. */
 static void ai_expect_pass(uint8_t *expected)
 {
     uint8_t *saved=prg_a4; prg_a4=expected+32768;
     for (int owner=0;owner<2;++owner) {
-        A4_WORD(0x99fc+owner*16)=0;
+        A4_WORD(0x99fc+owner*16)=0; A4_LONG(0x99fe + owner*16)=0; /* asm:3296-3301 */
         A4_LONG(0x82d8+owner*46)=A4_LONG(0x82dc+owner*46)=A4_LONG(0x82e0+owner*46)=0;
         A4_WORD(0x82ca+owner*46)=A4_WORD(0x82cc+owner*46)=0;
     }
@@ -10838,9 +10991,107 @@ static void test_ai_opcode_effects(void)
     }
     puts("opcodes 3/4/6 effects: PASS");
 }
+/* good_pop: signed long per owner at A4+$99fe, stride 16 (bad_pop $9a0e). */
+static void gp_expect_peep_word(uint8_t *expected, int slot, int offset, int16_t value)
+{ ai_expect_word(expected,0x9c26+slot*22+offset,value); }
+static void gp_expect_peep_byte(uint8_t *expected, int slot, int offset, uint8_t value)
+{ AI_EXPECT(0x9c26+slot*22+offset)[0]=value; }
+static void test_good_pop(void)
+{
+    static uint8_t expected[65536];
+    /* asm:3296-3301 reset, asm:3459-3474 accumulate EXT.L of the +4 word for
+     * every peep with a positive word, owner byte *16, before any water,
+     * battle or movement work. All-zero map_blk: every cell is water. */
+    ai_fixture(); game_mode=GAME_MODE_WATER_FATAL;
+    A4_LONG(0x99fe)=0x12345678; A4_LONG(0x9a0e)=0xfedcba98;
+    ai_peep(0,0x12,0,300,100); map_who[100]=1;                 /* walker, drowns */
+    ai_peep(1,1,1,700,200); set_peep_word(1,12,9);             /* town -> wet 18 */
+    ai_peep(2,8,0,40,300); set_peep_word(2,6,1);               /* battle, lower partner */
+    ai_peep(3,2,1,0,350);                                      /* zero: skipped */
+    ai_peep(4,2,1,-5,360);                                     /* signed negative: skipped */
+    ai_peep(5,0x12,1,32000,400); map_who[400]=6;              /* drowns */
+    no_peeps=6;
+    memcpy(expected,prg_a4_area,65536); ai_expect_pass(expected);
+    ai_expect_long(expected,0x99fe,300+40);                    /* not post-move 40 */
+    ai_expect_long(expected,0x9a0e,700+32000);                 /* not post-move 700 */
+    gp_expect_peep_word(expected,0,4,0); gp_expect_peep_byte(expected,0,0,0); AI_EXPECT(0x1f88+100)[0]=0;
+    gp_expect_peep_byte(expected,1,0,18); gp_expect_peep_word(expected,1,12,0);
+    gp_expect_peep_word(expected,5,4,0); gp_expect_peep_byte(expected,5,0,0); AI_EXPECT(0x1f88+400)[0]=0;
+    ai_run(expected);
+    /* asm:9317-9349 war boundary: _devil_effect runs at the top of the next
+     * pass (asm:3254-3270) on the previous pass's pre-move sums. Both owners
+     * drown in pass 1, so post-move totals would be 0/0 and never war. */
+    for (int friendly=4; friendly<=5; ++friendly) {
+        ai_fixture(); game_mode=GAME_MODE_WATER_FATAL;
+        A4_WORD(0x82f2)=0x100; A4_LONG(0x9a12)=1600;
+        ai_peep(0,0x12,1,5,500); ai_peep(1,0x12,0,friendly,501); no_peeps=2;
+        memcpy(expected,prg_a4_area,65536); ai_expect_pass(expected);
+        ai_expect_long(expected,0x9a0e,5); ai_expect_long(expected,0x99fe,friendly);
+        gp_expect_peep_word(expected,0,4,0); gp_expect_peep_byte(expected,0,0,0);
+        gp_expect_peep_word(expected,1,4,0); gp_expect_peep_byte(expected,1,0,0);
+        ai_run(expected);
+        ai_expect_long(expected,0x9a0e,0); ai_expect_long(expected,0x99fe,0);
+        if (friendly==4) ai_expect_mail(expected,14,0,3,1);    /* 5 > 4 */
+        ai_run(expected);                                      /* 5 > 5 fails */
+    }
+    /* asm:5605-5620 _join_forces: after the merge, a target index above the
+     * source (not yet visited) loses the source's word from the source
+     * owner's sum, even when the target word clamped at $7d00. */
+    for (int order=0; order<2; ++order) {
+        int source=order ? 3 : 1, target=order ? 1 : 3;
+        ai_fixture();
+        ai_peep(source,2,1,30000,700); map_who[700]=source+1;
+        ai_peep(target,2,1,5000,701); map_who[701]=target+1; set_peep_word(target,12,4);
+        no_peeps=4; A4_LONG(0x9a0e)=35000; A4_LONG(0x99fe)=77;
+        memcpy(expected,prg_a4_area,65536);
+        gp_expect_peep_word(expected,target,4,32000); gp_expect_peep_word(expected,target,12,0);
+        gp_expect_peep_word(expected,source,4,0); gp_expect_peep_byte(expected,source,0,0);
+        AI_EXPECT(0x1f88+700)[0]=0;
+        if (target>source) ai_expect_long(expected,0x9a0e,5000);
+        core_join_forces(source,target);
+        assert(!memcmp(expected,prg_a4_area,65536));
+    }
+    /* asm:6725-6740 _join_battle: the comparison uses the redirected same-owner
+     * recipient (+6 partner, asm:6678-6687) against the newcomer index. */
+    for (int order=0; order<2; ++order) {
+        int newcomer=order ? 5 : 2, encountered=order ? 2 : 1, partner=order ? 1 : 5;
+        ai_fixture();
+        ai_peep(newcomer,2,0,60,800); map_who[800]=newcomer+1;
+        ai_peep(encountered,8,1,90,801); set_peep_word(encountered,6,partner);
+        ai_peep(partner,8,0,110,802); set_peep_word(partner,6,encountered);
+        no_peeps=6; A4_LONG(0x99fe)=1000; A4_LONG(0x9a0e)=2000;
+        memcpy(expected,prg_a4_area,65536);
+        gp_expect_peep_word(expected,partner,4,170);
+        gp_expect_peep_word(expected,newcomer,4,0); gp_expect_peep_byte(expected,newcomer,0,0);
+        AI_EXPECT(0x1f88+800)[0]=0;
+        if (partner>newcomer) ai_expect_long(expected,0x99fe,940);
+        core_join_battle(newcomer,encountered);
+        assert(!memcmp(expected,prg_a4_area,65536));
+    }
+    /* asm:4323-4347: after the pass, _player's zero sum or surrender ends
+     * lost (___end_game(1)); else _not_player's zero sum or surrender won.
+     * Pass 1 counts the drowning enemy's 5, so the game ends one pass later. */
+    for (int scenario=0; scenario<4; ++scenario) {
+        ai_fixture(); game_mode=GAME_MODE_WATER_FATAL; core_result=0; pause=0; prg_quit=0;
+        player=0; not_player=1; A4_WORD(0x8258)=-1;
+        /* +6 = 0 battle peeps never reach _do_battle (other > self fails). */
+        ai_peep(0,0x12,1,5,500); ai_peep(1,scenario==1 ? 0x12 : 8,0,9,901); no_peeps=2;
+        if (scenario==2) A4_WORD(0x8258)=0;
+        if (scenario==3) { A4_WORD(0x8258)=1; ai_peep(0,8,1,5,902); }
+        game_tick();
+        if (scenario==2) { assert(core_result==2 && game_turn==51); continue; }
+        if (scenario==3) { assert(core_result==1 && game_turn==51); continue; }
+        assert(!core_result && A4_LONG(0x9a0e)==5);
+        game_tick();
+        /* Both drowned before the first check: lost, not a draw. */
+        assert(core_result==(scenario==1 ? 2 : 1) && game_turn==52);
+    }
+    core_result=0; core_clear_terrain_mailboxes();
+    puts("good_pop: PASS");
+}
 static void test_computer_ai(void)
 {
-    test_set_devil_magnet(); test_devil_effect(); test_computer_effect(); test_make_level();
+    test_set_devil_magnet(); test_devil_effect(); test_good_pop(); test_computer_effect(); test_make_level();
     test_ai_opcode_magnet(); test_ai_opcode_action(); test_ai_opcode_effects();
 }
 
@@ -10848,6 +11099,7 @@ int main(int argc, char **argv)
 {
     if (argc==2 && !strcmp(argv[1],"--set-devil-magnet")) { test_set_devil_magnet(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--devil-effect")) { test_devil_effect(); return 0; }
+    if (argc==2 && !strcmp(argv[1],"--good-pop")) { test_good_pop(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--computer-effect")) { test_computer_effect(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--devil-magnet")) { test_set_devil_magnet(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--make-level")) { test_make_level(); return 0; }
