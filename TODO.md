@@ -212,7 +212,7 @@ Belege: `populous_c_port/populous_prg.c:917-953`, `:1446`, `:1659-1667`;
 ## P1 - Originale Computer-KI
 
 - [x] Gegnerische Magnet-/Anfuehrerstrategie (`_set_devil_magnet`, asm 9601-9898), Aufruf vor `_devil_effect` bei freiem Latch (asm 3254-3270).
-- [x] Computer-Kraftwahl und -ausfuehrung (`_devil_effect`, `_do_computer_effect`) mit Opcode-Verbrauchern 3 Beben, 4 Sumpf, 5 Magnet, 6 Vulkan, 14 Tendenz/Krieg/Flut/Ritter. `good_pop` und Spielende-Pruefung wie im Original (kein Unentschieden). Offen: pruefen, ob der Originalstart `good_pop` loescht (Port behaelt Werte ueber `r`-Reset); Opcodes 7-13, `_toggle`-Mana, Kartenrand-Ziele (Host lehnt x/y>56 ab).
+- [x] Computer-Kraftwahl und -ausfuehrung (`_devil_effect`, `_do_computer_effect`) mit Opcode-Verbrauchern 3 Beben, 4 Sumpf, 5 Magnet, 6 Vulkan, 14 Tendenz/Krieg/Flut/Ritter. `good_pop` und Spielende-Pruefung wie im Original (kein Unentschieden). Start/`r`-Reset behaelt wie `_clear_map` (asm 1023-1188) 0x99fc, good_pop/bad_pop und `_stats`+0x14/+0x16/+0x22/+0x26/+0x2a (`--start-reset`). Offen: Opcodes 7-13, `_toggle`-Mana, Kartenrand-Ziele (Host lehnt x/y>56 ab).
 - [x] Automatische Gelaendenivellierung (`_make_level`, `_one_block_flat`). **Annahme:** das fruehe Exit-Byte in peep+20 ist das Low-Byte der `_stats`-Adresse (0xa4/0xd2 bei Disassembly-Basis, `MAKE_LEVEL_EXIT_BYTE_OWNER*`), ladeadressabhaengig und nicht gemessen. `_make_level` bezeichnet hier KI-Gelaendearbeit, nicht den Leveldatei-Loader.
 - [ ] **Fehlt:** Bewertung, Reaktionsgeschwindigkeit, erlaubte Kraefte und weitere Levelparameter in KI-Entscheidungen einbeziehen.
 - [ ] **Pruefen:** KI-Aufrufreihenfolge und RNG-Verbrauch unter unterschiedlichen Welten, Manareserven und Spielmodi.

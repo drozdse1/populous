@@ -920,7 +920,9 @@ at 831 (0/6323). `good_pop` (`--good-pop`, signed long at 0x99fe+owner*16) is
 reset per pass (asm 3296-3301), summed from pre-move words at the top of the peep
 loop (3459-3474) and corrected by slot-order joins (5605-5620, 6725-6740). The
 end check (4323-4347) tests the player first, honours surrender and has no draw,
-so outcomes appear one pass after the last death. Open: opcodes 7-13, `_toggle` mana,
+so outcomes appear one pass after the last death. Like `_clear_map` (asm 1023-1188), a start or
+`r` reset keeps 0x99fc, good_pop/bad_pop and `_stats`+0x14/+0x16/+0x22/+0x26/+0x2a;
+only the next pass clears them, after `_devil_effect` (`--start-reset`). Open: opcodes 7-13, `_toggle` mana,
 edge-of-map targets (host rejects x/y>56) and null pointer reads (address 8).
 The 11928 results below are historical (immediate-commit movement).
 

@@ -2171,6 +2171,17 @@ static int game_reset_start(StartSelection selection)
     diagnostic_view = 0;
     current_start = selection;
     current_scenario = scenario;
+    /* _clear_map (asm:1023-1188) and _clear_send (asm:18234-18254) never write
+     * 0x99fc, good_pop/bad_pop or _stats+0x14/+0x16/+0x22/+0x26/+0x2a; only
+     * _move_peeps zeroes them (asm:3280-3320), after _devil_effect (asm:3268). */
+    for (int owner = 0; owner < 2; ++owner) {
+        static const struct { int offset, size; } kept[] = {
+            {0x99fc,2},{0x99fe,4},{0x82ca,2},{0x82cc,2},{0x82d8,4},{0x82dc,4},{0x82e0,4}};
+        for (size_t field = 0; field < sizeof kept / sizeof kept[0]; ++field) {
+            int offset = kept[field].offset + owner * (kept[field].offset >= 0x99fc ? 16 : 46);
+            memcpy(staged + 32768 + (int16_t)offset, A4_DISP(offset), (size_t)kept[field].size);
+        }
+    }
     memcpy(prg_a4_area, staged, sizeof prg_a4_area);
     const uint16_t *tables[] = {loaded.population_add,loaded.mana_add,loaded.weapons_add,loaded.battle_add1,loaded.battle_add2,loaded.weapons_order};
     const int offsets[] = {0x2fe2,0x2fb6,0x2fcc,0x2ffa,0x3010,0x2f96};

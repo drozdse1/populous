@@ -5591,6 +5591,13 @@ static void test_all_original_levels(const char *directory)
         SDL_Event reset = {.type = SDL_KEYDOWN}; reset.key.keysym.sym = SDLK_r;
         game_handle_event(&reset);
         assert_original_world();
+        /* _clear_map leaves 0x99fc, good_pop and _stats+0x14/+0x16/+0x22/
+         * +0x26/+0x2a (asm:1023-1188): those keep their post-tick values. */
+        static const int kept[][2] = {{0x99fc,2},{0x99fe,4},{0x82ca,2},{0x82cc,2},{0x82d8,4},{0x82dc,4},{0x82e0,4}};
+        for (int owner = 0; owner < 2; ++owner) for (int field = 0; field < 7; ++field) {
+            int offset = (int16_t)(kept[field][0] + owner*(kept[field][0] >= 0x99fc ? 16 : 46)) + 32768;
+            memcpy(saved+offset, after_ticks+offset, (size_t)kept[field][1]);
+        }
         assert(!memcmp(saved,prg_a4_area,sizeof saved));
         assert(game_turn == 0 && current_start.number == (int)number);
     }
@@ -11095,11 +11102,61 @@ static void test_computer_ai(void)
     test_ai_opcode_magnet(); test_ai_opcode_action(); test_ai_opcode_effects();
 }
 
+static void test_start_reset(void)
+{
+    /* _setup_display -> _clear_map (asm:404/458,1023-1188) writes, per owner,
+     * _magnet 0x99f6=0 (asm:1081), 0x99f8=0x820 (asm:1074), tendency
+     * 0x99fa=1 (asm:1064), mana 0x9a02=399 (asm:1069), _stats+0x12/+0x18/
+     * +0x1a/+0x1c (asm:1084-1132) and, via _clear_send (asm:1135,18234-18254),
+     * the mailbox bytes _stats+0..2. It never writes 0x99fc, good_pop/bad_pop
+     * (0x99fe/0x9a0e), _stats+0x14/+0x16 or the +0x22/+0x26/+0x2a pointers:
+     * those are zeroed only by _move_peeps (asm:3280-3320), after the
+     * _devil_effect call (asm:3268), so the first pass reads the old game's. */
+    static uint8_t clean[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    assert(game_reset(0));
+    memcpy(clean, prg_a4_area, sizeof clean);
+    assert(A4_WORD(0x99fc) == 0 && A4_LONG(0x99fe) == 0 && A4_WORD(0x9a0c) == 0 && A4_LONG(0x9a0e) == 0);
+    assert(A4_WORD(0x99fa) == 1 && A4_WORD(0x9a0a) == 1 && A4_WORD(0x99f8) == 0x820 && A4_WORD(0x9a08) == 0x820);
+    assert(A4_LONG(0x9a02) == 399 && A4_LONG(0x9a12) == 399);
+    for (int pass = 0; pass < 2; ++pass) {
+        memset(prg_a4_area, 0xa5, sizeof prg_a4_area);
+        A4_WORD(0x99fc) = 0x1111; A4_LONG(0x99fe) = 0x00012345;
+        A4_WORD(0x9a0c) = 0x2222; A4_LONG(0x9a0e) = 0xfffffff6;
+        A4_WORD(0x82ca) = 0x0303; A4_WORD(0x82cc) = 0x0404;
+        A4_WORD(0x82ca+46) = 0x0505; A4_WORD(0x82cc+46) = 0x0606;
+        A4_LONG(0x82d8) = 0x00000007; A4_LONG(0x82dc) = 0x00000008; A4_LONG(0x82e0) = 0x00000009;
+        A4_LONG(0x82d8+46) = 0x0000000a; A4_LONG(0x82dc+46) = 0x0000000b; A4_LONG(0x82e0+46) = 0x0000000c;
+        memcpy(expected, clean, sizeof expected);
+        uint8_t *live = prg_a4; prg_a4 = expected + 32768;
+        A4_WORD(0x99fc) = 0x1111; A4_LONG(0x99fe) = 0x00012345;
+        A4_WORD(0x9a0c) = 0x2222; A4_LONG(0x9a0e) = 0xfffffff6;
+        A4_WORD(0x82ca) = 0x0303; A4_WORD(0x82cc) = 0x0404;
+        A4_WORD(0x82ca+46) = 0x0505; A4_WORD(0x82cc+46) = 0x0606;
+        A4_LONG(0x82d8) = 0x00000007; A4_LONG(0x82dc) = 0x00000008; A4_LONG(0x82e0) = 0x00000009;
+        A4_LONG(0x82d8+46) = 0x0000000a; A4_LONG(0x82dc+46) = 0x0000000b; A4_LONG(0x82e0+46) = 0x0000000c;
+        prg_a4 = live;
+        if (!pass) assert(game_reset(0));
+        else { SDL_Event reset = {.type = SDL_KEYDOWN}; reset.key.keysym.sym = SDLK_r; game_handle_event(&reset); }
+        for (size_t index = 0; index < sizeof expected; ++index)
+            if (prg_a4_area[index] != expected[index]) {
+                fprintf(stderr, "start reset: A4%+d = %02x, expected %02x\n",
+                        (int)index - 32768, prg_a4_area[index], expected[index]);
+                assert(0);
+            }
+    }
+    puts("start reset: PASS");
+}
+
 int main(int argc, char **argv)
 {
     if (argc==2 && !strcmp(argv[1],"--set-devil-magnet")) { test_set_devil_magnet(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--devil-effect")) { test_devil_effect(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--good-pop")) { test_good_pop(); return 0; }
+    if (argc==2 && !strcmp(argv[1],"--start-reset")) {
+        prepare_rule_data(); test_start_reset(); cleanup_rule_data(); return 0;
+    }
     if (argc==2 && !strcmp(argv[1],"--computer-effect")) { test_computer_effect(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--devil-magnet")) { test_set_devil_magnet(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--make-level")) { test_make_level(); return 0; }
@@ -11410,6 +11467,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_swamp_input();
     test_swamp_render();
     test_original_reset();
+    test_start_reset();
     test_original_graphics_output();
     test_special_sprites(); test_battle_frame_render_and_entry();
     test_isometric_match();
