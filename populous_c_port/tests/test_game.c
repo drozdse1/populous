@@ -396,8 +396,11 @@ static void test_no_hidden_town(void)
         core_move(0);
         assert(!(peeps[0]&1) && !core_settlements && !map_bk2[50*64+50]);
         assert(map_who[50*64+50]==2 && peep_word(1,4)>0);
-        /* Even an empty/self representative cannot conceal an existing town.
-         * A one-tile town keeps core_check_life positive at its own center. */
+        /* _where_do_i_go needs map_blk 15 for a zero heading (asm:4679-4692),
+         * so this town state is forced. _move_explorer itself has no hidden-
+         * town guard: the represented town absorbs the walker (_join_forces,
+         * asm:4537-4547); otherwise it settles (asm:4564-4589), after
+         * releasing its own claim (asm:4438-4449). */
         for (int representative=0; representative<=2; ++representative) {
             setup_colocated_walkers(owner);
             int position=50*64+50;
@@ -410,8 +413,14 @@ static void test_no_hidden_town(void)
             assert(core_check_life(owner,position)>0);
             assert(core_explore(0)==0);
             core_move(0);
-            assert(!(peeps[0]&1) && peeps[22]==1 && !core_settlements);
-            assert(map_bk2[position]==35 && map_who[position]==representative);
+            assert(peeps[22]==1 && map_who[position]==(representative==2 ? 2 : 1));
+            if (representative==2) {
+                assert(!peeps[0] && !peep_word(0,4) && peep_word(1,4)==200);
+                assert(!core_settlements && map_bk2[position]==35);
+            } else {
+                assert(peeps[0]==1 && core_settlements==1 && peep_word(1,4)==100);
+                assert(peep_word(0,6)==game_turn && map_bk2[position]==peep_word(0,12));
+            }
         }
         /* A genuinely empty cell must publish the newly created town. */
         setup_colocated_walkers(owner);
@@ -481,7 +490,10 @@ static void setup_reinforcement(int newcomer, int owner, int colocated, int repr
     }
     peeps[newcomer*22]=2; peeps[newcomer*22+1]=owner;
     peeps[newcomer*22+2]=1; peeps[newcomer*22+3]=1;
-    set_peep_word(newcomer,4,45); set_peep_word(newcomer,8,colocated ? 650 : 649);
+    /* Not colocated: arrived at 650 from 649, whose claim it still holds
+     * (_move_explorer asm:4590-4617); the join is its next departure. */
+    set_peep_word(newcomer,4,45); set_peep_word(newcomer,8,650);
+    if (!colocated) set_peep_word(newcomer,10,1);
     set_peep_word(newcomer,6,23); set_peep_word(newcomer,12,7);
     map_who[650]=first+representative+1;
     if (!colocated) map_who[649]=newcomer+1;
@@ -531,7 +543,7 @@ static void test_battle_reinforcement(void)
         assert(!memcmp(third,peeps+66,sizeof third));
         assert(!memcmp(occupancy,map_who,sizeof occupancy));
         assert(!peeps[newcomer*22] && !peep_word(newcomer,4));
-        assert(peep_word(newcomer,8)==(colocated ? 650 : 649));
+        assert(peep_word(newcomer,8)==650);
         assert(core_leader(owner)==(variant==2 ? 0 : recipient+1));
         assert(core_leader(1-owner)==opponent+1);
         assert(view_who==(variant==2 ? opponent+1 : recipient+1));
@@ -556,7 +568,13 @@ static void test_invalid_battle_blocks_reinforcement(void)
         case 6: peeps[23]=0; break;
         }
         peeps[2*22+21]=1; /* Navigation writes the already selected direction. */
-        uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
+        uint8_t before[sizeof prg_a4_area], saved[sizeof prg_a4_area];
+        memcpy(before,prg_a4_area,sizeof before);
+        /* A rejected _join_battle falls through to the departure (asm:4536,
+         * 4560-4617): release 649, count 650 (represented by the battle), step. */
+        if (!colocated) map_who[649]=0;
+        A4_WORD(0xff88+650*2)=1; set_peep_word(2,8,651); set_peep_word(2,10,1);
+        memcpy(saved,prg_a4_area,sizeof saved); memcpy(prg_a4_area,before,sizeof before);
         core_move(2);
         assert(!memcmp(saved,prg_a4_area,sizeof saved));
         assert(core_battles==17 && !core_settlements);
@@ -697,6 +715,9 @@ static void test_friendly_merge_state(void)
     for (int variant=0; variant<3; ++variant) {
         setup_friendly_merge(source,owner);
         int target=1-source;
+        /* Phased movement: the source arrived at 650 from 649 (claim kept
+         * there); its next departure meets the target at its own cell. */
+        set_peep_word(source,8,650); set_peep_word(source,10,1); core_target(owner)=651;
         peeps[target*22]=flags[state];
         set_peep_word(source,4,populations[variant][0]);
         set_peep_word(target,4,populations[variant][1]);
@@ -718,6 +739,8 @@ static void test_friendly_merge_state(void)
         core_leader(owner)=target+1; if (variant!=2) view_who=target+1;
         set_peep_word(source,4,0); peeps[source*22]=0;
         if (variant!=2) map_who[649]=0;
+        /* Variant 2 follows its co-located leader: magnet history north. */
+        if (variant==2) peeps[source*22+21]=(uint8_t)-64;
         uint8_t wanted[sizeof prg_a4_area]; memcpy(wanted,prg_a4_area,sizeof wanted);
         memcpy(prg_a4_area,expected,sizeof expected);
         core_move(source);
@@ -726,14 +749,30 @@ static void test_friendly_merge_state(void)
     }
 }
 
+/* The source arrived at 650 from 649. A rejected _join_forces falls through
+ * to the ordinary departure (asm:4547,4560-4617): release 649, count 650
+ * (target keeps it) and step east. */
+static void friendly_merge_arrived(int source, int owner)
+{
+    set_peep_word(source,8,650); set_peep_word(source,10,1); core_target(owner)=651;
+}
+static void friendly_merge_rejected(uint8_t *saved, int source)
+{
+    memcpy(saved,prg_a4_area,sizeof prg_a4_area);
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    set_peep_word(source,8,651); map_who[649]=0;
+    A4_WORD(0xff88+650*2)=1;
+    memcpy(saved,prg_a4_area,sizeof prg_a4_area);
+    memcpy(prg_a4_area,before,sizeof before);
+}
 static void test_friendly_merge_metadata_rejection(void)
 {
     for (int source=0; source<2; ++source) for (int owner=0; owner<2; ++owner)
     for (int byte=14; byte<18; ++byte) {
-        setup_friendly_merge(source,owner);
+        setup_friendly_merge(source,owner); friendly_merge_arrived(source,owner);
         peeps[(1-source)*22]=1;
         peeps[source*22+byte]=0x80; peeps[source*22+3]=200;
-        uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
+        uint8_t saved[sizeof prg_a4_area]; friendly_merge_rejected(saved,source);
         core_move(source);
         assert(!memcmp(saved,prg_a4_area,sizeof saved));
         assert(!core_battles && !core_settlements);
@@ -745,9 +784,9 @@ static void test_friendly_merge_dead_target(void)
     const int populations[]={0,-1};
     for (int source=0; source<2; ++source) for (int owner=0; owner<2; ++owner)
     for (unsigned index=0; index<sizeof populations/sizeof populations[0]; ++index) {
-        setup_friendly_merge(source,owner);
+        setup_friendly_merge(source,owner); friendly_merge_arrived(source,owner);
         set_peep_word(1-source,4,populations[index]);
-        uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
+        uint8_t saved[sizeof prg_a4_area]; friendly_merge_rejected(saved,source);
         core_move(source);
         assert(!memcmp(saved,prg_a4_area,sizeof saved));
     }
@@ -793,7 +832,7 @@ static void test_friendly_merge_helper_guards(void)
 static void test_friendly_merge_tick_totals(void)
 {
     for (int source=0; source<2; ++source) for (int owner=0; owner<2; ++owner) {
-        setup_friendly_merge(source,owner);
+        setup_friendly_merge(source,owner); friendly_merge_arrived(source,owner);
         set_peep_word(source,12,7); set_peep_word(1-source,12,0);
         set_peep_word(2,12,0);
         game_tick();
@@ -816,17 +855,22 @@ static void test_friendly_merge_town_and_split(void)
             set_peep_word(person,4,100); set_peep_word(person,8,position);
         }
         peeps[22]=1; set_peep_word(1,12,42); core_set_town(1,0);
-        map_who[position]=2; core_tendency(owner)=0; core_leader(owner)=1; core_target(owner)=position+1;
-        /* A split child sharing its town's cell must depart, not merge back. */
+        /* The split hands the town's cell to the child (asm:3961-3983), so
+         * it departs instead of meeting (and merging back into) its town. */
+        map_who[position]=1; core_tendency(owner)=0; core_leader(owner)=1; core_target(owner)=position+1;
         core_move(0);
         assert(peep_word(0,4)==100 && peep_word(1,4)==100 && peeps[22]==1);
-        assert(peep_word(0,8)==position+1 && map_bk2[position]==42);
+        assert(peep_word(0,8)==position+1 && map_bk2[position]==42 && map_who[position]==1);
         map_who[position]=2;
-        /* A nearby return uses the existing destination encounter. */
+        /* A nearby return: re-entering the town cell is not an encounter;
+         * the next departure meets the town at its own cell (asm:4510-4547). */
         core_target(owner)=position; peeps[22]=0x61; set_peep_word(1,12,101);
         uint8_t terrain[4096], buildings[4096], split[22];
         memcpy(terrain,map_blk,sizeof terrain); memcpy(buildings,map_bk2,sizeof buildings);
         memcpy(split,peeps+44,sizeof split);
+        core_move(0);
+        assert(peep_word(0,8)==position && peep_word(0,4)==100 && peeps[22]==0x61);
+        assert(map_who[position]==2 && map_who[position+1]==1);
         core_move(0);
         assert(!peep_word(0,4) && peep_word(1,4)==200 && peeps[22]==1);
         assert(peep_word(1,12)==0 && map_who[position]==2 && !map_who[position+1]);
@@ -879,7 +923,8 @@ static void test_magnet_signs_and_center(void)
     setup_magnet_walker(0); core_target(0)=650;
     core_move(0);
     assert(peep_word(0,8)==586 && peep_word(0,10)==-64 && peeps[0]==2);
-    assert(!map_who[650] && map_who[586]==1 && !core_settlements && seed==123);
+    /* _move_explorer asm:4590-4617: the departure cell keeps the claim. */
+    assert(map_who[650]==1 && !map_who[586] && !core_settlements && seed==123);
     assert(core_leader(0)==1 && view_who==1);
 }
 
@@ -970,7 +1015,8 @@ static void test_magnet_war_water_and_bounds(void)
         assert((int8_t)peeps[21]==(wars[sample] ? 1 : 63));
         core_move(0);
         assert(peep_word(0,8)==(wars[sample] ? 651 : 587));
-        assert(map_who[peep_word(0,8)]==1 && !map_who[650]);
+        /* _move_explorer asm:4590-4617: the departure cell keeps the claim. */
+        assert(!map_who[peep_word(0,8)] && map_who[650]==1);
         assert(core_valid_move(650,1)==2); /* Never weaken generic validity. */
     }
     for (int active=0; active<2; ++active) {
@@ -1001,7 +1047,8 @@ static void test_magnet_war_water_and_bounds(void)
         if (corner==1) map_blk[positions[corner]-65+64]=47; /* Block west at top right. */
         core_move(0);
         assert(peep_word(0,8)==positions[corner]+expected[corner]);
-        assert(map_who[positions[corner]+expected[corner]]==1);
+        /* _move_explorer asm:4590-4617: the departure cell keeps the claim. */
+        assert(map_who[positions[corner]]==1 && !map_who[positions[corner]+expected[corner]]);
     }
     /* Opaque metadata cannot be a host pointer: bounded magnet fallback only. */
     for (int byte=14; byte<18; ++byte) {
@@ -1019,8 +1066,9 @@ static void test_magnet_dispatch_and_wait(void)
         core_target(owner)=586;
         core_move(0);
         assert(peep_word(0,8)==586 && peep_word(0,10)==-64 && (int8_t)peeps[21]==-64);
-        assert(!map_who[650] && map_who[586]==1 && peeps[0]==2 && seed==123);
-        assert(!core_settlements && A4_WORD(0xff88+586*2)==1);
+        /* _move_explorer asm:4590-4617: count/claim the departure cell. */
+        assert(map_who[650]==1 && !map_who[586] && peeps[0]==2 && seed==123);
+        assert(!core_settlements && A4_WORD(0xff88+650*2)==1 && !A4_WORD(0xff88+586*2));
     }
     setup_magnet_walker(0); memset(map_blk,47,4096); map_blk[650]=15;
     set_peep_word(0,12,7);
@@ -1036,7 +1084,8 @@ static void test_magnet_dispatch_and_wait(void)
     _move_peeps();
     assert(peeps[0]==2 && peep_word(0,6)==16 && peep_word(0,8)==651);
     assert(peep_word(0,10)==1 && peep_word(0,12)==0 && peep_word(0,4)==90);
-    assert(!map_who[650] && map_who[651]==1 && (int8_t)peeps[21]==1);
+    /* _move_explorer asm:4590-4617: the departure cell keeps the claim. */
+    assert(map_who[650]==1 && !map_who[651] && (int8_t)peeps[21]==1);
     assert(!core_battles && !core_settlements);
 }
 
@@ -1061,7 +1110,8 @@ static void test_blocked_entry(void)
     map_blk[651]=1; core_tendency(0)=0; core_leader(0)=1; core_target(0)=651;
     core_move(0);
     assert(peeps[0]==2 && peep_word(0,8)==651 && peep_word(0,10)==1);
-    assert(!map_who[650] && map_who[651]==1 && peep_word(0,12)==6);
+    /* _move_explorer asm:4590-4617: the departure cell keeps the claim. */
+    assert(map_who[650]==1 && !map_who[651] && peep_word(0,12)==6);
 }
 
 static void test_blocked_retry(void)
@@ -1104,7 +1154,8 @@ static void test_wait_boundaries(void)
             _move_peeps();
             assert(peeps[0]==2 && peep_word(0,6)==(counters[count]==0xffff ? 0 : 16));
             assert(peep_word(0,8)==651 && peep_word(0,10)==1 && peep_word(0,12)==0);
-            assert(peep_word(0,4)==100-ticks && !map_who[650] && map_who[651]==1);
+            /* _move_explorer asm:4590-4617: the departure cell keeps the claim. */
+            assert(peep_word(0,4)==100-ticks && map_who[650]==1 && !map_who[651]);
         }
     setup_blocked_walker(); peeps[0]=0x60;
     set_peep_word(0,6,15); set_peep_word(0,12,101);
@@ -1205,6 +1256,29 @@ static void celebration_expected_word(uint8_t *expected, int displacement, int16
     memcpy(expected+(A4_DISP(displacement)-prg_a4_area),&value,sizeof value);
 }
 
+/* _stats+0x26 (0x82dc, enemy-indexed, host slot+1): a completed exact-2
+ * walker stores itself if empty (asm:4092-4106); a peaceful town stores
+ * itself when its age is the oldest so far (asm:3706-3737). */
+static void expect_stats_pointer(uint8_t *expected, int person)
+{
+    uint32_t first=(uint32_t)(person+1);
+    memcpy(expected+(A4_DISP(0x82dc+(peeps[person*22+1] ? 0 : 1)*46)-prg_a4_area),&first,4);
+}
+/* Peaceful town consumer bookkeeping: LAB_52DEA counts non-city frames
+ * (asm:3658-3661), then the oldest-town pointer (asm:3706-3737). */
+static void expect_town_bookkeeping(uint8_t *expected, int person, int frame)
+{
+    int owner=peeps[person*22+1];
+    if (frame!=42) {
+        uint8_t *count=expected+(A4_DISP(0x99fc+owner*16)-prg_a4_area);
+        uint16_t value; memcpy(&value,count,2); ++value; memcpy(count,&value,2);
+    }
+    expect_stats_pointer(expected,person);
+    /* asm:3684-3705: first town of the pass beats the zero maximum. */
+    uint32_t best=(uint32_t)(person+1);
+    memcpy(expected+(A4_DISP(0x82d8+(owner ? 0 : 1)*46)-prg_a4_area),&best,4);
+}
+
 /* Collision-wait producer, _move_peeps asm:4058-4067,4145-4184: an exact-2
  * walker alive after framing (and any move) marks map_who[own cell]'s peep. */
 static void setup_collision(int a, int owner_a, int b, int owner_b, int b_flags,
@@ -1241,6 +1315,310 @@ static void collision_check(const uint8_t *expected, const char *label, int inde
                 fprintf(stderr,"A4 %04zx expected=%02x actual=%02x\n",(byte-32768)&0xffff,expected[byte],prg_a4_area[byte]);
     }
     assert(!memcmp(expected,prg_a4_area,65536));
+}
+
+/* Phased movement, _move_explorer asm:4438-4449,4510-4617, caller
+ * asm:4100-4125 and _zero_population asm:5671-5680. A magnet walker (tendency
+ * 0, target 654) at 650 completes its frame and steps east (+1). */
+static void setup_phased(int pop, int word18)
+{
+    memset(prg_a4_area,0,sizeof prg_a4_area);
+    memset(map_blk,1,4096);
+    no_peeps=2; core_battles=core_settlements=0; core_result=0; prg_quit=0;
+    A4_WORD(0x2fb0)=1; seed=123;
+    core_tendency(0)=core_tendency(1)=0; core_target(0)=core_target(1)=654;
+    peeps[0]=2; peeps[1]=0; peeps[2]=peeps[3]=1; peeps[21]=0x77;
+    set_peep_word(0,4,pop); set_peep_word(0,8,650); set_peep_word(0,10,1);
+    set_peep_word(0,12,7); set_peep_word(0,18,word18);
+    map_who[649]=1; /* claim left by the previous departure */
+}
+
+static void phased_byte(uint8_t *expected, uint8_t *address, uint8_t value)
+{
+    expected[address-prg_a4_area]=value;
+}
+
+static void test_phased_move(void)
+{
+    static uint8_t expected[65536]; int checked=0;
+    /* Departure: clear 649, count and claim 650, advance; no destination
+     * write. +0x12 clears unless it equals pos-(+10) (asm:4100-4115). */
+    const int words18[]={0,5,650};
+    for (unsigned w=0; w<3; ++w) {
+        setup_phased(100,words18[w]);
+        memcpy(expected,prg_a4_area,sizeof expected);
+        celebration_expected_word(expected,0x9c26+12,0);
+        celebration_expected_word(expected,0x9c26+8,651);
+        celebration_expected_word(expected,0x9c26+4,99);
+        celebration_expected_word(expected,0x9c26+18,words18[w]==650 ? 650 : 0);
+        phased_byte(expected,peeps+21,1);
+        phased_byte(expected,map_who+649,0);
+        phased_byte(expected,map_who+650,1);
+        celebration_expected_word(expected,0xff88+650*2,1);
+        expect_stats_pointer(expected,0); /* asm:4092-4106 */
+        _move_peeps();
+        collision_check(expected,"phased-depart",checked++);
+    }
+    /* Arrival on a cell another peep names: no encounter yet; the caller's
+     * collision wait marks that peep (asm:4145-4184). B is dead, so skipped. */
+    setup_phased(100,0);
+    peeps[22]=2; peeps[23]=1; set_peep_word(1,8,651); map_who[651]=2;
+    memcpy(expected,prg_a4_area,sizeof expected);
+    celebration_expected_word(expected,0x9c26+12,0);
+    celebration_expected_word(expected,0x9c26+8,651);
+    celebration_expected_word(expected,0x9c26+4,99);
+    phased_byte(expected,peeps+21,1);
+    phased_byte(expected,map_who+649,0);
+    phased_byte(expected,map_who+650,1);
+    celebration_expected_word(expected,0xff88+650*2,1);
+    phased_byte(expected,peeps+22,0x22);
+    celebration_expected_word(expected,0x9c26+22+12,101);
+    expect_stats_pointer(expected,0); /* asm:4092-4106 */
+    _move_peeps();
+    collision_check(expected,"phased-arrive",checked++);
+    assert(!core_battles);
+    /* Next departure meets the friendly occupant of its own cell:
+     * _join_forces (asm:4537-4547) merges A into B; A is zeroed twice. */
+    setup_phased(50,0);
+    set_peep_word(0,8,651); map_who[649]=0; map_who[650]=1;
+    peeps[22]=2; peeps[23]=0; peeps[24]=peeps[25]=1;
+    set_peep_word(1,4,100); set_peep_word(1,8,651); set_peep_word(1,12,3); map_who[651]=2;
+    memcpy(expected,prg_a4_area,sizeof expected);
+    phased_byte(expected,peeps,0);
+    celebration_expected_word(expected,0x9c26+4,0);
+    celebration_expected_word(expected,0x9c26+12,0);
+    phased_byte(expected,peeps+21,1);
+    phased_byte(expected,map_who+650,0);
+    celebration_expected_word(expected,0x9c26+22+4,150);
+    celebration_expected_word(expected,0x9c26+22+12,1);
+    expect_stats_pointer(expected,0); /* asm:4092-4106 */
+    _move_peeps();
+    collision_check(expected,"phased-join",checked++);
+    /* Walk death after departure: _zero_population clears pos-(+10). */
+    setup_phased(1,0);
+    memcpy(expected,prg_a4_area,sizeof expected);
+    phased_byte(expected,peeps,0);
+    celebration_expected_word(expected,0x9c26+4,0);
+    celebration_expected_word(expected,0x9c26+12,0);
+    celebration_expected_word(expected,0x9c26+8,651);
+    phased_byte(expected,peeps+21,1);
+    phased_byte(expected,map_who+649,0);
+    celebration_expected_word(expected,0xff88+650*2,1);
+    expect_stats_pointer(expected,0); /* asm:4092-4106 */
+    _move_peeps();
+    collision_check(expected,"phased-death",checked++);
+    /* Hostile B is one step ahead (arrived 651->652, claim at 651). A's
+     * departure meets it at A's own cell: _set_battle (asm:6568-6656)
+     * releases B's claims and pulls walker B back onto 651, which A now
+     * represents; the caller still applies walk death (asm:4116-4117). */
+    setup_phased(100,0);
+    set_peep_word(0,8,651); map_who[649]=0; map_who[650]=1;
+    peeps[22]=2; peeps[23]=1; peeps[24]=peeps[25]=1;
+    set_peep_word(1,4,100); set_peep_word(1,8,652); set_peep_word(1,10,1);
+    set_peep_word(1,12,3); map_who[651]=2;
+    memcpy(expected,prg_a4_area,sizeof expected);
+    phased_byte(expected,peeps,8); phased_byte(expected,peeps+21,1);
+    celebration_expected_word(expected,0x9c26+4,99);
+    celebration_expected_word(expected,0x9c26+6,1);
+    celebration_expected_word(expected,0x9c26+12,70);
+    phased_byte(expected,peeps+22,0x0a);
+    celebration_expected_word(expected,0x9c26+22+8,651);
+    celebration_expected_word(expected,0x9c26+22+12,70);
+    phased_byte(expected,map_who+650,0);
+    phased_byte(expected,map_who+651,1);
+    expect_stats_pointer(expected,0); /* asm:4092-4106 */
+    _move_peeps();
+    collision_check(expected,"phased-battle",checked++);
+    assert(core_battles==1 && seed==123);
+    printf("phased-move A4 cases: %d\n",checked);
+}
+
+/* Walker-path AI extras. _move_peeps asm:3290-3321 clears per owner the
+ * LAB_52DEA town count (0x99fc) and _stats+0x22/0x26/0x2a (0x82d8/dc/e0);
+ * a completed exact-2 walker stores itself as the enemy-indexed first walker
+ * (asm:4092-4106, host slot+1 encoding) and, with a clear latch, calls
+ * _one_block_flat (asm:4108-4122 -> 9148-9310). */
+static void walker_extras_expected_depart(uint8_t *expected, int owner)
+{
+    celebration_expected_word(expected,0x9c26+12,0);
+    celebration_expected_word(expected,0x9c26+8,651);
+    celebration_expected_word(expected,0x9c26+4,99);
+    phased_byte(expected,peeps+21,1);
+    phased_byte(expected,map_who+649,0);
+    phased_byte(expected,map_who+650,1);
+    celebration_expected_word(expected,0xff88+650*2,1);
+    uint32_t first=1;
+    memcpy(expected+(A4_DISP(0x82dc+(1-owner)*46)-prg_a4_area),&first,4);
+}
+static void setup_war_town(int owner, int position, int city);
+static void terrain_mailbox_write(int owner, int opcode, int column, int row);
+static void walker_extras_vertices(int base)
+{
+    for (int vertex=0; vertex<65*65; ++vertex) A4_WORD(0xae86+vertex*2)=base;
+}
+static void test_walker_extras(void)
+{
+    static uint8_t expected[65536]; int checked=0;
+    /* Prepass clears and the first-walker store, both owners. */
+    for (int owner=0; owner<2; ++owner) {
+        setup_phased(100,0); peeps[1]=owner;
+        for (int side=0; side<2; ++side) {
+            A4_WORD(0x99fc+side*16)=7+side;
+            A4_LONG(0x82d8+side*46)=0x11111111u; A4_LONG(0x82dc+side*46)=0x22222222u;
+            A4_LONG(0x82e0+side*46)=0x33333333u;
+        }
+        memcpy(expected,prg_a4_area,sizeof expected);
+        for (int side=0; side<2; ++side) {
+            celebration_expected_word(expected,0x99fc+side*16,0);
+            memset(expected+(A4_DISP(0x82d8+side*46)-prg_a4_area),0,12);
+        }
+        walker_extras_expected_depart(expected,owner);
+        _move_peeps();
+        collision_check(expected,"extras-first",checked++);
+    }
+    /* Only the first completed walker of the pass is stored. */
+    setup_phased(100,0); no_peeps=3;
+    memcpy(peeps+44,peeps,22); set_peep_word(2,8,900); map_who[900]=3;
+    _move_peeps();
+    assert(A4_LONG(0x82dc+46)==1 && !A4_LONG(0x82dc)); ++checked;
+    /* Raise: corners 1,1,1,0 (sum 3, q 0, rem 3): x-major scan finds (11,11). */
+    for (int owner=0; owner<2; ++owner) {
+        setup_phased(100,0); peeps[1]=owner; walker_extras_vertices(1);
+        core_set_vertex(11,11,0);
+        A4_LONG(0x9a02+owner*16)=20; A4_WORD(0x82c4+owner*46)=1;
+        memcpy(expected,prg_a4_area,sizeof expected);
+        walker_extras_expected_depart(expected,owner);
+        phased_byte(expected,A4_DISP(0x82b6+owner*46),1);
+        phased_byte(expected,A4_DISP(0x82b7+owner*46),11);
+        phased_byte(expected,A4_DISP(0x82b8+owner*46),11);
+        celebration_expected_word(expected,0x82be + owner*46,1);
+        _move_peeps();
+        collision_check(expected,"extras-raise",checked++);
+    }
+    /* Lower: corners 2,1,1,1 (sum 5, q 1, rem 1): (10,10) is above 1. */
+    setup_phased(100,0); walker_extras_vertices(1); core_set_vertex(10,10,2);
+    A4_LONG(0x9a02)=1000; A4_WORD(0x82c4)=1;
+    memcpy(expected,prg_a4_area,sizeof expected);
+    walker_extras_expected_depart(expected,0);
+    phased_byte(expected,A4_DISP(0x82b6),2);
+    phased_byte(expected,A4_DISP(0x82b7),10);
+    phased_byte(expected,A4_DISP(0x82b8),10);
+    celebration_expected_word(expected,0x82be,1);
+    _move_peeps();
+    collision_check(expected,"extras-lower",checked++);
+    /* Every gate leaves the mailbox untouched; the walker still departs. */
+    for (int gate=0; gate<9; ++gate) {
+        setup_phased(100,0); walker_extras_vertices(1); core_set_vertex(11,11,0);
+        A4_LONG(0x9a02)=20; A4_WORD(0x82c4)=1;
+        switch (gate) {
+        case 0: A4_WORD(0x82be)=1; break;          /* caller latch */
+        case 1: A4_LONG(0x9a02)=19; break;         /* mana < 20 */
+        case 2: A4_WORD(0x82c4)=0xfffe; break;     /* no bit 0 */
+        case 3: game_mode=4; break;
+        case 4: core_set_vertex(11,11,1); break;   /* rem 0 */
+        case 5: core_set_vertex(11,11,3); break;   /* rem 2 (sum 6) */
+        case 6: walker_extras_vertices(0); core_set_vertex(10,10,1); break; /* sum 1 */
+        case 7: core_set_vertex(11,11,1); core_set_vertex(10,10,2); game_mode=8; break;
+        case 8: A4_LONG(0x9a02)=0xffffffffu; break; /* signed -1 */
+        }
+        memcpy(expected,prg_a4_area,sizeof expected);
+        walker_extras_expected_depart(expected,0);
+        _move_peeps();
+        collision_check(expected,"extras-gate",checked++);
+        game_mode=0;
+    }
+    /* The LAB_52DEA gate is the in-pass count: 50 passes, 51 does not. */
+    for (int count=50; count<=51; ++count) {
+        setup_phased(100,0); walker_extras_vertices(1); core_set_vertex(11,11,0);
+        A4_LONG(0x9a02)=20; A4_WORD(0x82c4)=1; A4_WORD(0x99fc)=count;
+        core_one_block_flat(650,0);
+        assert(A4_DISP(0x82b6)[0]==(count==50) && A4_WORD(0x82be)==(count==50));
+        ++checked;
+    }
+    /* Consumer opcode 2 is _do_lower_point (asm:7091-7180): bounds first, then
+     * the mana gate, lower, charge build_count+10 and rebuild (x-1..x,y-1..y). */
+    for (int poor=0; poor<2; ++poor) {
+        setup_phased(100,0); walker_extras_vertices(1); core_set_vertex(10,10,2);
+        A4_LONG(0x848a)=5; A4_LONG(0x9a02)=poor ? 4 : 1000;
+        terrain_mailbox_write(0,2,10,10);
+        for (int row=9; row<=10; ++row) for (int column=9; column<=10; ++column) {
+            map_blk[row*64+column]=3; map_alt[row*64+column]=5;
+            A4_WORD(0xff88+(row*64+column)*2)=77;
+        }
+        memcpy(expected,prg_a4_area,sizeof expected);
+        memset(expected+(A4_DISP(0x82b6)-prg_a4_area),0,3);
+        for (int word=0; word<4; ++word) celebration_expected_word(expected,0x2f8a+word*2,10);
+        if (!poor) {
+            celebration_expected_word(expected,0xae86+(10*65+10)*2,1);
+            celebration_expected_word(expected,0x2f88,1);
+            /* asm:7121-7126: ASL.W #2, ADD.W #10, EXT.L, SUB.L: 1*4+10. */
+            uint32_t mana=1000-14; memcpy(expected+(A4_DISP(0x9a02)-prg_a4_area),&mana,4);
+            for (int row=9; row<=10; ++row) for (int column=9; column<=10; ++column) {
+                phased_byte(expected,map_blk+row*64+column,15);
+                phased_byte(expected,map_alt+row*64+column,0);
+                celebration_expected_word(expected,0xff88+(row*64+column)*2,0);
+            }
+        }
+        core_consume_terrain_mailboxes();
+        collision_check(expected,"extras-consume-lower",checked++);
+    }
+    /* Peaceful towns: non-city frames count into 0x99fc (asm:3658-3661); the
+     * oldest-so-far town (unsigned age >= max) stores itself as the enemy's
+     * pointer (asm:3706-3737), overwriting a walker's store. */
+    const struct { int first, second, result; } ages[]={{10,40,2},{40,10,1},{20,20,2}};
+    for (unsigned sample=0; sample<3; ++sample) for (int city=0; city<2; ++city) {
+        setup_war_town(0,650,0); no_peeps=2;
+        memcpy(peeps+22,peeps,22); set_peep_word(1,8,1300); map_who[1300]=2;
+        if (!city) { memset(map_blk,1,4096); map_blk[650]=map_blk[1300]=15; map_blk[651]=map_blk[1301]=15; }
+        game_turn=100;
+        set_peep_word(0,6,100-ages[sample].first); set_peep_word(1,6,100-ages[sample].second);
+        _move_peeps();
+        int frame0=peep_word(0,12), frame1=peep_word(1,12);
+        assert(peeps[0]==1 && peeps[22]==1);
+        assert(city ? frame0==42 && frame1==42 : frame0>=32 && frame0<42 && frame1>=32 && frame1<42);
+        assert(A4_WORD(0x99fc)==(city ? 0 : 2) && !A4_WORD(0x99fc+16));
+        assert(A4_LONG(0x82dc+46)==(uint32_t)ages[sample].result && !A4_LONG(0x82dc));
+        ++checked;
+    }
+    /* _move_explorer asm:4450-4509: after the claim release a computer
+     * walker (0x82bc==1) on block 0x42 with a clear latch and game_mode&0xc
+     * clear writes command 2 at its own cell; it does not set the latch. */
+    for (int owner=0; owner<2; ++owner) for (int gate=0; gate<6; ++gate) {
+        setup_phased(100,0); peeps[1]=owner;
+        A4_WORD(0x82bc+owner*46)=gate==1 ? 2 : 1; map_blk[650]=gate==2 ? 0x41 : 0x42;
+        if (gate==3) A4_WORD(0x82be + owner*46)=1;
+        if (gate==4) game_mode=4;
+        if (gate==5) game_mode=8;
+        memcpy(expected,prg_a4_area,sizeof expected);
+        walker_extras_expected_depart(expected,owner);
+        if (!gate) {
+            phased_byte(expected,A4_DISP(0x82b6+owner*46),2);
+            phased_byte(expected,A4_DISP(0x82b7+owner*46),10);
+            phased_byte(expected,A4_DISP(0x82b8+owner*46),10);
+        }
+        _move_peeps();
+        collision_check(expected,"extras-walker-lower",checked++);
+        game_mode=0;
+    }
+    /* asm:3684-3705: the first town whose capacity strictly exceeds the
+     * pass maximum (signed, starts 0) becomes the enemy's _stats+0x22. */
+    for (int layout=0; layout<3; ++layout) {
+        setup_war_town(0,650,0); no_peeps=2;
+        memcpy(peeps+22,peeps,22); set_peep_word(1,8,1300); map_who[1300]=2;
+        game_turn=100;
+        memset(map_blk,1,4096);
+        for (int dy=-2; dy<=2; ++dy) for (int dx=-2; dx<=2; ++dx) {
+            if (layout!=2) map_blk[650+dy*64+dx]=15;   /* rich 650 */
+            if (layout!=1) map_blk[1300+dy*64+dx]=15;  /* rich 1300 */
+        }
+        map_blk[650]=map_blk[651]=map_blk[1300]=map_blk[1301]=15;
+        _move_peeps();
+        assert(peeps[0]==1 && peeps[22]==1);
+        /* layout 0: equal (first wins); 1: 650 richer; 2: 1300 richer. */
+        assert(A4_LONG(0x82d8+46)==(uint32_t)(layout==2 ? 2 : 1) && !A4_LONG(0x82d8));
+        ++checked;
+    }
+    printf("walker-extras A4 cases: %d\n",checked);
 }
 
 static void test_collision_wait_mark(void)
@@ -1284,6 +1662,7 @@ static void test_collision_wait_mark(void)
         collision_expect_flags(expected,1,0x20);
         celebration_expected_word(expected,0x9c26+22+12,101);
         celebration_expected_word(expected,0x9c26+22+6,0);
+        expect_stats_pointer(expected,0);
         _move_peeps();
         collision_check(expected,"complete",owner);
     }
@@ -1469,7 +1848,8 @@ static void test_celebration_ticks(void)
         }
         _move_peeps();
         assert(peeps[0]==2 && peep_word(0,12)==0 && peep_word(0,8)==651);
-        assert(peep_word(0,4)==1 && peep_word(0,10)==1 && !map_who[650] && map_who[651]==1);
+        /* _move_explorer asm:4590-4617: the departure cell keeps the claim. */
+        assert(peep_word(0,4)==1 && peep_word(0,10)==1 && map_who[650]==1 && !map_who[651]);
     }
 }
 
@@ -2165,9 +2545,14 @@ static void test_water_recovery_movement(void)
             memcpy(expected+(peeps-prg_a4_area)+8,&position,2);
             memcpy(expected+(peeps-prg_a4_area)+10,&direction,2);
             expected[peeps-prg_a4_area+21]=65;
-            expected[map_who-prg_a4_area+650]=0;
-            expected[map_who-prg_a4_area+715]=low ? 0 : 1;
-            celebration_expected_word(expected,0xff88+715*2,733);
+            /* _move_explorer asm:4590-4617 counts/claims departure 650;
+             * death clears that claim via _zero_population asm:5671-5680. */
+            expected[map_who-prg_a4_area+650]=low ? 0 : 1;
+            expected[map_who-prg_a4_area+715]=0;
+            celebration_expected_word(expected,0xff88+650*2,668);
+            /* asm:4100-4115: +0x12 (0x1312) differs from 715-65, so clears. */
+            celebration_expected_word(expected,0x9c26+18,0);
+            expect_stats_pointer(expected,0);
             if (low) {
                 celebration_expected_word(expected,0x99f8+owner*16,715);
                 celebration_expected_word(expected,owner ? 0xae76 : 0xae78,715);
@@ -2473,8 +2858,10 @@ static void test_water_wait_retry(void)
                 int16_t position=651, direction=1;
                 memcpy(expected+(peeps-prg_a4_area)+8,&position,2);
                 memcpy(expected+(peeps-prg_a4_area)+10,&direction,2);
-                expected[map_who-prg_a4_area+650]=0; expected[map_who-prg_a4_area+651]=1;
-                celebration_expected_word(expected,0xff88+651*2,669);
+                /* _move_explorer asm:4590-4617: count and keep the
+                 * departure claim at 650; 651 waits for the next departure. */
+                expected[map_who-prg_a4_area+650]=1; expected[map_who-prg_a4_area+651]=0;
+                celebration_expected_word(expected,0xff88+650*2,668);
             }
         }
         /* Blocked exploration visits the random ray once: seed 123 -> 15930. */
@@ -2596,9 +2983,9 @@ static void test_water_remnant_state(void)
         set_peep_word(0,4,arithmetic[sample].population); set_peep_word(0,6,timers[timer].before);
         game_mode=fatal; A4_WORD(0xae80)=war; A4_WORD(0x2fb0)=arithmetic[sample].loss;
         if (heading) { core_leader(owner)=0; memcpy(peeps+14,"\x12\x34\x56\x78",4); }
-        /* Preserve a previous-cell occupant even on death: the host deliberately
-         * differs from original _zero_population's previous-cell clearing.
-         * Separately, host death clears flags; original retains the flag byte. */
+        /* _zero_population asm:5671-5680 clears the previous-cell claim
+         * (650-(-64)=714) on death. Host death clears flags; original
+         * retains the flag byte. */
         map_who[714]=1;
         no_peeps=2; peeps[22]=2; peeps[23]=1-owner;
         set_peep_word(1,4,100); set_peep_word(1,6,29); set_peep_word(1,8,900);
@@ -2612,6 +2999,7 @@ static void test_water_remnant_state(void)
         int16_t counter=dry && !fatal ? timers[timer].after : timers[timer].before;
         uint8_t expected[sizeof prg_a4_area];
         water_remnant_expected(expected,owner,650,remaining,counter,dry);
+        if (remaining<=0) expected[map_who-prg_a4_area+714]=0;
         int16_t later=1; memcpy(expected+(peeps-prg_a4_area)+22+12,&later,2);
         _move_peeps();
         assert(peep_word(0,6)==counter);
@@ -2833,14 +3221,19 @@ static void test_remnant_collision(void)
                     core_move(0);
                     assert(peeps[0]==2 && peep_word(0,4)==100 && peep_word(0,8)==651);
                     assert(!core_battles && !core_settlements && !memcmp(resident,peeps+22,sizeof resident));
-                    assert(map_who[650]==(destination ? 0 : 2) && map_who[651]==1);
-                    assert(A4_WORD(0xff88+651*2)==1);
-                    /* Exact consumer preserves the last writer, including at death. */
+                    /* _move_explorer asm:4438-4449,4530-4534,4590-4617: the
+                     * walker re-claims empty 650 after releasing its own
+                     * claim there, but never overwrites a bit-7 resident. */
+                    assert(map_who[650]==(destination ? 1 : 2));
+                    assert(map_who[651]==(destination ? 2 : 0));
+                    assert(A4_WORD(0xff88+650*2)==1 && !A4_WORD(0xff88+651*2));
+                    /* Remnant death clears only its own claim. */
                     if (remnant_flags[state]==0x80) {
                         _move_peeps();
-                        assert(peep_word(1,6)==39 && peep_word(1,4)==1 && map_who[651]==1);
+                        assert(peep_word(1,6)==39 && peep_word(1,4)==1);
+                        assert(map_who[651]==(destination ? 2 : 0));
                         set_peep_word(1,6,0); _move_peeps();
-                        assert(!peep_word(1,4) && !map_who[650] && map_who[651]==1);
+                        assert(!peep_word(1,4) && map_who[650]==(destination ? 1 : 0) && !map_who[651]);
                     }
                 }
     /* Reverse slot order: consume/claim the resident before the walker moves. */
@@ -2859,18 +3252,23 @@ static void test_remnant_collision(void)
                 assert(peeps[0]==(counter ? 0x80 : 0) && peep_word(0,4)==counter);
                 assert((uint16_t)peep_word(0,6)==(counter ? 0 : 0xffff));
                 assert(peeps[22]==2 && peep_word(1,4)==100 && peep_word(1,8)==651);
-                assert(peep_word(1,12)==0 && map_who[651]==2);
-                assert(map_who[650]==(!destination && counter ? 1 : 0));
+                /* _move_explorer asm:4590-4617: the walker claims 650 unless
+                 * the surviving remnant already holds it. */
+                assert(peep_word(1,12)==0 && map_who[651]==(destination && counter ? 1 : 0));
+                assert(map_who[650]==(!destination && counter ? 1 : 2));
                 assert(core_population(0)==100+(friendly ? counter : 0));
                 assert(core_population(1)==(friendly ? 0 : counter));
-                assert(!core_battles && !core_settlements && A4_WORD(0xff88+651*2)==1);
+                assert(!core_battles && !core_settlements && A4_WORD(0xff88+650*2)==1);
+                assert(!A4_WORD(0xff88+651*2));
                 _move_peeps();
-                assert(!peeps[0] && !peep_word(0,4) && !map_who[650] && map_who[651]==2);
+                assert(!peeps[0] && !peep_word(0,4) && !map_who[651]);
+                assert(map_who[650]==(!destination && counter ? 0 : 2));
                 assert(peeps[22]==2 && peep_word(1,4)==100 && peep_word(1,8)==651);
                 assert(core_population(0)==100 && !core_population(1));
                 assert(!core_battles && !core_settlements);
             }
-    /* Ignoring combat must not bypass occupancy and hide a new town. */
+    /* _move_explorer asm:4530-4534,4564-4589: a bit-7 resident is ignored
+     * and settlement has no occupancy guard; the claim is only if empty. */
     for (int friendly=0; friendly<2; ++friendly) {
         setup_blocked_walker(); memset(map_blk,15,4096); no_peeps=2;
         peeps[22]=0x80; peeps[23]=friendly ? 0 : 1;
@@ -2878,8 +3276,9 @@ static void test_remnant_collision(void)
         map_who[650]=2;
         assert(core_explore(0)==0 && core_check_life(0,650)>0);
         core_move(0);
-        assert(peeps[0]==2 && peeps[22]==0x80 && peep_word(1,4)==1);
-        assert(map_who[650]==2 && !map_bk2[650] && !core_battles && !core_settlements);
+        assert(peeps[0]==1 && peeps[22]==0x80 && peep_word(1,4)==1);
+        assert(map_blk[650]==31 && map_bk2[650]==peep_word(0,12));
+        assert(map_who[650]==2 && !core_battles && core_settlements==1);
     }
 }
 
@@ -2889,6 +3288,9 @@ static void setup_war_town(int owner, int position, int city)
     memset(prg_a4_area,0,sizeof prg_a4_area);
     memset(map_blk,15,4096);
     no_peeps=1; core_result=prg_quit=core_battles=core_settlements=0;
+    /* Direct consumer calls model the first town of a pass (asm:3331-3335). */
+    core_oldest_town_age[0]=core_oldest_town_age[1]=0;
+    core_best_town_capacity[0]=core_best_town_capacity[1]=0;
     peeps[0]=1; peeps[1]=owner; peeps[2]=3; peeps[3]=7;
     set_peep_word(0,4,3100); set_peep_word(0,6,1234);
     set_peep_word(0,8,position); set_peep_word(0,10,-65);
@@ -3131,6 +3533,7 @@ static void town_expected_completion(uint8_t *expected, int owner, int populatio
     celebration_expected_word(expected,0x9c26+12,42);
     celebration_expected_word(expected,0x9c26+4,population>0 ? population : 0);
     if (!map_who[650]) expected[map_who-prg_a4_area+650]=1;
+    expect_town_bookkeeping(expected,0,42);
     if (economy) {
         expected[peeps-prg_a4_area+3]=9;
         town_expected_long(expected,0x9a02+owner*16,mana);
@@ -3335,6 +3738,7 @@ static void test_town_split_records(void)
         expected[peeps-prg_a4_area+parent*22+3]=9;
         town_expected_long(expected,0x9a02+owner*16,owner ? 23473 : 12362);
         if (!occupant) expected[map_who-prg_a4_area+650]=parent+1;
+        expect_town_bookkeeping(expected,parent,42);
         if (!full) {
             uint8_t *record=expected+(peeps-prg_a4_area)+child*22;
             record[0]=2; record[1]=owner; record[2]=radii[radius].before; record[3]=9;
@@ -3407,9 +3811,11 @@ static void test_town_split_passes(void)
         assert(peeps[child*22+21]==(history ? 191 : 63));
         assert((uint16_t)peep_word(child,6)==0x8001 && !peeps[child*22+20]);
         assert(core_leader(owner)==child+1 && view_who==child+1 && !core_leader(1-owner));
-        /* A later parent turn reclaims the cell vacated by a lower child. */
-        assert(map_who[650]==(child<parent ? parent+1 : 0));
-        assert(map_who[history ? 715 : 587]==child+1);
+        /* _move_explorer asm:4590-4617: the child claims its departure
+         * cell, so no parent turn can reclaim it; the destination waits for
+         * the child's next departure. */
+        assert(map_who[650]==child+1);
+        assert(!map_who[history ? 715 : 587]);
         assert(!core_battles && !core_settlements && !core_result);
     }
 }
@@ -3538,6 +3944,7 @@ static void test_town_footprint_predicate(void)
             celebration_expected_word(expected,0x2fb2,cases[sample].flat);
             celebration_expected_word(expected,0x9c26+12,frame);
             if (!occupant) expected[map_who-prg_a4_area+position]=1;
+            expect_town_bookkeeping(expected,0,frame);
             if (turn==8) {
                 celebration_expected_word(expected,0x9c26+4,111);
                 expected[peeps-prg_a4_area+3]=9;
@@ -3580,6 +3987,7 @@ static void test_town_footprint_completion(void)
         celebration_expected_word(expected,0x9c26+12,frame);
         celebration_expected_word(expected,0x9c26+4,population>0 ? population : 0);
         if (!occupant) expected[map_who-prg_a4_area+650]=1;
+        expect_town_bookkeeping(expected,0,frame);
         if (turn==8) {
             expected[peeps-prg_a4_area+3]=9;
             town_expected_long(expected,0x9a02+owner*16,(owner ? 23456u : 12345u)+(downgrade ? 109 : 17));
@@ -3612,6 +4020,7 @@ static void test_town_footprint_completion(void)
         celebration_expected_word(expected,0x2ff8,9); celebration_expected_word(expected,0x2fb2,0);
         celebration_expected_word(expected,0x9c26+12,41);
         if (!occupant) expected[map_who-prg_a4_area+650]=1;
+        expect_town_bookkeeping(expected,0,41);
         if (turn==8) {
             celebration_expected_word(expected,0x9c26+4,full ? 3111 : 156);
             expected[peeps-prg_a4_area+3]=9;
@@ -3654,6 +4063,7 @@ static void test_town_footprint_pass_and_clock(void)
         celebration_expected_word(expected,0x9c26+22+10,0);
         celebration_expected_word(expected,0x9c26+22+12,0);
         town_footprint_map(expected,owner,651,0,0,1);
+        expect_town_bookkeeping(expected,0,41); /* 651 evacuates: neither */
         _move_peeps();
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
         assert(peeps[0]==1 && peeps[22]==2 && seed==123);
@@ -3675,6 +4085,10 @@ static void test_town_footprint_pass_and_clock(void)
                 celebration_expected_word(expected,0x2ff8,turn==7 ? 9 : 0);
                 celebration_expected_word(expected,0x9c26+12,41);
                 celebration_expected_word(expected,0x9c26+22+12,turn==9 ? 0 : turn+79);
+                /* Each pass resets then recounts this one non-city town. */
+                celebration_expected_word(expected,0x99fc+owner*16,1);
+                expect_stats_pointer(expected,0);
+                town_expected_long(expected,0x82d8+(owner ? 0 : 1)*46,1); /* asm:3684-3705 */
                 if (turn==9) expected[peeps-prg_a4_area+22]=2;
                 town_expected_long(expected,0x99fe + owner*16,turn==7 ? 1 : fatal ? 0 : 12);
                 town_expected_long(expected,0x99fe + (1-owner)*16,77);
@@ -3844,6 +4258,7 @@ static void test_town_capacity_order_and_economy(void)
         uint8_t expected[sizeof prg_a4_area];
         town_capacity_expected(expected,owner,cheat ? 36 : 156,cheat ? 281 : 161,0,1,owner ? 23565 : 12454);
         celebration_expected_word(expected,0x9c26+12,41);
+        expect_town_bookkeeping(expected,0,41); /* non-city frame counts */
         town_footprint_map(expected,owner,650,41,1,0);
         core_settle_tick(0);
         assert(peep_word(0,12)==41 && !A4_WORD(0x82be + owner*46));
@@ -3885,6 +4300,7 @@ static void test_town_capacity_records(void)
         expected[peeps-prg_a4_area+parent*22+3]=9;
         town_expected_long(expected,0x9a02+owner*16,owner ? 23473 : 12362);
         if (!occupant) expected[map_who-prg_a4_area+650]=parent+1;
+        expect_town_bookkeeping(expected,parent,42);
         if (!full) {
             uint8_t *record=expected+(peeps-prg_a4_area)+child*22;
             record[0]=2; record[1]=owner; record[2]=3; record[3]=9;
@@ -4081,7 +4497,18 @@ static void test_settlement_occupancy(void)
     _closeall(); SDL_Quit();
 }
 
-static void test_match_events_cadence(int interval, int legacy)
+/* One scripted match: rescue clicks lower land under every enemy walker each
+ * `interval` ticks from tick `start`. Real-data outcomes are exact per script. */
+typedef struct { int result; uint16_t turns; int battles, towns, own, enemy; } MatchOutcome;
+static void assert_match_outcome(const MatchOutcome *expected)
+{
+    if (!expected || !getenv("POPULOUS_TEST_REAL_DATA")) return;
+    assert(core_result==expected->result && (uint16_t)game_turn==expected->turns);
+    assert(core_battles==expected->battles && core_settlements==expected->towns);
+    assert(core_population(0)==expected->own && core_population(1)==expected->enemy);
+}
+
+static void test_match_events_cadence(int interval, int start, const MatchOutcome *expected)
 {
     assert(interval==1 || interval==8);
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
@@ -4095,7 +4522,7 @@ static void test_match_events_cadence(int interval, int legacy)
     SDL_SetWindowSize(prg_screen->window,640,512);
     for (int tick=0; tick<12000 && !core_result; ++tick) {
         game_tick();
-        if (tick > 6000 && tick%interval == 0) {
+        if (tick >= start && tick%interval == 0) {
             for (int person=0; person<no_peeps; ++person) {
                 if (!peep_owner(person) || peep_word(person,4)<=0) continue;
                 int position=peep_word(person,8);
@@ -4111,12 +4538,8 @@ static void test_match_events_cadence(int interval, int legacy)
         }
     }
     fprintf(stderr,"match result=%d turns=%u battles=%d towns=%d pop=%d/%d\n",core_result,(uint16_t)game_turn,core_battles,core_settlements,core_population(0),core_population(1));
-    if (legacy) {
-        assert(getenv("POPULOUS_TEST_REAL_DATA"));
-        assert(!core_result && game_turn==12000 && core_battles==325);
-        assert(core_population(0)==28842 && core_population(1)==142403);
-        _closeall(); SDL_Quit(); return;
-    }
+    assert_match_outcome(expected);
+    if (expected && expected->result!=1) { _closeall(); SDL_Quit(); return; }
     assert(core_battles>0 && core_settlements>0 && core_result);
     if (getenv("POPULOUS_TEST_REAL_DATA")) assert(core_result==1);
     uint8_t final_state[sizeof prg_a4_area]; memcpy(final_state,prg_a4_area,sizeof final_state);
@@ -4152,10 +4575,12 @@ static void test_match_events_cadence(int interval, int legacy)
     _closeall(); SDL_Quit();
 }
 
+/* Winning script: from tick 3000 every enemy walker's footprint is lowered
+ * each tick, drowning red before its walkers besiege blue's last towns. */
+static const MatchOutcome events_victory = {1,4185,102,159,6713,0};
 static void test_match_events(void)
 {
-    /* Counter continuous rescue with legal input; retain cadence 8 separately. */
-    test_match_events_cadence(1,0);
+    test_match_events_cadence(1,3000,&events_victory);
 }
 
 /* Synthetic rule files exercise mechanics, never pretend to be commercial LAND. */
@@ -4244,7 +4669,7 @@ static void iso_click_vertex(int column,int row,int button)
     game_handle_event(&event);
 }
 
-static void test_isometric_match_cadence(int interval, int legacy)
+static void test_isometric_match_cadence(int interval, int start, const MatchOutcome *expected)
 {
     assert(interval==1 || interval==8);
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
@@ -4279,7 +4704,7 @@ static void test_isometric_match_cadence(int interval, int legacy)
     event.key.keysym.sym=SDLK_3; game_handle_event(&event);
     for (int tick=0;tick<12000 && !core_result;++tick) {
         game_tick();
-        if (tick>6000 && tick%interval==0) for (int person=0;person<no_peeps;++person) {
+        if (tick>=start && tick%interval==0) for (int person=0;person<no_peeps;++person) {
             if (!peep_owner(person) || peep_word(person,4)<=0) continue;
             int position=peep_word(person,8);
             for (int dy=0;dy<2;++dy) for (int dx=0;dx<2;++dx)
@@ -4287,22 +4712,24 @@ static void test_isometric_match_cadence(int interval, int legacy)
         }
     }
     fprintf(stderr,"isometric fight result=%d turns=%u battles=%d towns=%d pop=%d/%d\n",core_result,(uint16_t)game_turn,core_battles,core_settlements,core_population(0),core_population(1));
-    if (legacy) {
-        assert(getenv("POPULOUS_TEST_REAL_DATA"));
-        assert(!core_result && game_turn==12000 && core_battles==225);
-        assert(core_population(0)==65387 && core_population(1)==9594);
-        _closeall(); SDL_Quit(); return;
-    }
+    assert_match_outcome(expected);
+    if (expected && expected->result!=1) { _closeall(); SDL_Quit(); return; }
     assert(core_result && core_battles>0 && core_settlements>0);
     if (getenv("POPULOUS_TEST_REAL_DATA")) assert(core_result==1);
     event.key.keysym.sym=SDLK_ESCAPE; game_handle_event(&event); assert(prg_quit);
     _closeall(); SDL_Quit();
 }
 
+static const MatchOutcome isometric_victory = {1,4185,102,162,6987,0};
 static void test_isometric_match(void)
 {
-    test_isometric_match_cadence(1,0);
+    test_isometric_match_cadence(1,3000,&isometric_victory);
 }
+
+/* Historical scripts that started rescuing only after tick 6000. Phased
+ * movement lets red take blue's last city (#10 at 8,22) at turn 4801, before
+ * any of their input fires, so they now pin that deterministic defeat. */
+static const MatchOutcome late_rescue_defeat = {2,4801,128,182,0,199237};
 
 static void test_original_graphics_output(void)
 {
@@ -4808,7 +5235,11 @@ static void assert_live_occupancy(void)
     int towns[4096]={0};
     for (int cell=0; cell<4096; ++cell) if (map_who[cell]) {
         int person=map_who[cell]-1;
-        assert(person<no_peeps && peep_word(person,4)>0 && peep_word(person,8)==cell);
+        /* A claim is the peep's cell or its departure cell pos-(+10), the
+         * two cells _zero_population releases (asm:5662-5680). */
+        assert(person<no_peeps && peep_word(person,4)>0);
+        assert(peep_word(person,8)==cell ||
+               (int16_t)(peep_word(person,8)-peep_word(person,10))==cell);
     }
     for (int person=0; person<no_peeps; ++person) if (peep_word(person,4)>0) {
         int position=peep_word(person,8);
@@ -4960,7 +5391,8 @@ static void swamp_walker(int owner, int flags, int frame)
 static void test_swamp_hazard(void)
 {
     /* Catch early death, navigation/attrition before death, wrong owner/mode,
-     * and accidental clearing of another occupant or the previous cell. */
+     * and accidental clearing of another occupant. _zero_population
+     * (asm:4069-4073 -> 5671-5680) does clear the own previous-cell claim. */
     for (int owner=0;owner<2;++owner) for (int bottomless=0;bottomless<2;++bottomless)
     for (int fatal=0;fatal<2;++fatal) for (int owned=0;owned<2;++owned) {
         swamp_walker(owner,2,0);
@@ -4977,7 +5409,7 @@ static void test_swamp_hazard(void)
         _move_peeps();
         assert(peep_word(0,4)==0 && peeps[0]==0 && peep_word(0,8)==1300);
         assert(map_blk[1300]==(bottomless ? 53 : 15) && A4_WORD(0x2fac)==66);
-        assert(map_who[1300]==(owned ? 0 : 2) && map_who[1299]==1);
+        assert(map_who[1300]==(owned ? 0 : 2) && !map_who[1299]);
         assert(core_leader(owner)==0 && core_target(owner)==1300 && view_who==0);
         assert(A4_WORD(owner ? 0xae76 : 0xae78)==1300);
         assert(core_target(1-owner)==0 && seed==123);
@@ -5941,14 +6373,19 @@ static void test_terrain_mailbox_cadence(void)
         A4_WORD(0x82c6+owner*46)=(int16_t)cases[index].divisor;
         terrain_mailbox_write(owner,opcode,20,30);
         game_tick();
-        int raised=opcode==1 && !(cases[index].controller==1 && !cases[index].divisor);
-        assert(core_vertex(20,30)==1+raised && core_mana(owner)==10000-14*raised);
+        int executed=!(cases[index].controller==1 && !cases[index].divisor);
+        int raised=opcode==1 && executed;
+        /* Opcode 2 is _do_lower_point (dispatch asm:$4b81e): 1->0, cost 1*4+10. */
+        int lowered=opcode==2 && executed;
+        assert(core_vertex(20,30)==1+raised-lowered);
+        assert(core_mana(owner)==10000-14*raised-14*lowered);
         assert(A4_WORD(0x82be + owner*46)==cases[index].expected);
         assert(A4_WORD(0x82bc+owner*46)==cases[index].controller);
         assert((uint16_t)A4_WORD(0x82c6+owner*46)==cases[index].divisor);
         assert_mailbox_empty();
     }
-    for (int opcode=2;opcode<=255;++opcode) {
+    /* Opcode 2 lowers (above); 3..255 have no host consumer arm. */
+    for (int opcode=3;opcode<=255;++opcode) {
         terrain_mailbox_fixture(1); terrain_mailbox_write(0,opcode,20,30);
         game_tick();
         assert(core_vertex(20,30)==1 && core_mana(0)==10000 && A4_WORD(0x2f88)==123);
@@ -6539,7 +6976,11 @@ static void test_war_terrain_obstacle(void)
     }
     printf("war obstacle: raised=%d battle_tick=%d outcome=%d tick=%d populations=%d/%d\n",
            raised,first_battle,core_result,game_turn,core_population(0),core_population(1));
-    assert(raised && first_battle==41 && core_result==3 && game_turn==45);
+    /* Phased movement (_move_explorer asm:4438-4617): both walkers enter
+     * 2080 on tick 41 while their claims stay at 2079/2016, so the encounter
+     * is found by the next departure's current-cell check, one 8-frame
+     * cycle later (formerly 41/45 under immediate destination occupancy). */
+    assert(raised && first_battle==49 && core_result==3 && game_turn==53);
 }
 static void test_war_terrain(void)
 {
@@ -7136,7 +7577,8 @@ static void test_heading_navigation_dispatch(void)
         if (opaque) { uint32_t raw=UINT32_MAX; memcpy(peeps+14,&raw,4); core_target(owner)=654; }
         core_move(0);
         assert(peep_word(0,8)==651 && peep_word(0,10)==1 && peeps[0]==2);
-        assert(map_who[651]==1 && !map_who[650] && !core_settlements && seed==123);
+        /* _move_explorer asm:4590-4617: the departure cell keeps the claim. */
+        assert(map_who[650]==1 && !map_who[651] && !core_settlements && seed==123);
     }
     heading_navigation_fixture(0); core_tendency(0)=1;
     /* Keep other records inert, but eligible as targets. */
@@ -7302,7 +7744,7 @@ static void setup_heading_battle(int winner, int owner)
     }
     peeps[66]=0x80; set_peep_word(3,8,900); set_peep_word(3,6,100);
     map_who[650]=loser+1; map_who[900]=4;
-    /* Host cleanup does not clear the previous cell; keep that distinction. */
+    /* Previous-cell claim: _zero_population asm:5671-5680 clears it on death. */
     map_who[714]=loser+1;
     peeps[winner*22+14]=0x80;
     core_leader(owner)=winner+1; core_leader(1-owner)=0;
@@ -7343,6 +7785,9 @@ static void check_heading_battle(int winner, int32_t winner_mana, int32_t loser_
     if (view_who==loser+1) view_who=winner+1;
     position=peep_word(loser,8);
     if (map_who[position]==loser+1) map_who[position]=0;
+    /* _zero_population asm:5671-5680: previous-cell claim. */
+    int previous=(int16_t)(position-peep_word(loser,10));
+    if (map_who[previous]==loser+1) map_who[previous]=0;
     if (core_leader(enemy)==loser+1) {
         core_leader(enemy)=0;
         if (!pause) { core_target(enemy)=position; A4_WORD(enemy ? 0xae76 : 0xae78)=position; }
@@ -7604,6 +8049,7 @@ static void test_ordinary_town_full_state(void)
         /* All neighbours are block 1 with no buildings: only these two centers
          * can change. Failed conquest keeps the original winner town bit/link. */
         map_blk[650]=15; map_bk2[650]=0; map_who[650]=0;
+        map_who[714]=0; /* _zero_population asm:5671-5680, 650-(-64) */
         map_blk[750]=success ? 31+owner : 1;
         map_bk2[750]=success ? 34 : 0; map_who[750]=winner+1;
         peeps[winner*22]=success || town ? 5 : 6;
@@ -7702,7 +8148,12 @@ static void test_heading_town_ticks(void)
             assert(core_leader(1-owner)==loser+1);
             assert(!memcmp(winner_heading,peeps+winner*22+14,4));
             assert(!memcmp(loser_heading,peeps+loser*22+14,4));
-            assert(map_who[peep_word(winner,8)]==winner+1);
+            /* _move_explorer asm:4590-4617: a walker's claim is its
+             * departure cell, pos-(+10), until its next departure, unless
+             * the bit-7 remnant already holds 650 (asm:4530-4534,4600). */
+            int claim_cell=(int16_t)(peep_word(winner,8)-peep_word(winner,10));
+            assert(map_who[claim_cell]==winner+1 ||
+                   (claim_cell==650 && map_who[650]==loser+1));
         }
         game_tick();
         assert(game_turn==41 && !peep_word(loser,4));
@@ -7711,7 +8162,8 @@ static void test_heading_town_ticks(void)
         assert(A4_LONG(owner ? 0x9a0e : 0x99fe)>0);
         assert(!core_leader(1-owner) && core_target(1-owner)==650);
         assert(A4_WORD(owner ? 0xae78 : 0xae76)==650);
-        assert(view_who==winner+1 && map_who[peep_word(winner,8)]==winner+1);
+        assert(view_who==winner+1);
+        assert(map_who[(int16_t)(peep_word(winner,8)-peep_word(winner,10))]==winner+1);
         assert(!memcmp(winner_heading,peeps+winner*22+14,4));
         assert(!memcmp(loser_heading,peeps+loser*22+14,4));
     }
@@ -8119,7 +8571,11 @@ static void test_knight_lifecycle(void)
             if (peeps[0]&8) { assert(moved); battle=1; }
             if (peeps[22]==0x80) {
                 assert(battle); remnant=1;
-                assert(map_blk[654]==66 && map_bk2[654]>=53 && map_bk2[654]<=63);
+                /* A controller-1 walker leaving the 0x42 ruin asks for it to be
+                 * lowered (_move_explorer asm:4450-4509); the overlay remains. */
+                assert(map_bk2[654]>=53 && map_bk2[654]<=63);
+                assert(map_blk[654]==66 ||
+                       (A4_WORD(0x82bc+owner*46)==1 && peep_word(0,8)!=654));
             }
             if (peeps[0]==6) { assert(remnant); celebrated=1; }
             if (celebrated && peeps[0]==2) resumed=1;
@@ -8479,6 +8935,9 @@ static void test_battle_loss_completion(void)
             A4_WORD(enemy ? 0xae76 : 0xae78)=650;
         }
         view_who=winner+1; seed=reverse ? 2976 : 28505;
+        /* _battle_over asm:6556-6560 -> _zero_population asm:5671-5680
+         * clears the dead loser's previous-cell claim (650-(-64)). */
+        if (!remnant) map_who[714]=0;
         memcpy(expected,prg_a4_area,sizeof expected); memcpy(prg_a4_area,before,sizeof before);
         /* Seed 2 draws 28193/2976 (rolls 3/1), reversing seed 123's 1/3.
          * Both argument orders retain winner roll 1 and loser roll 3. */
@@ -8523,6 +8982,9 @@ static void test_battle_loss_both_dead(void)
         core_leader(0)=core_leader(1)=0; core_target(0)=core_target(1)=650;
         A4_WORD(0xae78)=A4_WORD(0xae76)=650; view_who=0;
         map_who[650]=foreign ? 4 : 0; seed=cases[sample].final_seed;
+        /* _do_battle asm:6175-6179 zeroes both; _zero_population
+         * asm:5671-5680 clears slot 2's previous-cell claim at 714. */
+        map_who[714]=0;
         memcpy(expected,prg_a4_area,sizeof expected); memcpy(prg_a4_area,before,sizeof before);
         core_battle(reverse ? 2 : 1,reverse ? 1 : 2);
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -8631,25 +9093,30 @@ static void test_battle_entry_state(void)
         set_peep_word(attacker,12,old_first); set_peep_word(defender,12,old_second);
         uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
         memcpy(before,prg_a4_area,sizeof before);
-        peeps[attacker*22]=8;
-        peeps[defender*22]=destination ? flags[state]|8 : (flags[state]&7)|8;
-        set_peep_word(attacker,6,defender); set_peep_word(defender,6,attacker);
         peeps[attacker*22+21]=1;
-        if (destination) { map_who[649]=0; set_peep_word(attacker,8,650); }
-        else map_who[650]=attacker+1;
-        set_peep_word(attacker,12,base+successors[frame]);
-        int defender_frame=destination && flags[state]==0x12 ? old_second : base+successors[reverse];
-        set_peep_word(defender,12,defender_frame);
+        /* _move_explorer asm:4510-4617 has no destination encounter: a walker
+         * stepping onto the defender only claims/counts 649 and advances. */
+        int attacker_frame=destination ? old_first : base+successors[frame];
+        int defender_frame=destination ? old_second : base+successors[reverse];
+        if (destination) {
+            set_peep_word(attacker,8,650); set_peep_word(attacker,10,1);
+            A4_WORD(0xff88+649*2)=(uint16_t)A4_WORD(0xff88+649*2)+1;
+        } else {
+            peeps[attacker*22]=8; peeps[defender*22]=(flags[state]&7)|8;
+            set_peep_word(attacker,6,defender); set_peep_word(defender,6,attacker);
+            map_who[650]=attacker+1;
+        }
+        set_peep_word(attacker,12,attacker_frame); set_peep_word(defender,12,defender_frame);
         memcpy(expected,prg_a4_area,sizeof expected); memcpy(prg_a4_area,before,sizeof before);
         core_move(attacker);
-        assert(peep_word(attacker,12)==base+successors[frame]);
+        assert(peep_word(attacker,12)==attacker_frame);
         assert(peep_word(defender,12)==defender_frame);
         assert(!memcmp(expected,prg_a4_area,sizeof expected));
-        assert(core_battles==18 && !core_settlements && !core_result);
+        assert(core_battles==(destination ? 17 : 18) && !core_settlements && !core_result);
     }
-    /* Current-cell admission precedes the nonpositive-attacker guard; destination
-     * admission still follows it. Destination defenders retain the host's lack
-     * of a population gate, but zero alone must skip frame initialization. */
+    /* Current-cell admission precedes the nonpositive-attacker guard; there is
+     * no destination admission. Defenders have no population gate, but zero
+     * alone must skip frame initialization. */
     for (int destination=0; destination<2; ++destination)
     for (int population=-1; population<=0; ++population) {
         setup_battle_entry(1,0,destination); set_peep_word(1,4,population);
@@ -8658,7 +9125,9 @@ static void test_battle_entry_state(void)
         assert(peep_word(2,12)==(destination ? 35 : 70));
         assert(peep_word(1,4)==population && peep_word(2,4)==100 && seed==123);
         assert(core_battles==(destination ? 17 : 18));
-        setup_battle_entry(1,0,1); set_peep_word(2,4,population);
+        /* asm:4510-4559: the current-cell encounter has no defender
+         * population gate either. */
+        setup_battle_entry(1,0,0); set_peep_word(2,4,population);
         core_move(1);
         assert(peep_word(1,12)==70 && peep_word(2,12)==(population ? 70 : 35));
         assert(peep_word(2,4)==population && core_battles==18 && seed==123);
@@ -8702,7 +9171,17 @@ static void test_battle_entry_town_reward(void)
         set_peep_word(attacker,8,destination ? 649 : 650);
         if (destination) map_who[649]=attacker+1;
         core_target(owner)=650+!destination; core_tendency(owner)=0;
+        if (destination) {
+            /* _move_explorer asm:4590-4617: entering the town cell claims
+             * 649 only; the encounter waits for the next departure. */
+            core_move(attacker);
+            assert(peep_word(attacker,8)==650 && peep_word(attacker,10)==1);
+            assert(peeps[attacker*22]==2 && peeps[defender*22]==1 && core_battles==17);
+            assert(map_who[649]==attacker+1 && map_who[650]==defender+1);
+            core_target(owner)=651;
+        }
         core_move(attacker);
+        assert(!map_who[649]);
         assert(peep_word(attacker,12)==base && peep_word(defender,12)==base);
         assert(peeps[attacker*22]==8 && peeps[defender*22]==9);
         assert(seed==123 && core_mana(owner)==1000 && core_mana(1-owner)==2000);
@@ -8755,12 +9234,22 @@ static void test_battle_frame_render_and_entry(void)
         }
         core_target(owner)=cell+1; core_tendency(owner)=0; core_leader(owner)=1;
         map_who[cell+destination]=2;
-        seed=123; core_move(0);
+        seed=123;
+        if (destination) {
+            /* _move_explorer asm:4510-4617: stepping onto the defender is not
+             * an encounter; the next departure's current-cell check is. */
+            core_move(0);
+            assert(peeps[0]==2 && peeps[22]==2 && peep_word(0,8)==cell+1);
+            assert(map_who[cell]==1 && map_who[cell+1]==2);
+            core_target(owner)=cell+2;
+        }
+        core_move(0);
         assert((peeps[0]&8) && (peeps[22]&8) && seed==123);
         assert(peep_word(0,12)==bases[owner][heads] && peep_word(1,12)==bases[owner][heads]);
         assert(peep_word(0,4)==100 && peep_word(1,4)==100);
-        assert(peep_word(0,8)==cell+destination);
-        assert(map_who[cell+destination]==(destination ? 2 : 1));
+        assert(peep_word(0,8)==cell+destination && peep_word(1,8)==cell+destination);
+        /* _set_battle asm:6604-6656: the attacker represents the cell. */
+        assert(map_who[cell+destination]==1 && !map_who[cell+1-destination]);
         uint8_t expected[64000], before[sizeof prg_a4_area];
         int occupant=map_who[cell+destination];
         map_who[cell+destination]=0;
@@ -8856,6 +9345,7 @@ static void test_water_town_state(void)
                 town_footprint_map(expected,owner,650,0,0,1);
             } else {
                 if (!occupant) expected[map_who-prg_a4_area+650]=1;
+                expect_town_bookkeeping(expected,0,plots[plot].frame);
                 if (turn==8) {
                     expected[peeps-prg_a4_area+3]=9;
                     town_expected_long(expected,0x9a02+owner*16,owner ? 23439 : 12328);
@@ -8911,6 +9401,7 @@ static void test_water_town_edges_and_skips(void)
                 celebration_expected_word(expected,0x2ff8,city ? 4 : 0);
                 celebration_expected_word(expected,0x2fb2,blocks[terrain]==15);
                 celebration_expected_word(expected,0x9c26+12,37);
+                expect_town_bookkeeping(expected,0,37);
             }
         } else {
             water_loss_expected(expected,owner,position,1);
@@ -9348,6 +9839,7 @@ static void test_water_rescue_town_latch(void)
             expected[peeps-prg_a4_area+town*22+2]=4;
             expected[map_who-prg_a4_area+650]=3;
         }
+        expect_town_bookkeeping(expected,town,42);
         _move_peeps();
         if (memcmp(expected,prg_a4_area,sizeof expected))
             fprintf(stderr,"rescue town owner=%d ordering=%d foreign=%d\n",owner,ordering,foreign);
@@ -9482,6 +9974,7 @@ static void test_magnet_rescue_mixed(void)
                 celebration_expected_word(expected,0x9c26+person*22+6,7);
                 celebration_expected_word(expected,0x9c26+person*22+12,0);
                 expected[peeps-prg_a4_area+person*22+21]=(uint8_t)-1;
+                expect_stats_pointer(expected,person);
             }
             if (removed) expected[map_who-prg_a4_area+position]=0;
             if (walker || (old && !fatal)) {
@@ -9517,7 +10010,8 @@ static void test_magnet_rescue_deferred(void)
         game_tick();
         assert(peeps[0]==2 && peep_word(0,8)==651 && peep_word(0,10)==1);
         assert(peep_word(0,4)==90 && core_mana(owner)==54 && !core_result);
-        assert(!map_who[650] && map_who[651]==1); assert_mailbox_empty();
+        /* _move_explorer asm:4590-4617: the departure cell keeps the claim. */
+        assert(map_who[650]==1 && !map_who[651]); assert_mailbox_empty();
         for (int gate=0; gate<5; ++gate) {
             water_rescue_fixture(owner,100,0); peeps[0]=2; map_blk[650]=15;
             set_peep_word(0,12,7); core_target(owner)=715;
@@ -9658,7 +10152,8 @@ static void test_swamp_rescue_deferred(void)
             assert(peeps[0]==(turn<10 ? 0x42 : 2));
             assert(peep_word(0,8)==(turn<10 ? 650 : 651));
         }
-        assert(peep_word(0,10)==1 && map_who[651]==1 && !map_who[650] && !core_result);
+        /* _move_explorer asm:4590-4617: the departure cell keeps the claim. */
+        assert(peep_word(0,10)==1 && map_who[650]==1 && !map_who[651] && !core_result);
         swamp_rescue_fixture(owner,100,0); A4_LONG(0x9a02+owner*16)=9;
         for (int turn=1; turn<=10; ++turn) {
             game_tick();
@@ -9749,13 +10244,21 @@ int main(int argc, char **argv)
     }
     if (argc==3 && !strcmp(argv[1],"--rescue-every-tick")) {
         assert(getenv("POPULOUS_TEST_REAL_DATA"));
-        if (!strcmp(argv[2],"isometric")) test_isometric_match_cadence(1,0);
-        else { assert(!strcmp(argv[2],"events")); test_match_events_cadence(1,0); }
+        if (!strcmp(argv[2],"isometric")) test_isometric_match();
+        else { assert(!strcmp(argv[2],"events")); test_match_events(); }
         return 0;
+    }
+    /* Former default (cadence 1) and legacy (cadence 8) scripts, start 6001. */
+    if (argc==2 && !strcmp(argv[1],"--rescue-legacy-every-tick")) {
+        assert(getenv("POPULOUS_TEST_REAL_DATA"));
+        test_isometric_match_cadence(1,6001,&late_rescue_defeat);
+        test_match_events_cadence(1,6001,&late_rescue_defeat);
+        puts("historical every-tick rescue match: PASS"); return 0;
     }
     if (argc==2 && !strcmp(argv[1],"--rescue-legacy-match")) {
         assert(getenv("POPULOUS_TEST_REAL_DATA"));
-        test_isometric_match_cadence(8,1); test_match_events_cadence(8,1);
+        test_isometric_match_cadence(8,6001,&late_rescue_defeat);
+        test_match_events_cadence(8,6001,&late_rescue_defeat);
         puts("historical rescue match cadences: PASS"); return 0;
     }
     if (argc==2 && !strcmp(argv[1],"--water-rescue")) {
@@ -9792,6 +10295,14 @@ int main(int argc, char **argv)
         test_remnant_timer(); test_remnant_occupancy_and_state(); test_remnant_tick_and_water();
         test_water_wait(); test_water_celebration(); test_water_recovery(); test_water_loss();
         puts("focused dry water remnant: PASS (15360 state, 40 frame, 6 expiry, 144 edge, 96 gate/skip/tick, 120 mixed, 14 deferred)"); return 0;
+    }
+    if (argc==2 && !strcmp(argv[1],"--walker-extras")) {
+        test_walker_extras();
+        puts("focused walker extras: PASS"); return 0;
+    }
+    if (argc==2 && !strcmp(argv[1],"--phased-move")) {
+        test_phased_move();
+        puts("focused phased movement: PASS"); return 0;
     }
     if (argc==2 && !strcmp(argv[1],"--collision-wait")) {
         test_collision_wait_mark(); test_collision_wait_gates(); test_collision_wait_tick();
@@ -10010,6 +10521,8 @@ int main(int argc, char **argv)
     test_wait_boundaries();
     test_wait_water_and_death();
     test_collision_wait_mark(); test_collision_wait_gates(); test_collision_wait_tick();
+    test_phased_move();
+    test_walker_extras();
     test_original_selection();
     test_original_generator();
     test_original_placement();

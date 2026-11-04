@@ -890,9 +890,23 @@ Normal tests generate synthetic LAND files under a temporary directory and
 remove them. Collision wait (`--collision-wait`, asm:4058-4067/4145-4184): an exact-2 walker
 still alive after framing (and any move/loss) marks the `map_who` occupant of its
 own cell with 0x20, frame 101 and counter 0, unless it is itself, slot >= 208,
-already framed or bit 0x10. With immediate destination occupancy this only fires
-when a walker stays on a cell represented by another peep; marks arising from
-phased departure remain open.
+already framed or bit 0x10. Under phased movement it reads the occupant named at the walker's new cell.
+
+Phased movement (`--phased-move`, `--walker-extras`; `_move_explorer` asm 4425-4617):
+a departing walker releases its previous claim (pos-(+10)), meets the peep named at
+its own cell, claims that cell only if empty and moves without writing the
+destination. `_set_battle` pulls a walker defender back, `_zero_population` clears
+both claims. Also ported: the computer walker's own lower request on block 0x42,
+the first-walker (0x82dc) and richest-town (0x82d8) pointers, the oldest-town
+pointer, town count 0x99fc, `_one_block_flat` and mailbox opcode 2 (`_do_lower_point`,
+charge build_count*4+10). The AI routines reading these pointers, opcodes 3-14 and
+the `_toggle` mana increment (toggle is never set in the port) remain open.
+With phased timing the former scripts, which only acted after tick 6000, lose at
+turn 4801 (128 battles, 182 towns, 0/199237); `--rescue-legacy-every-tick` and
+`--rescue-legacy-match` pin that defeat. The default scripts use the same legal
+inputs every tick from tick 3000 and win at turn 4185: diagnostic 102 battles,
+159 towns, 6713/0; isometric 102 battles, 162 towns, 6987/0. Defeat stays at 695.
+The 11928 results below are historical (immediate-commit movement).
 
 Original-data integration is explicit:
 

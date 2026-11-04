@@ -825,6 +825,9 @@ static void core_remove(int person)
     int owner = peep_owner(person), position = peep_word(person,8);
     if (peeps[person*22]&1) core_set_town(person,1);
     if (map_who[position] == person+1) map_who[position] = 0;
+    /* _zero_population asm:5671-5680: also the previous departure's claim. */
+    int previous = (int16_t)(position-peep_word(person,10));
+    if (previous >= 0 && previous < 4096 && map_who[previous] == person+1) map_who[previous] = 0;
     if (peeps[person*22]&8) {
         int partner = peep_word(person,6);
         /* Walking attrition can remove an attacker immediately after entry,
@@ -1158,57 +1161,91 @@ static void core_move(int person)
         return;
     }
     peeps[person*22] &= 0xbf;
-    /* _move_explorer asm:4510-4559 encounters the current occupant before
-     * settlement/departure. Keep the port's immediate destination path below. */
+    /* asm:4438-4449: release the cell claimed by the previous departure. */
+    int previous = (int16_t)(position-peep_word(person,10));
+    if (previous >= 0 && previous < 4096 && map_who[previous] == person+1) map_who[previous] = 0;
+    /* asm:4450-4509: a computer-controlled walker on block 0x42 asks for its
+     * own cell to be lowered: command byte, x, ASR.W #6 row; no latch write. */
+    int request = 0x82b6 + owner*46;
+    if (A4_WORD(request+6) == 1 && map_blk[position] == 0x42 && !A4_WORD(request+8) &&
+        !(game_mode&(GAME_MODE_NO_BUILD|GAME_MODE_BUILD_ONLY_UP))) {
+        int16_t cell = (int16_t)position;
+        A4_DISP(request)[0] = 2;
+        A4_DISP(request+1)[0] = (uint8_t)(cell & 63);
+        A4_DISP(request+2)[0] = (uint8_t)(cell >= 0 ? cell/64 : -((-cell+63)/64));
+    }
+    /* asm:4510-4559: the encounter is with the peep named at the walker's
+     * own cell. Only -1, self, slot >= 208 and bit 7 are excluded. */
     int occupant = map_who[position]-1;
-    if (occupant >= 0 && occupant < no_peeps && occupant != person &&
-        peep_word(occupant,4) > 0 && !(peeps[occupant*22]&0x80)) {
-        if (peeps[occupant*22]&8) { core_join_battle(person,occupant); return; }
-        if (peep_owner(occupant) != owner) {
+    if (occupant != -1 && occupant != person && occupant < 208 && !(peeps[occupant*22]&0x80)) {
+        if (peeps[occupant*22]&8) core_join_battle(person,occupant);
+        else if (peep_owner(occupant) == owner) core_join_forces(person,occupant);
+        else {
             peeps[person*22] = 8;
             peeps[occupant*22] = (peeps[occupant*22]&7)|8;
             set_peep_word(person,6,occupant); set_peep_word(occupant,6,person);
             core_frame_battle(person,occupant,peep_word(person,4)!=0);
             core_frame_battle(occupant,person,peep_word(occupant,4)!=0);
-            map_who[position] = person+1; /* _set_battle asm:6636-6656 */
+            /* _set_battle asm:6604-6656 (its view_who store is a no-op):
+             * release the defender's claims, then a town keeps its cell
+             * while a walker is pulled back onto the attacker's cell. */
+            int cell = peep_word(occupant,8);
+            int left = (int16_t)(cell-peep_word(occupant,10));
+            if (left >= 0 && left < 4096 && map_who[left] == occupant+1) map_who[left] = 0;
+            if (cell >= 0 && cell < 4096 && map_who[cell] == occupant+1) map_who[cell] = 0;
+            if (peeps[occupant*22]&1) {
+                if (cell >= 0 && cell < 4096) map_who[cell] = person+1;
+            } else {
+                set_peep_word(occupant,8,position);
+                map_who[position] = person+1;
+            }
             ++core_battles;
             return;
         }
     }
-    /* asm:4560-4563: encounters precede this guard, settlement/departure do not. */
     if (peep_word(person,4) <= 0) return;
-    if (!present && !delta && core_check_life(owner,position) > 0) {
-        if (map_who[position] && map_who[position] != person+1) return;
-        /* A split walker may leave no representative until the town's next
-         * turn. Occupancy alone cannot establish that this plot has no town. */
-        for (int other = 0; other < no_peeps; ++other)
-            if (other != person && peep_word(other,4) > 0 &&
-                peep_word(other,8) == position && (peeps[other*22]&1)) return;
+    /* asm:4564-4589: settle on a zero heading without metadata. */
+    if (!delta && !present) {
+        if (!map_who[position]) map_who[position] = person+1;
         peeps[person*22] = 1; set_peep_word(person,6,game_turn);
-        map_who[position] = person+1;
         core_frame_town(person,core_check_life(owner,position)); core_set_town(person,0); ++core_settlements;
         return;
     }
-    int valid = core_valid_move(position,delta);
-    /* Only the magnet's direct war step can return a valid-2 destination;
-     * its fallback accepts valid-0 only. Keep all other rejection intact. */
-    if (valid && !(use_magnet && A4_WORD(0xae80) && valid == 2)) return;
-    int destination = position+delta, other = map_who[destination]-1;
-    /* asm:4530-4534 ignores bit-7 residents without removing them. Preserve
-     * immediate movement: a destination write may replace their representative. */
-    if (other >= 0 && other < no_peeps && other != person && !(peeps[other*22]&0x80)) {
-        if (peeps[other*22]&8) { core_join_battle(person,other); return; }
-        if (peep_owner(other) == owner) { core_join_forces(person,other); return; }
-        if (map_who[position] == person+1) map_who[position] = 0;
-        set_peep_word(person,8,destination); peeps[person*22] = 8; peeps[other*22] |= 8;
-        set_peep_word(person,6,other); set_peep_word(other,6,person); ++core_battles;
-        core_frame_battle(person,other,peep_word(person,4)!=0);
-        core_frame_battle(other,person,peep_word(other,4)!=0);
-        return;
+    /* asm:4590-4617: count and claim the departure cell, then advance. The
+     * destination is claimed only by the next departure. */
+    A4_WORD(0xff88+position*2) = (uint16_t)A4_WORD(0xff88+position*2)+1;
+    if (!map_who[position]) map_who[position] = person+1;
+    set_peep_word(person,8,(int16_t)(position+delta)); set_peep_word(person,10,delta);
+}
+/* _move_peeps frame local -28 (asm:3331-3335): per-owner oldest town age. */
+static uint16_t core_oldest_town_age[2];
+/* _move_peeps frame local -24 (asm:3336-3340): per-owner best town capacity. */
+static int16_t core_best_town_capacity[2];
+/* _one_block_flat asm:9148-9310: queue one terrain command that would flatten
+ * the walker's cell. Corner sums 4q+3 raise the low corner, 4q+1 lower the
+ * high one; scan is x-major over the cell's four vertices. Writes _stats only. */
+static void core_one_block_flat(int position, int owner)
+{
+    int block_stats = 0x82b6 + owner*46;
+    if (A4_WORD(block_stats+8) || (int32_t)A4_LONG(0x9a02 + owner*16) < 20 ||
+        (int16_t)A4_WORD(0x99fc + owner*16) > 50 || !(A4_WORD(block_stats+14)&1) ||
+        (game_mode&GAME_MODE_NO_BUILD)) return;
+    int column = position & 63, row = (int16_t)position >= 0 ? (int16_t)position/64 : -((-(int16_t)position+63)/64);
+    int base = row*65 + column;
+    int16_t sum = (int16_t)(A4_WORD(0xae86+base*2) + A4_WORD(0xae86+(base+1)*2) +
+                            A4_WORD(0xae86+(base+66)*2) + A4_WORD(0xae86+(base+65)*2));
+    if (sum == 1) return;
+    int remainder = sum % 4, level = sum / 4; /* DIVS: truncating quotient/remainder */
+    for (int x = column; x <= column+1; ++x) for (int y = row; y <= row+1; ++y) {
+        int16_t height = A4_WORD(0xae86 + (y*65+x)*2);
+        int command = remainder == 3 ? (height == level ? 1 : 0) :
+                      remainder == 1 && height > level && !(game_mode&GAME_MODE_BUILD_ONLY_UP) ? 2 : 0;
+        if (command) {
+            A4_DISP(block_stats)[0] = command; A4_DISP(block_stats+1)[0] = x; A4_DISP(block_stats+2)[0] = y;
+            A4_WORD(block_stats+8) = 1;
+            return;
+        }
     }
-    if (map_who[position] == person+1) map_who[position] = 0;
-    set_peep_word(person,8,destination); set_peep_word(person,10,delta); map_who[destination] = person+1;
-    A4_WORD(0xff88+destination*2) = (uint16_t)A4_WORD(0xff88+destination*2)+1;
 }
 static void core_settle_tick(int person)
 {
@@ -1225,8 +1262,23 @@ static void core_settle_tick(int person)
     }
     int old_frame = peep_word(person,12); /* asm:3634-3636, before reframing. */
     core_frame_town(person,capacity);
+    /* asm:3658-3661: LAB_52DEA counts non-city frames during the pass. */
+    if (capacity < 3050) A4_WORD(0x99fc+owner*16) = (uint16_t)A4_WORD(0x99fc+owner*16)+1;
     /* asm:3667-3677: reclaim a departed walker's slot, never another occupant. */
     if (!map_who[position]) map_who[position] = person+1;
+    /* asm:3684-3705: a capacity strictly above the pass maximum (signed
+     * word, BGE skips ties) becomes the enemy-indexed _stats+0x22 pointer. */
+    if (owner < 2 && !(core_best_town_capacity[owner] >= (int16_t)capacity)) {
+        core_best_town_capacity[owner] = (int16_t)capacity;
+        A4_LONG(0x82d8+(owner ? 0 : 1)*46) = (uint32_t)(person+1);
+    }
+    /* asm:3706-3737: the oldest-so-far town (unsigned, ties replace) becomes
+     * the enemy-indexed _stats+0x26 pointer (host slot+1 encoding). */
+    uint16_t age = (uint16_t)((uint16_t)game_turn-(uint16_t)peep_word(person,6));
+    if (owner < 2 && !(core_oldest_town_age[owner] > age)) {
+        core_oldest_town_age[owner] = age;
+        A4_LONG(0x82dc+(owner ? 0 : 1)*46) = (uint32_t)(person+1);
+    }
     if (!((uint16_t)game_turn&7)) {
         int level = peep_word(person,12)-32;
         /* asm:3818-3862: local split limits, never reframe or reindex economy. */
@@ -1305,8 +1357,12 @@ static int core_sculpt(int owner, int column, int row, int direction)
      * vertices; remote terrain and navigation history must remain untouched. */
     core_make_map_region(xmin > 0 ? xmin-1 : 0, ymin > 0 ? ymin-1 : 0,
                          xmax < 64 ? xmax : 63, ymax < 64 ? ymax : 63);
+    /* Host footprint refresh. A town in battle reaches only _do_battle
+     * (_move_peeps asm:4269-4281); _sculpt/_make_map (asm:7271-7420,
+     * 1420-1593) never call _set_town. */
     for (int person = 0; person < no_peeps; ++person)
-        if (peep_word(person,4)>0 && (peeps[person*22]&1)) core_set_town(person,0);
+        if (peep_word(person,4)>0 && (peeps[person*22]&1) && !(peeps[person*22]&8))
+            core_set_town(person,0);
     return 1;
 }
 
@@ -1385,6 +1441,25 @@ static int core_raw_raise(int owner, int column, int row)
     return 1;
 }
 
+static int original_lower_point(int column, int row);
+/* _do_lower_point asm:7091-7180: bounds before the mana gate; unlike raise,
+ * war does not bypass it. Charge asm:7121-7126: ASL.W #2, ADD.W #10, then
+ * EXT.L sign-extends the word before SUB.L. */
+static void core_do_lower_point(int owner, int column, int row)
+{
+    A4_WORD(0x2f8a) = A4_WORD(0x2f8c) = column;
+    A4_WORD(0x2f8e) = A4_WORD(0x2f90) = row;
+    if ((int32_t)A4_LONG(0x9a02+owner*16) < (int32_t)A4_LONG(0x848a) && !paint_map) return;
+    A4_WORD(0x2f88) = 0;
+    original_lower_point(column,row);
+    if (!paint_map && !A4_WORD(0xae80))
+        A4_LONG(0x9a02+owner*16) -= (uint32_t)(int32_t)(int16_t)(uint16_t)((uint16_t)A4_WORD(0x2f88)*4u+10u);
+    if ((int16_t)A4_WORD(0x2f8a) < 1) A4_WORD(0x2f8a) = 1;
+    if ((int16_t)A4_WORD(0x2f8c) > 63) A4_WORD(0x2f8c) = 63;
+    if ((int16_t)A4_WORD(0x2f8e) < 1) A4_WORD(0x2f8e) = 1;
+    if ((int16_t)A4_WORD(0x2f90) > 63) A4_WORD(0x2f90) = 63;
+    core_make_map_region(A4_WORD(0x2f8a)-1, A4_WORD(0x2f8e)-1, A4_WORD(0x2f8c), A4_WORD(0x2f90));
+}
 /* _clear_send asm:18234-18254: only command/x/y, never the controller state. */
 static void core_clear_terrain_mailboxes(void)
 {
@@ -1407,6 +1482,8 @@ static void core_consume_terrain_mailboxes(void)
         }
         if (A4_DISP(0x82b6 + displacement)[0] == 1)
             core_raw_raise(owner, A4_DISP(0x82b7 + displacement)[0], A4_DISP(0x82b8 + displacement)[0]);
+        else if (A4_DISP(0x82b6 + displacement)[0] == 2)
+            core_do_lower_point(owner, A4_DISP(0x82b7 + displacement)[0], A4_DISP(0x82b8 + displacement)[0]);
     }
     core_clear_terrain_mailboxes();
 }
@@ -2403,6 +2480,12 @@ static void core_collision_wait(int person)
 }
 static void _move_peeps(void)
 {
+    /* asm:3290-3335: per-pass AI bookkeeping (good_pop stays host-computed). */
+    for (int owner = 0; owner < 2; ++owner) {
+        A4_WORD(0x99fc+owner*16) = 0;
+        A4_LONG(0x82d8+owner*46) = A4_LONG(0x82dc+owner*46) = A4_LONG(0x82e0+owner*46) = 0;
+        core_oldest_town_age[owner] = 0; core_best_town_capacity[owner] = 0;
+    }
     /* asm:3357-3424: release heading-bearing leaders before war recenters.
      * Presence, not liveness or reference validity, controls this prepass. */
     if (no_peeps >= 0 && no_peeps <= 208) for (int owner=0;owner<2;++owner) {
@@ -2508,25 +2591,32 @@ static void _move_peeps(void)
             set_peep_word(person,6,(uint16_t)(previous-1u));
             if (!previous || peep_word(person,4)<=0) core_remove(person);
         } else {
-            if (!core_frame_walker(person)) {
-                if (flags == 2) core_collision_wait(person);
-                continue;
-            }
+            /* asm:4040 (CMPI.B #2; BNE LAB_411C0): only exact 2 walks. Other
+             * residual flags reach only the signed death check, and are
+             * positive here. */
+            if (flags != 2) continue;
+            if (!core_frame_walker(person)) { core_collision_wait(person); continue; }
             int position = peep_word(person,8);
-            /* asm:4061-4081: ordinary frame completion, before move/loss. */
-            if (flags == 2 && map_blk[position] == 53) {
+            /* asm:4061-4081: ordinary frame completion, before move/loss.
+             * Water cells never get here: they end the turn at the top. */
+            if (map_blk[position] == 53) {
                 core_remove(person);
                 A4_WORD(0x2fac) = 66;
                 if (!(game_mode&2)) map_blk[position] = 15;
                 continue;
             }
-            if (!map_blk[position]) {
-                if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
-                set_peep_word(person,4,peep_word(person,4)-A4_WORD(0x2fb0));
-            }
+            /* asm:4092-4122: first walker of the pass for the enemy's AI
+             * (host slot+1 encoding), then terrain flattening. */
+            int owner = peep_owner(person);
+            if (!A4_LONG(0x82dc+(owner ? 0 : 1)*46)) A4_LONG(0x82dc+(owner ? 0 : 1)*46) = (uint32_t)(person+1);
+            if (!A4_WORD(0x82be + owner*46)) core_one_block_flat(position,owner);
             core_move(person);
-            if (peep_word(person,4)>0) set_peep_word(person,4,peep_word(person,4)-A4_WORD(0x2fb0));
-            if (flags == 2) core_collision_wait(person);
+            /* asm:4100-4117: drop a stale +0x12 cell, then this path's loss. */
+            if (peep_word(person,18) &&
+                (int16_t)(peep_word(person,8)-peep_word(person,10)) != peep_word(person,18))
+                set_peep_word(person,18,0);
+            set_peep_word(person,4,peep_word(person,4)-A4_WORD(0x2fb0));
+            core_collision_wait(person);
             if (peep_word(person,4)<=0) core_remove(person);
         }
     }

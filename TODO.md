@@ -74,7 +74,7 @@ Belege: `populous_c_port/Makefile:1-35`,
 - [x] Block 47 bei Kartenupdates gemaess Original erhalten beziehungsweise bei vollstaendiger Ueberflutung entfernen.
 - [ ] **Pruefen:** Weitere Karten-Sonderfaelle und Wechselwirkungen mit spaeteren Spezialterrainbloecken migrieren.
 - [x] Ueberlappende Conquest-Startbelegung gemaess Original zulassen: alle Bewohnerdatensaetze erhalten, letzter Eintrag repraesentiert die Zelle. Feindlichen aktuellen Bewohner vor Gruendung/Abmarsch behandeln; verdeckte/doppelte Stadtgruendung verhindern. Keine Verlegung der Originalstarts.
-- [ ] **Teilweise:** Custom-/Serial-Startmodi sowie phasenweise Bewegung (und davon abhaengige Kollisionswarte-Markierungen) fehlen weiterhin. Conquest-Suchpfade und Blockade-Retry sind implementiert; der historische Zugriff auf Zelle 4096 bleibt sicher ausgelassen.
+- [ ] **Teilweise:** Custom-/Serial-Startmodi fehlen weiterhin; phasenweise Bewegung ist migriert. Conquest-Suchpfade und Blockade-Retry sind implementiert; der historische Zugriff auf Zelle 4096 bleibt sicher ausgelassen.
 - [ ] **Pruefen:** Kartenrotation, Kartenbearbeitung und weitere Welt-/Modusfunktionen aus dem Routineninventar nach tatsaechlicher Originalverwendung zuordnen und migrieren.
 
 **Abhaengigkeiten:** LAND-Lader und RNG sind vorhanden. Conquest benoetigt diesen
@@ -120,7 +120,9 @@ Nach Nichtkriegs-Wasserrettung gewinnt die alte Acht-Tick-Versenkung nicht mehr;
 separate Originaldaten-Regression bestaetigt beide laufenden Partien bei Tick12000.
 Mit Senkeingaben in jedem Simulationsschritt statt im Acht-Tick-Abstand
 ab6000 gewinnen beide Ansichten bei Tick11928: isometrisch125/394/205816/0,
-Diagnose125/401/219245/0. Niederlage695, strikte Siegerassertionen und Limits erhalten.
+Diagnose125/401/219245/0 (historisch). Mit phasenweiser Bewegung verlieren diese Skripte bei Zug4801
+(Regressionen --rescue-legacy-every-tick/--rescue-legacy-match); dieselben Eingaben ab Tick3000
+gewinnen bei Zug4185: Diagnose102/159/6713/0, isometrisch102/162/6987/0. Niederlage695, strikte Siegerassertionen und Limits erhalten.
 Fokussierte/vollstaendige Normal-/Sanitizerlaeufe, historische Strategien und alle495
 Starts bestanden.
 Unabhaengiges Review ohne
@@ -133,7 +135,7 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 ## P1 - Bewohner, Navigation und Kampf vervollstaendigen
 
 - [x] Blockierte Navigation (`999` -> Flag 0x40, Zaehler 7), Warteframes 101/102, Verlust pro Wartetick und Retry bei vorherigem Zaehler >14 migrieren; keine doppelte Bewegungsverlustbuchung beim Retry.
-- [ ] **Teilweise:** Gesamten Bewohner-Zustandsautomaten abgleichen: Kollisions-Warteflag 0x20 implementiert (nur ohne Phasenbewegung), weitere Flagkombinationen, phasenweise Bewegung, Anfuehrer-/Folgerzustand und Uebergaenge zwischen Bewegung, Stadt und Kampf.
+- [ ] **Teilweise:** Gesamten Bewohner-Zustandsautomaten abgleichen: Kollisions-Warteflag 0x20 und phasenweise Bewegung implementiert; weitere Flagkombinationen, Anfuehrer-/Folgerzustand und Uebergaenge zwischen Bewegung, Stadt und Kampf.
 - [x] Gewoehnliche Magnetnavigation: Original-Richtungstabelle mit Nordschritt am Ziel, Anfuehrer-/Ansichtserwerb, Folgerziel, gegenueberliegende Ausweichhistorie und Historie bei acht Fehlversuchen; direkter Block-47-Schritt im Krieg, keine Felsfreigabe fuer Ausweichschritte.
 - [x] Originale `_get_heading`-Zielwahl als isolierte Grundlage: Selbstreferenz ohne passenden Gegner, sonst erster naechster lebender Fremdbesitzer ohne Bit 7; Manhattanabstand, keine Weg-/Belegungsfilter. Sichere vierbytebreite Einserindizes im A4-Hostzustand statt nativer Pointer.
 - [x] Bestehende Heading-Referenzen in Navigation aktivieren: gueltiges Ziel beibehalten, einmaliger Zielwechsel bei Tot/Freund/Bit 7/gleicher Zelle; Anfuehrerfreigabe vor Kriegszielreset, keine Stadtgruendung, Sumpfvermeidung und Kriegs-Wasserbefehle. Opaque ungueltige Referenzen bleiben ohne Dereferenz erhalten.
