@@ -51,11 +51,16 @@
  * Many functions are Amiga exec/graphics calls or shims (_AllocMem, _OpenLibrary, etc.).
  */
 
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L  /* opendir/mkdir for the save drawer */
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include <limits.h>
 #include <ctype.h>
@@ -414,7 +419,7 @@ static void core_set_pointer(void);
  * _do_action, so nothing else moves; the port keeps the state here, stops
  * game_tick while kind is set and routes left presses to it. _set_options
  * runs inside _game_options and returns to it. */
-enum { CORE_REQ_NONE, CORE_REQ_OPTIONS, CORE_REQ_GAME, CORE_REQ_SET, CORE_REQ_WORLD };
+enum { CORE_REQ_NONE, CORE_REQ_OPTIONS, CORE_REQ_GAME, CORE_REQ_SET, CORE_REQ_WORLD, CORE_REQ_FILE };
 static struct {
     int kind, side;
     uint8_t saved_stats[46];                /* _options -56(A5) */
@@ -424,11 +429,21 @@ static struct {
 static void core_options_open(int side);
 static void core_game_options_open(void);
 static void core_requester_click(void);
+static void core_file_open(int save);
+static void core_file_layout(int draw);
 static void core_draw_requester(void);
 /* _show_world state, see core_world_open. */
 enum { CORE_WORLD_START, CORE_WORLD_OPTIONS, CORE_WORLD_WON };
 static struct { int origin, shown, entry, error, level, length, blink; } core_world;
 static uint8_t core_world_ok[46], core_world_cancel[46];
+/* _save_load's file requester (CORE_REQ_FILE), see core_file_open. The
+ * _get_a_dir listing (32-byte names) was at _w_screen; 256 here. */
+#define CORE_FILE_MAX 256
+static struct {
+    int save, count, top, field, length, blink, error;
+    char names[CORE_FILE_MAX][32];
+} core_file;
+static uint8_t core_file_ok[46];   /* _save_load -130(A5) */
 #define core_message ((char *)A4_DISP(0x3058))
 static void core_world_open(int origin);
 static void core_world_key(int key);
@@ -2609,6 +2624,7 @@ static void _animate(void)
         catch_up = 0;
         while ((Sint32)(now-next_tick) >= 0 && catch_up++ < 5) {
             if (core_req.kind == CORE_REQ_WORLD) ++core_world.blink;
+            if (core_req.kind == CORE_REQ_FILE) ++core_file.blink;
             /* Modal requesters and the end screen leave the main loop. */
             if (!core_req.kind && !core_result) core_tempo_pass();
             game_tick(); next_tick += 50;
@@ -2635,6 +2651,17 @@ static int core_custom_start(int16_t from, int16_t arg)
 static int game_reset(int scenario)
 {
     return game_reset_start((StartSelection){START_SYNTHETIC, scenario});
+}
+
+/* The LAND rule tables and _map_colour of ___load_ground, into the A4. */
+static void core_install_land(const LandRules *loaded)
+{
+    const uint16_t *tables[] = {loaded->population_add,loaded->mana_add,loaded->weapons_add,loaded->battle_add1,loaded->battle_add2,loaded->weapons_order};
+    const int offsets[] = {0x2fe2,0x2fb6,0x2fcc,0x2ffa,0x3010,0x2f96};
+    for (int table = 0; table < 6; ++table)
+        for (int index = 0; index < (table == 4 ? 3 : 11); ++index) A4_WORD(offsets[table]+index*2) = tables[table][index];
+    A4_WORD(0x2fb0) = loaded->walk_death;
+    memcpy(map_colour_data,loaded->map_colour,32);
 }
 
 static int game_reset_start(StartSelection selection)
@@ -2760,12 +2787,7 @@ static int game_reset_start(StartSelection selection)
         memcpy(staged + 32768 + (int16_t)sound_kept[field].offset, A4_DISP(sound_kept[field].offset),
                (size_t)sound_kept[field].size);
     memcpy(prg_a4_area, staged, sizeof prg_a4_area);
-    const uint16_t *tables[] = {loaded.population_add,loaded.mana_add,loaded.weapons_add,loaded.battle_add1,loaded.battle_add2,loaded.weapons_order};
-    const int offsets[] = {0x2fe2,0x2fb6,0x2fcc,0x2ffa,0x3010,0x2f96};
-    for (int table = 0; table < 6; ++table)
-        for (int index = 0; index < (table == 4 ? 3 : 11); ++index) A4_WORD(offsets[table]+index*2) = tables[table][index];
-    A4_WORD(0x2fb0) = loaded.walk_death;
-    memcpy(map_colour_data,loaded.map_colour,32);
+    core_install_land(&loaded);
     for (int index = 0; index < 25; ++index) A4_WORD(0x842c+index*2) = core_offsets[index];
     for (int index = 0; index < 9; ++index) A4_WORD(0x8474+index*2) = core_city[index];
     for (int index = 0; index < 11; ++index) A4_LONG(0x8486+index*4) = (uint32_t)core_mana_values[index];
@@ -3402,6 +3424,7 @@ static void core_requester_layout(void)
     else if (core_req.kind == CORE_REQ_GAME) core_requester(0x10,0x10,0x120,0xb0,core_end_ok,core_end_cancel,0);
     else if (core_req.kind == CORE_REQ_SET) core_requester(0x20,0x18,0x100,0x70,core_end_ok,core_end_cancel,0);
     else if (core_req.kind == CORE_REQ_WORLD) core_world_layout(0);
+    else if (core_req.kind == CORE_REQ_FILE) core_file_layout(0);
     if (core_req.kind) tempo = 0;
 }
 /* _options(side) asm:13617-13660: keep a copy of _stats[side], show the
@@ -3494,8 +3517,9 @@ static void core_game_options_close(void)
         fprintf(stderr, "Game options: map restart failed; keeping the current game.\n");
 }
 /* _game_options click, asm:12878-13350. In a conquest game entries 0..8
- * are ignored. Inert here: TWO PLAYERS (_two_players, serial), SAVE/LOAD
- * (_save_load); ONE PLAYER only ticks, as _serial_off is always 1.
+ * are ignored. Inert here: TWO PLAYERS (_two_players, serial); SAVE A GAME / LOAD A GAME open
+ * _save_load (core_file_open), LOAD only with _serial_off; ONE PLAYER only
+ * ticks, as _serial_off is always 1.
  * CONQUEST (asm:13221-13239) opens _show_world with an empty _message. */
 static void core_game_options_click(void)
 {
@@ -3525,6 +3549,8 @@ static void core_game_options_click(void)
     case 9: core_game_tick(9,10); core_message[0] = 0; core_world_open(CORE_WORLD_OPTIONS); return;
     case 10: core_game_tick(10,9); in_conquest = -1; break;
     case 11: core_set_options_open(); return;
+    case 12: core_file_open(1); return;                     /* asm:13259-13266 */
+    case 13: if (serial_off) { core_file_open(0); return; } break;   /* asm:13267-13276 */
     case 14: A4_WORD(0x309a) = 1; core_game_options_close(); return;
     case 15: A4_WORD(0x309a) = (int16_t)(ground_in + 2); core_game_options_close(); return;
     case 16: A4_WORD(0x8258) = player; core_game_options_close(); return;  /* _surender */
@@ -3564,12 +3590,430 @@ static void core_set_options_click(void)
     left_button = 2; core_req.kind = CORE_REQ_GAME; core_requester_layout();
 }
 
+/* ---- SAVE A GAME / LOAD A GAME: _save_game asm:17123-17385, _checksum
+ * asm:17389-17407, _load_game asm:17412-17703.
+ * The file is the raw A4 regions in _Write order, big-endian as the 68000
+ * wrote them. The port's A4 holds host-endian words/longs, so each region
+ * is converted per field; peep pointers (peep +14, _stats +$22/$26/$2a,
+ * here slot+1) are written as Amiga _peeps addresses $53014+22*slot. */
+#define CORE_SAVE_SIGNATURE 0xffffb615u   /* asm:17125, 17453 */
+#define CORE_SAVE_PEEPS     0x53014u      /* _peeps (LAB_53018-4) in the IRA image */
+enum { CORE_SAVE_BYTES, CORE_SAVE_WORDS, CORE_SAVE_LONG, CORE_SAVE_MAGNET, CORE_SAVE_PEEPLIST,
+       CORE_SAVE_STATS, CORE_SAVE_CONQUEST };
+static const struct { int offset, size, kind; } core_save_regions[] = {
+    {0xae86,0x2102,CORE_SAVE_WORDS},     /* _alt, 65x65 words */
+    {0xdf88,0x1000,CORE_SAVE_BYTES},     /* _map_alt */
+    {0xcf88,0x1000,CORE_SAVE_BYTES},     /* _map_blk */
+    {0xef88,0x1000,CORE_SAVE_BYTES},     /* _map_bk2 */
+    {0x1f88,0x1000,CORE_SAVE_BYTES},     /* _map_who */
+    {0x99f6,0x20,CORE_SAVE_MAGNET},      /* _magnet[2]: 4 words, good_pop/bad_pop, mana */
+    {0x9c26,0x1222,CORE_SAVE_PEEPLIST},  /* _peeps, 211 22-byte records */
+    {0x82b6,0x2e,CORE_SAVE_STATS},       /* _stats */
+    {0x82e4,0x2e,CORE_SAVE_STATS},       /* strABC, the second _stats record */
+    {0x8256,2,CORE_SAVE_WORDS},          /* _mode */
+    {0x99e2,2,CORE_SAVE_WORDS},          /* _seed */
+    {0x99e4,2,CORE_SAVE_WORDS},          /* _start_seed */
+    {0x99f4,2,CORE_SAVE_WORDS},          /* _player */
+    {0x99e6,2,CORE_SAVE_WORDS},          /* _ground_in */
+    {0xae80,2,CORE_SAVE_WORDS},          /* _war */
+    {0xae6a,2,CORE_SAVE_WORDS},          /* _game_turn */
+    {0x84bc,10,CORE_SAVE_CONQUEST},      /* _conquest: 8 bytes, seed word */
+    {0x84ba,2,CORE_SAVE_WORDS},          /* _in_conquest */
+    {0x9c24,2,CORE_SAVE_WORDS},          /* _paint_map */
+    {0xae7a,4,CORE_SAVE_WORDS},          /* _battle_won[2] */
+    {0x84b8,2,CORE_SAVE_WORDS},          /* _game_mode */
+    {0xae7e,2,CORE_SAVE_WORDS},          /* _level_number */
+    {0xae72,4,CORE_SAVE_LONG},           /* _score */
+};
+/* 4 + regions + the checksum word: 29646 bytes. */
+#define CORE_SAVE_SIZE (4 + 0x2102 + 4*0x1000 + 0x20 + 0x1222 + 2*0x2e + 7*2 + 10 + 2 + 2 + 4 + 2 + 2 + 4 + 2)
+#define CORE_SAVE_MAGNET_AT (4 + 0x2102 + 4*0x1000)
+#define CORE_SAVE_SCALARS_AT (CORE_SAVE_MAGNET_AT + 0x20 + 0x1222 + 2*0x2e)   /* _mode */
+
+/* Field width at byte "at" of a region; *is_pointer marks a peep pointer. */
+static int core_save_unit(int kind, int at, int *is_pointer)
+{
+    *is_pointer = 0;
+    switch (kind) {
+    case CORE_SAVE_WORDS: return 2;
+    case CORE_SAVE_LONG: return 4;
+    case CORE_SAVE_MAGNET: return at % 16 < 8 ? 2 : 4;
+    case CORE_SAVE_PEEPLIST:
+        at %= 22;   /* bytes 0-3, words 4-12, pointer 14, word 18, bytes 20-21 */
+        if (at == 14) { *is_pointer = 1; return 4; }
+        return at < 4 || at >= 20 ? 1 : 2;
+    case CORE_SAVE_STATS:   /* bytes 0-3, words 4-$20, pointers $22/$26/$2a */
+        if (at >= 0x22) { *is_pointer = 1; return 4; }
+        return at < 4 ? 1 : 2;
+    case CORE_SAVE_CONQUEST: return at < 8 ? 1 : 2;
+    default: return 1;
+    }
+}
+static void core_put_be(uint8_t *out, uint32_t value, int size)
+{
+    for (int i = size-1; i >= 0; --i, value >>= 8) out[i] = (uint8_t)value;
+}
+static uint32_t core_get_be(const uint8_t *in, int size)
+{
+    uint32_t value = 0;
+    for (int i = 0; i < size; ++i) value = value << 8 | in[i];
+    return value;
+}
+/* _checksum(_alt,$1081) + 4x _checksum(map,$800) + the low word of
+ * good_pop+bad_pop (asm:17161-17189), over the big-endian file image:
+ * _alt and the four maps are contiguous from offset 4. */
+static uint16_t core_save_checksum(const uint8_t *file)
+{
+    uint16_t sum = 0;
+    for (int at = 4; at < CORE_SAVE_MAGNET_AT; at += 2) sum = (uint16_t)(sum + core_get_be(file+at,2));
+    return (uint16_t)(sum + core_get_be(file+CORE_SAVE_MAGNET_AT+8,4) + core_get_be(file+CORE_SAVE_MAGNET_AT+0x18,4));
+}
+/* The live A4 as the file image, checksum included. */
+static uint16_t core_save_encode(uint8_t *file)
+{
+    int at = 4;
+    core_put_be(file, CORE_SAVE_SIGNATURE, 4);
+    for (size_t r = 0; r < sizeof core_save_regions / sizeof *core_save_regions; ++r) {
+        const uint8_t *base = A4_DISP(core_save_regions[r].offset);
+        for (int k = 0, size, is_pointer; k < core_save_regions[r].size; k += size, at += size) {
+            size = core_save_unit(core_save_regions[r].kind, k, &is_pointer);
+            uint32_t value = size == 1 ? base[k] : size == 2 ? (uint16_t)((const A4Word *)(base+k))->value
+                                                             : ((const A4Long *)(base+k))->value;
+            if (is_pointer) value = value && value <= 211 ? CORE_SAVE_PEEPS + 22*(value-1) : 0;
+            core_put_be(file+at, value, size);
+        }
+    }
+    uint16_t sum = core_save_checksum(file);
+    core_put_be(file+at, sum, 2);
+    return sum;
+}
+/* The file image into the (staged) A4. An address that is not a _peeps
+ * record becomes 0, in a peep the peep itself so _get_heading still runs. */
+static void core_save_decode(const uint8_t *file)
+{
+    int at = 4;
+    for (size_t r = 0; r < sizeof core_save_regions / sizeof *core_save_regions; ++r) {
+        uint8_t *base = A4_DISP(core_save_regions[r].offset);
+        int kind = core_save_regions[r].kind;
+        for (int k = 0, size, is_pointer; k < core_save_regions[r].size; k += size, at += size) {
+            size = core_save_unit(kind, k, &is_pointer);
+            uint32_t value = core_get_be(file+at, size);
+            if (is_pointer && value) {
+                uint32_t slot = (value - CORE_SAVE_PEEPS) / 22;
+                if (value >= CORE_SAVE_PEEPS && (value - CORE_SAVE_PEEPS) % 22 == 0 && slot < 208) value = slot+1;
+                else value = kind == CORE_SAVE_PEEPLIST && k/22 < 208 ? (uint32_t)(k/22+1) : 0;
+            }
+            if (size == 1) base[k] = (uint8_t)value;
+            else if (size == 2) ((A4Word *)(base+k))->value = (int16_t)value;
+            else ((A4Long *)(base+k))->value = value;
+        }
+    }
+}
+
+/* Port: save files live under POPULOUS_SAVE_DIR, else $XDG_DATA_HOME/populous/saves,
+ * else ~/.local/share/populous/saves, else ./saves. The original's paths
+ * were relative to the current AmigaDOS directory; here a relative drawer or
+ * name is relative to that base, an absolute one ('/') is used as it is. */
+static int core_save_base(char *out, size_t size)
+{
+    const char *env = getenv("POPULOUS_SAVE_DIR"), *home = getenv("HOME");
+    int length;
+    if (env && *env) length = snprintf(out, size, "%s", env);
+    else if ((env = getenv("XDG_DATA_HOME")) && *env) length = snprintf(out, size, "%s/populous/saves", env);
+    else if (home && *home) length = snprintf(out, size, "%s/.local/share/populous/saves", home);
+    else length = snprintf(out, size, "saves");
+    return length > 0 && (size_t)length < size;
+}
+static int core_save_path(char *out, size_t size, const char *name)
+{
+    char base[4096];
+    if (name[0] == '/') return (size_t)snprintf(out, size, "%s", name) < size;
+    if (!core_save_base(base, sizeof base)) return 0;
+    return (size_t)snprintf(out, size, "%s/%s", base, name) < size;
+}
+static void core_save_mkdirs(void)
+{
+    char path[4096];
+    if (!core_save_base(path, sizeof path)) return;
+    for (char *slash = path + 1; ; ++slash) {
+        if (*slash && *slash != '/') continue;
+        char end = *slash; *slash = 0;
+        mkdir(path, 0777);   /* existing components fail with EEXIST */
+        if (!end) break;
+        *slash = end;
+    }
+}
+/* _save_game/_load_game name: ".GAM" unless it already ends in it
+ * (asm:17128-17154, 17414-17440). */
+static int core_save_file_name(char *out, size_t size, const char *name)
+{
+    size_t length = strlen(name);
+    char full[4096];
+    if ((size_t)snprintf(full, sizeof full, "%s%s", name,
+                         length >= 4 && !strcmp(name+length-4, ".GAM") ? "" : ".GAM") >= sizeof full) return 0;
+    return core_save_path(out, size, full);
+}
+
+/* _save_game: 1 on success (the original returns 0 then). Port: written to
+ * a temporary file and renamed, so a failed save leaves no partial file. */
+static int core_save_game(const char *name)
+{
+    char path[4160], temporary[4200];
+    static uint8_t file[CORE_SAVE_SIZE];
+    if (!core_save_file_name(path, sizeof path, name)) return 0;
+    snprintf(temporary, sizeof temporary, "%s.tmp", path);
+    core_save_mkdirs();
+    FILE *out = fopen(temporary, "wb");
+    if (!out) return 0;
+    A4_WORD(0x3082) = (int16_t)core_save_encode(file);   /* _land_checksum, asm:17189 */
+    int ok = fwrite(file, 1, sizeof file, out) == sizeof file;
+    if (fclose(out)) ok = 0;
+    if (ok && rename(temporary, path)) ok = 0;
+    if (!ok) remove(temporary);
+    return ok;
+}
+
+/* _load_game: 1 if the game was loaded. The original only checks the
+ * signature and then reads field by field. Port: the whole file is read
+ * and checked first (exact size, signature, checksum, _ground_in 0..3,
+ * _player 0..1, the LAND rules and graphics of _ground_in), then staged and
+ * published at once, so a rejected file leaves the game untouched. */
+static int core_load_game(const char *name)
+{
+    char path[4160], error[160];
+    static uint8_t file[CORE_SAVE_SIZE + 1];
+    if (!core_save_file_name(path, sizeof path, name)) return 0;
+    FILE *in = fopen(path, "rb");
+    if (!in) return 0;
+    size_t count = fread(file, 1, sizeof file, in);
+    fclose(in);
+    if (count != CORE_SAVE_SIZE || core_get_be(file,4) != CORE_SAVE_SIGNATURE ||
+        core_get_be(file+CORE_SAVE_SIZE-2,2) != core_save_checksum(file)) {
+        fprintf(stderr, "Load game: %s is not a saved game.\n", path);
+        return 0;
+    }
+    uint32_t loaded_player = core_get_be(file+CORE_SAVE_SCALARS_AT+6,2);
+    uint32_t terrain = core_get_be(file+CORE_SAVE_SCALARS_AT+8,2);
+    if (loaded_player > 1 || terrain > 3) {
+        fprintf(stderr, "Load game: %s has an unsupported player or landscape.\n", path);
+        return 0;
+    }
+    /* ___load_ground(_ground_in,0), asm:17586-17589. */
+    const char *asset_directory = getenv("POPULOUS_ASSET_DIR");
+    if (!asset_directory) asset_directory = POPULOUS_DEFAULT_ASSET_DIR;
+    char default_data[4096];
+    if ((size_t)snprintf(default_data, sizeof default_data, "%s/raw", asset_directory) >= sizeof default_data) return 0;
+    const char *directory = getenv("POPULOUS_DATA_DIR");
+    if (!directory) directory = default_data;
+    LandRules rules;
+    if (!land_rules_load(directory, terrain, &rules, error, sizeof error)) {
+        fprintf(stderr, "Load game: LAND data: %s\n", error);
+        return 0;
+    }
+    GraphicsAssets *assets = graphics_load(asset_directory, terrain, rules.sprite_set, error, sizeof error);
+    if (!assets) { fprintf(stderr, "Load game: graphics: %s\n", error); return 0; }
+    _Alignas(4) static uint8_t staged[sizeof prg_a4_area];
+    memcpy(staged, prg_a4_area, sizeof staged);
+    uint8_t *live = prg_a4;
+    prg_a4 = staged + 32768;
+    core_save_decode(file);
+    A4_WORD(0x3082) = (int16_t)core_get_be(file+CORE_SAVE_SIZE-2,2);   /* _land_checksum */
+    core_install_land(&rules);
+    /* asm:17590-17682 */
+    not_player = player ? 0 : 1;
+    A4_WORD(0xae78) = core_target(0); A4_WORD(0xae76) = core_target(1);   /* _god_magnet/_devil_magnet */
+    int last = 207;
+    while (last >= 0 && !peep_word(last,4)) --last;
+    no_peeps = (int16_t)(last + 1);
+    for (int owner = 0; owner < 2; ++owner) memset(A4_DISP(0x82b6 + owner*46), 0, 3);
+    for (int person = 0; person < no_peeps; ++person) {
+        uint32_t raw; memcpy(&raw, peeps+person*22+14, sizeof raw);
+        if (raw) core_get_heading(person);
+    }
+    prg_a4 = live;
+    memcpy(prg_a4_area, staged, sizeof prg_a4_area);
+    graphics_free(game_assets);
+    game_assets = assets;
+    /* _mode 2 sets the terrain _pointer (asm:17671-17682); the port's
+     * pointer follows its tool, reset to terrain. */
+    core_result = core_tool = core_swamp_selected = 0; core_set_pointer();
+    core_end_shown = 0; core_end_next = -1;
+    core_custom_live = 1;
+    /* RESTART THIS MAP rebuilds the loaded world (port bookkeeping; the
+     * synthetic demo starts have no original level to point at). */
+    if (in_conquest == -1) {
+        current_start = (StartSelection){START_CUSTOM, 0};
+        core_land = (CustomLand){start_seed, 0, ground_in};
+    } else if (current_start.kind != START_SYNTHETIC && in_conquest >= 0 && in_conquest / 5 < LEVEL_COUNT)
+        current_start = (StartSelection){START_ORIGINAL, in_conquest / 5};
+    return 1;
+}
+
+/* _save_load(save) asm:10493-10972: _requester(d_screen,0x48,0x10,0xb0,0xb0)
+ * with "SAVE"/"LOAD" and CANCEL, 12 rows of the _drawer listing at
+ * 0x58,0x22+8*row, arrows 0x88/0x89 at 0xd8, then _drawer (0x8d) and
+ * _filename (0xa0), each 16 boxes. _drawer/_filename (20 bytes each) persist
+ * in the A4. The original loops until OK or CANCEL; here it is a requester. */
+#define core_drawer   ((char *)A4_DISP(0x302c))
+#define core_filename ((char *)A4_DISP(0x3040))
+static char *core_file_field(void) { return core_file.field == 1 ? core_drawer : core_filename; }
+static int core_file_compare(const void *a, const void *b) { return strcmp(a, b); }
+/* _get_a_dir asm:16841-16915 + _sort asm:11016-11079: files only, names
+ * upper-cased and cut at 29 characters; those ending ".GAM" without it. */
+static void core_file_directory(void)
+{
+    char path[4160];
+    core_file.count = core_file.top = 0;
+    if (!core_save_path(path, sizeof path, core_drawer[0] ? core_drawer : ".")) return;
+    DIR *directory = opendir(path);
+    if (!directory) return;
+    for (struct dirent *entry; core_file.count < CORE_FILE_MAX && (entry = readdir(directory));) {
+        char full[8320]; struct stat info;
+        snprintf(full, sizeof full, "%s/%s", path, entry->d_name);
+        if (stat(full, &info) || S_ISDIR(info.st_mode)) continue;
+        char *name = core_file.names[core_file.count];
+        size_t length = 0;
+        for (; length < 29 && entry->d_name[length]; ++length) {
+            unsigned char c = (unsigned char)entry->d_name[length];
+            name[length] = (char)(c >= 'a' && c <= 'z' ? c - 0x20 : c);
+        }
+        name[length] = 0;
+        if (length < 4 || strcmp(name+length-4, ".GAM")) continue;
+        name[length-4] = 0;
+        ++core_file.count;
+    }
+    closedir(directory);
+    qsort(core_file.names, (size_t)core_file.count, sizeof *core_file.names, core_file_compare);
+}
+static void core_file_layout(int draw)
+{
+    static const CoreMenuEntry buttons[] = {{0,0,0,"SAVE"},{0,0,0,"LOAD"}};
+    core_menu_install(core_file_ok, buttons + !core_file.save, 1);
+    core_requester(0x48,0x10,0xb0,0xb0,core_file_ok,core_end_cancel,draw);
+}
+static void core_file_open(int save)
+{
+    memset(&core_file, 0, sizeof core_file);
+    core_file.save = save;
+    core_req.kind = CORE_REQ_FILE; left_button = 2;
+    core_file_directory();
+    core_requester_layout();
+}
+/* _get_name(d_screen,field,0x58,y,16) entry as core_world_entry. */
+static void core_file_entry(int field)
+{
+    core_file.field = field; core_file.blink = 0;
+    char *text = core_file_field();
+    core_file.length = (int)strnlen(text, 16);
+    int end = 0;
+    for (int i = 0; i < 16; ++i) {
+        if (!text[i]) end = 1;
+        if ((uint8_t)text[i] <= 0x20 || end) text[i] = (char)0x82;
+    }
+    text[16] = 0; left_button = 2;
+}
+/* LAB_45ABA: drop the trailing boxes; a new _drawer reloads (-144 = 3). */
+static void core_file_entry_done(void)
+{
+    char *text = core_file_field();
+    text[core_file.length] = (char)0x82;
+    for (int i = 15; i >= 0 && (uint8_t)text[i] > 0x80; --i) text[i] = 0;
+    if (core_file.field == 1) core_file_directory();
+    core_file.field = 0;
+}
+/* _get_name keys as core_world_key. */
+static void core_file_key(int key)
+{
+    if (!core_file.field) return;
+    char *text = core_file_field();
+    if (key >= 0x20 && key <= 0x7a) {
+        if (core_file.length >= 15) return;
+        text[core_file.length++] = (char)(key >= 'a' ? key - 0x20 : key);
+    } else if ((key == 8 || key == 0x7f) && core_file.length) {
+        text[core_file.length--] = (char)0x82;
+        text[core_file.length] = (char)0x82;
+    } else if (key == 13) core_file_entry_done();
+}
+/* _save_load returning 0: _game_options redraws (-4 = 1). */
+static void core_file_back(void)
+{
+    core_req.kind = CORE_REQ_GAME; left_button = 2; core_requester_layout();
+}
+static void core_game_options_close(void);
+/* The click loop LAB_45EAC..LAB_4615C (asm:10760-10972). */
+static void core_file_click(void)
+{
+    int result;
+    if (core_file.error) { core_file.error = 0; left_button = 2; return; }   /* asm:10907-10928 */
+    if (core_file.field) {
+        /* _get_name's _check_cancel (asm:10432-10446): OK ends the entry,
+         * CANCEL empties the field; both then act on the requester. */
+        if (!(result = core_check_cancel(core_file_ok, core_end_cancel))) return;
+        if (result == 2) { core_file_field()[0] = 0; core_file.field = 0; }
+        else core_file_entry_done();
+    } else {
+        if (mousex >= 0x58 && mousex <= 0xd8) {
+            if (mousey >= 0x22 && mousey <= 0x82) {
+                int index = ((mousey - 0x22) >> 3) + core_file.top;
+                if (index < core_file.count) snprintf(core_filename, 20, "%s", core_file.names[index]);
+            } else if (mousey >= 0x8d && mousey <= 0x95) { core_file_entry(1); return; }
+            else if (mousey >= 0xa0 && mousey <= 0xa8) { core_file_entry(2); return; }
+        } else if (mousex >= 0xd8 && mousex <= 0xe0) {
+            if (mousey >= 0x22 && mousey <= 0x2a && core_file.top) --core_file.top;
+            else if (mousey >= 0x7a && mousey <= 0x82 && core_file.top + 5 < core_file.count) ++core_file.top;
+        }
+        result = core_check_cancel(core_file_ok, core_end_cancel);
+    }
+    left_button = 2;
+    if (!result) return;
+    if (result == 2 || !core_filename[0]) { core_file_back(); return; }
+    /* _drawer, '/' unless it ends in ':' or '/' (or is one character), _filename. */
+    char name[48];
+    snprintf(name, sizeof name, "%.19s", core_drawer);
+    size_t last = strlen(name);
+    if (last > 1 && name[last-1] != ':' && name[last-1] != '/') { name[last] = '/'; name[last+1] = 0; }
+    snprintf(name + strlen(name), sizeof name - strlen(name), "%.19s", core_filename);
+    if (core_file.save) {
+        if (!core_save_game(name)) { core_file.error = 1; return; }   /* "ERROR IN SAVING" */
+        A4_WORD(0x3054) = 1;   /* _saved; the level.dat disk check is not needed here */
+    } else if (!core_load_game(name)) fprintf(stderr, "Load game: %s could not be loaded.\n", name);
+    core_game_options_close();   /* _save_load returns 1 either way */
+}
+static void core_draw_game_options(void);
+static void core_draw_file(void)
+{
+    core_draw_game_options();
+    core_file_layout(1);
+    amiga_text(game_pixels, 0x58, 0x18, core_file.save ? "SAVE GAME" : "LOAD GAME");
+    amiga_text(game_pixels, 0xd8, 0x22, "\x88"); amiga_text(game_pixels, 0xd8, 0x7a, "\x89");
+    amiga_text(game_pixels, 0x58, 0x84, "DIRECTORY");
+    amiga_text(game_pixels, 0x58, 0x97, core_file.error ? "ERROR IN SAVING" : "FILE NAME");
+    char row[17];
+    for (int i = 0; i < 12; ++i) {
+        int index = core_file.top + i;
+        const char *name = index < core_file.count ? core_file.names[index] : "";
+        int length = (int)strlen(name);
+        for (int k = 0; k < 16; ++k) row[k] = k < length ? name[k] : (char)0x82;
+        row[16] = 0;
+        amiga_text(game_pixels, 0x58, 0x22 + i*8, row);
+    }
+    for (int field = 1; field <= 2; ++field) {
+        const char *text = field == 1 ? core_drawer : core_filename;
+        int length = (int)strnlen(text, 16);
+        for (int k = 0; k < 16; ++k) row[k] = k < length ? text[k] : (char)0x82;
+        row[16] = 0;
+        if (core_file.field == field && !(core_file.blink / 10 & 1)) row[core_file.length] = (char)0x83;
+        amiga_text(game_pixels, 0x58, field == 1 ? 0x8d : 0xa0, row);
+    }
+}
+
 static void core_requester_click(void)
 {
     if (core_req.kind == CORE_REQ_OPTIONS) core_options_click();
     else if (core_req.kind == CORE_REQ_GAME) core_game_options_click();
     else if (core_req.kind == CORE_REQ_SET) core_set_options_click();
     else if (core_req.kind == CORE_REQ_WORLD) core_world_click();
+    else if (core_req.kind == CORE_REQ_FILE) core_file_click();
 }
 
 static void core_draw_game_options(void)
@@ -3596,6 +4040,7 @@ static void core_draw_requester(void)
         }
     } else if (core_req.kind == CORE_REQ_GAME) core_draw_game_options();
     else if (core_req.kind == CORE_REQ_WORLD) core_draw_world();
+    else if (core_req.kind == CORE_REQ_FILE) core_draw_file();
     else if (core_req.kind == CORE_REQ_SET) {
         /* _set_options draws over the game options screen. */
         core_draw_game_options();
@@ -4730,6 +5175,11 @@ static void game_handle_event(const SDL_Event *event)
         if (core_req.kind == CORE_REQ_WORLD) {
             if (key == SDLK_RETURN || key == SDLK_KP_ENTER) core_world_key(13);
             else if (key >= 0 && key < 0x80) core_world_key((int)key);
+            return;
+        }
+        if (core_req.kind == CORE_REQ_FILE) {   /* _save_load's _get_name */
+            if (key == SDLK_RETURN || key == SDLK_KP_ENTER) core_file_key(13);
+            else if (key >= 0 && key < 0x80) core_file_key((int)key);
             return;
         }
         if (core_req.kind || core_lord.shown) return;   /* the requester and lord loops read only the mouse */

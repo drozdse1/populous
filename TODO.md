@@ -21,7 +21,7 @@ beziehen sich auf die Inventarbasis, neue Funktionsnamen auf den Arbeitsbaum.
 - `[ ] Pruefen`: Umfang oder Originaltreue noch nicht abschliessend belegt.
 - **P0:** Paritaetsinventar und reproduzierbare Arbeitsgrundlage.
 - **P1:** Originalwelten, Bewohnerregeln, Aktionssteuerung, Kraefte und KI.
-- **P2:** Kampagne, vollstaendige Praesentation, Audio und Speichern/Laden.
+- **P2:** Kampagne, vollstaendige Praesentation, Audio; Speichern/Laden im Originalformat erledigt.
 - **P3:** Zweispielermodus und Abschlusspruefung der Gesamtmigration.
 - **Optional:** historische Diagnosewerkzeuge und zusaetzliche Hardwaretreue.
 
@@ -229,7 +229,7 @@ Belege: `populous_c_port/populous_prg.c:1030-1062`, `:1509-1543`;
 
 - [ ] **Teilweise:** Toolbar anklickbar (alle `_zoom_map`-Icons, asm:1700-2451). Erledigt: Abfragemodus (`_interogate`) mit Schild (`_show_the_shield`, ohne Flaggen-/Waffen-Icons mangels `_icon_data`) und dauerhafte Icon-Hervorhebung (`_toggle_icon`) fuer Tendenz, Modus, Musik, FX und Pause. Options- und Spieloptionen-Requester (`_do_action` 7/8) oeffnen die originalen Dialoge. Offen: Nachrichten-Requester (`_do_action` 2), kurze Tastendruck-Blitze der Power-/View-Icons.
 - [ ] **Teilweise:** Originale Manaanzeige erledigt (`_move_mana` asm:3164-3244: Sprite 69 auf der Manaskala nach `_mana_values`, reine Praesentation). Offen: weitere Bewohner-/Siedlungs-Informationsanzeigen.
-- [ ] **Teilweise:** Requester und Optionen. Erledigt: `_requester` (Rahmen aus `_icon_data` 12..23, OK/CANCEL), `_check_cancel`, `_options` (Machtbits, Aggression, Rate), `_game_options` (Spiel/Karte malen, Gut/Boese, Mensch/Amiga, Custom Game, naechste Karte/Neustart fuer Eroberungswelten und Custom-Karten, Aufgeben), `_set_options` (`_game_mode`-Bits); Simulation pausiert, Eingabe geht an den Requester. Eroberung oeffnet die Weltauswahl `_show_world` mit `_get_name`. Zahl in der Weltauswahl startet diese Custom-Karte. Offen (angezeigt, aber wirkungslos): Zwei Spieler/Seriell, Speichern/Laden, Nachrichten-Requester, Requester in der Diagnoseansicht.
+- [ ] **Teilweise:** Requester und Optionen. Erledigt: `_requester` (Rahmen aus `_icon_data` 12..23, OK/CANCEL), `_check_cancel`, `_options` (Machtbits, Aggression, Rate), `_game_options` (Spiel/Karte malen, Gut/Boese, Mensch/Amiga, Custom Game, naechste Karte/Neustart fuer Eroberungswelten und Custom-Karten, Aufgeben), `_set_options` (`_game_mode`-Bits); Simulation pausiert, Eingabe geht an den Requester. Eroberung oeffnet die Weltauswahl `_show_world` mit `_get_name`. Zahl in der Weltauswahl startet diese Custom-Karte. Speichern/Laden ueber `_save_load` (siehe P2). Offen (angezeigt, aber wirkungslos): Zwei Spieler/Seriell, Nachrichten-Requester, Requester in der Diagnoseansicht.
 - [x] **Erledigt:** Originalschrift dekodiert und genutzt (`amiga_text`, `_text` asm:19973-20052); `raw/font.dat` ist byteweise identisch mit dem eingebetteten `_font_data` (asm:21949-22372, 4400 Bytes geprueft).
 - [ ] **Teilweise:** Originaler Mauszeiger erledigt (`_pointer` A4 0x84b6 wie im Original gesetzt, `_a_sprite`-Frames aus `_sprite_to_amiga` asm:16783-16830, Hotspot oben links nach `_move_pointer` asm:19928-19972; Ersatzkreuz entfernt). Abweichung: nach Sumpfziel bleibt der Port-Magnet samt Zeiger. Offen: weitere Auswahl-/Zielanzeigen.
 - [x] Port-HUD (keine Originalfunktion, y 200..255) nutzt die Originalschrift ueber `amiga_text`, 40 Spalten x 7 Zeilen; Ersatzschrift `hud_text` entfernt.
@@ -314,18 +314,19 @@ Belege: `populous_c_port/audio.c`, `populous_c_port/populous_prg.c`
 
 ## P2 - Speichern und Laden
 
-- [ ] **Fehlt:** Originalformat mit Signatur, Byteordnung, Feldreihenfolge und Checksumme implementieren; A4-Hostspeicher nicht einfach als Datei schreiben.
-- [ ] **Fehlt:** Hoehen, Karten, Bewohner, Magnet, RNG, Optionen und weitere im Original gespeicherte Felder vollstaendig serialisieren/deserialisieren.
-- [ ] **Fehlt:** Save-/Load-Dialoge sowie sichere Dateipfade und atomaren Speicheraustausch auf dem Host integrieren.
-- [ ] **Fehlt:** Laden vor Zustandswechsel validieren; fehlerhafte, verkuerzte oder inkompatible Dateien duerfen das laufende Spiel nicht beschaedigen.
-- [ ] **Pruefen:** Originaldatei-Kompatibilitaet und Roundtrip testen; Fortsetzen muss bei identischen Aktionen denselben Zustand erreichen.
+- [x] Originalformat implementiert (`_save_game`/`_checksum`/`_load_game`): Signatur `$FFFFB615`, Big-Endian, Feldreihenfolge wie `_Write`, 29646 Bytes, Wortsummen-Checksumme ueber `_alt` und vier Karten plus `good_pop+bad_pop`; feldweise Umwandlung statt Hostspeicher-Dump, Bewohnerzeiger als `_peeps`-Adressen.
+- [x] Alle Originalfelder: `_alt`, `_map_alt/_blk/_bk2/_who`, `_magnet`, `_peeps`, beide `_stats`, `_mode`, `_seed`, `_start_seed`, `_player`, `_ground_in`, `_war`, `_game_turn`, `_conquest`, `_in_conquest`, `_paint_map`, `_battle_won`, `_game_mode`, `_level_number`, `_score`; Nachlauf wie Original (`___load_ground`, `_not_player`, Magnete, `no_peeps`, Mailboxen, `_get_heading`, Zeiger).
+- [x] `_save_load`-Requester in SAVE A GAME / LOAD A GAME (Verzeichnisliste `.GAM`, Blaettern, `_get_name` fuer Verzeichnis/Dateiname, ERROR IN SAVING). Speicherort `$POPULOUS_SAVE_DIR`, sonst `$XDG_DATA_HOME/populous/saves`, sonst `~/.local/share/populous/saves`; Speichern ueber Temporaerdatei + `rename`.
+- [x] Laden validiert vor jeder Aenderung (Groesse, Signatur, Checksumme, `_player`, `_ground_in`, LAND/Grafik) und uebernimmt den Zustand gestaffelt; Abweichung vom Original (prueft nur die Signatur) dokumentiert.
+- [x] Tests: Roundtrip (Speichern -> Laden -> erneut Speichern bitgleich bis auf die vom Original neu berechneten Felder), Byte-Layout gegen das asm-Format, defekte/verkuerzte/ueberlange/inkompatible Dateien ohne Zustandsaenderung, Requester-Bedienung.
+- [ ] **Pruefen:** Kompatibilitaet mit echten Amiga-`.GAM`-Dateien (keine Testdatei vorhanden); Zeiger anderer Ladeadressen werden ueber `_get_heading` neu bestimmt.
 
 **Abhaengigkeiten:** Vollstaendig erfasster Spielzustand, Formatforschung und UI.
 **Abnahme:** Speichern/Laden stellt eine laufende Partie wieder her, nicht bloss
 einen Startlevel; fehlerhafte Dateien werden nachvollziehbar abgewiesen.
 
-Belege: `populous_c_port/populous_prg.c:385-399`;
-`src/populous_prg.asm:17123-17227`, `:17412-17501`.
+Belege: `populous_c_port/populous_prg.c` (`core_save_game`, `core_load_game`, `core_file_*`);
+`src/populous_prg.asm:10307-10972`, `:11016-11079`, `:16841-16915`, `:17123-17703`.
 
 ## P3 - Zweispielermodus
 
