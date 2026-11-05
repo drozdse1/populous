@@ -27,3 +27,5 @@ populous_c_port/tests/test_runtime_sanitize
 
 # Cortex Code local state
 .cortex/
+populous_c_port/tests/test_audio
+populous_c_port/tests/test_audio_sanitize

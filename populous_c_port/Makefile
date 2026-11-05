@@ -7,7 +7,7 @@ TEST_TIMEOUT ?= 20s
 SANITIZER_FLAGS = -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 
 TARGET = populous_init_port
-SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c
+SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c
 CPPFLAGS += -DPOPULOUS_DEFAULT_ASSET_DIR='"$(abspath ../binaries/populous-extracted)"'
 OBJS = $(SRCS:.c=.o)
 HEADERS = $(wildcard *.h)
@@ -46,21 +46,21 @@ test-sanitize: tests/test_runtime_sanitize
 # Only activate game checks once the core step supplies real test sources.
 ifneq ($(wildcard tests/test_game.c),)
 .PHONY: test-game
-tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c $(HEADERS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c -o $@ $(LDLIBS)
+tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c -o $@ $(LDLIBS)
 
-tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c $(HEADERS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c -o $@ $(LDLIBS)
+tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c -o $@ $(LDLIBS)
 
 test-game: tests/test_game
-	SDL_VIDEODRIVER=dummy timeout $(TEST_TIMEOUT) ./tests/test_game
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout $(TEST_TIMEOUT) ./tests/test_game
 
 test: test-game
 
 test-sanitize: test-game-sanitize
 .PHONY: test-game-sanitize
 test-game-sanitize: tests/test_game_sanitize
-	SDL_VIDEODRIVER=dummy timeout $(TEST_TIMEOUT) ./tests/test_game_sanitize
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout $(TEST_TIMEOUT) ./tests/test_game_sanitize
 endif
 
 PYTHON ?= python3
@@ -105,7 +105,7 @@ test-graphics-local: tests/test_graphics
 	timeout $(TEST_TIMEOUT) ./tests/test_graphics "$(ASSET_DIR)"
 
 clean:
-	rm -f $(OBJS) $(TARGET) tests/test_runtime tests/test_runtime_sanitize tests/test_game tests/test_game_sanitize tests/test_land tests/test_land_sanitize tests/test_graphics tests/test_graphics_sanitize tests/test_level tests/test_level_sanitize
+	rm -f $(OBJS) $(TARGET) tests/test_runtime tests/test_runtime_sanitize tests/test_game tests/test_game_sanitize tests/test_land tests/test_land_sanitize tests/test_graphics tests/test_graphics_sanitize tests/test_level tests/test_level_sanitize tests/test_audio tests/test_audio_sanitize
 
 run: $(TARGET)
 	./$(TARGET)
@@ -126,4 +126,17 @@ test-sanitize: test-level-sanitize
 LEVEL_TEST_TIMEOUT ?= 120s
 test-level-local: tests/test_game
 	@test -n "$(LEVEL_DATA_DIR)" || { printf '%s\n' 'Set LEVEL_DATA_DIR to an external raw data directory'; exit 1; }
-	SDL_VIDEODRIVER=dummy timeout $(LEVEL_TEST_TIMEOUT) ./tests/test_game --levels "$(LEVEL_DATA_DIR)"
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout $(LEVEL_TEST_TIMEOUT) ./tests/test_game --levels "$(LEVEL_DATA_DIR)"
+
+# Mixer and _load_sound parser; the device check uses SDL's dummy driver.
+.PHONY: test-audio test-audio-sanitize
+tests/test_audio: tests/test_audio.c audio.c audio.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< audio.c -o $@ $(LDLIBS)
+tests/test_audio_sanitize: tests/test_audio.c audio.c audio.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< audio.c -o $@ $(LDLIBS)
+test-audio: tests/test_audio
+	SDL_AUDIODRIVER=dummy timeout $(TEST_TIMEOUT) ./tests/test_audio
+test-audio-sanitize: tests/test_audio_sanitize
+	SDL_AUDIODRIVER=dummy timeout $(TEST_TIMEOUT) ./tests/test_audio_sanitize
+test: test-audio
+test-sanitize: test-audio-sanitize

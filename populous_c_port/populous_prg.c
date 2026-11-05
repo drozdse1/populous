@@ -63,6 +63,7 @@
 #include "land_data.h"
 #include "level_data.h"
 #include "graphics.h"
+#include "audio.h"
 #ifndef POPULOUS_DEFAULT_ASSET_DIR
 #define POPULOUS_DEFAULT_ASSET_DIR "binaries/populous-extracted"
 #endif
@@ -148,6 +149,20 @@ static void ensure_prg_screen(void);
 #define no_sprites       A4_WORD(0x9a1c)
 #define ok_to_build      A4_WORD(0x9a1e)
 #define sound_effect     (*(uint8_t *)A4_DISP(0x9a20))
+/* Sound state; absolute vbi labels rebased on A4 $593ee. */
+#define effect           A4_WORD(0x2fac)
+#define last_fire        A4_WORD(0x2fae)
+#define music_now        A4_WORD(0x3152)
+#define music            A4_WORD(0x3154)
+#define sound_in         A4_WORD(0x3156)
+#define seqlen           A4_WORD(0x3378)
+#define no_sounds        A4_WORD(0x3542)
+#define curseq           A4_WORD(0x3544)
+#define curbeat          A4_WORD(0x3546)
+#define curtime          A4_WORD(0x3548)
+#define Soundpri(ch)     A4_WORD(0x354e + 2*(ch))
+#define music_off        A4_WORD(0x8250)  /* nonzero = music plays (asm:19621) */
+#define effect_off       A4_WORD(0x8252)  /* nonzero = effects play (asm:19633) */
 #define mode             A4_WORD(0x8256)
 #define pointer          A4_WORD(0x84b6)
 #define sprite           (A4_DISP(0x9a22))          /* sprite list base */
@@ -506,15 +521,6 @@ static void _write_serial(void);
 static void _check_serial(void);
 static void _set_baud_rate(void);
 
-static void _PlaySound(void);
-static void _setsound(void);
-static void _PlayMeas(void);
-static void _load_sound(void);
-static void _open_channels(void);
-static void _close_channels(void);
-static void _free_all_sounds(void);
-static void _kill_effect(void);
-static void _check_effect(void);
 
 static void _valid_move(void);
 static void _check_life(void);
@@ -1926,12 +1932,127 @@ static int core_war(int owner)
 }
 
 typedef uint16_t (*WorldRandom)(void);
-/* _do_quake asm:7863-8042, gameplay only (P is not the editor).
- * Terrain-only pre-mutation shake and audio remain separate work. */
+/* Sound bank (gmusic1 in play) and _curmeas as an offset into _measures. */
+static AudioBank core_bank;
+static uint32_t core_curmeas;
+/* _kill_effect(from,to) asm:20876-20894: AbortIO on from..to-1. */
+static void core_kill_effect(int from, int to) { for (int ch = from; ch < to; ++ch) audio_abort(ch); }
+/* _check_effect asm:20898-20908: CheckIO, nonzero once the channel is idle. */
+static int core_check_effect(int ch) { return !audio_busy(ch); }
+/* _setsound asm:20390-20429: CMD_WRITE of sams[d+5]+offset, d+2 - offset
+ * bytes, period d+0, volume d+4 (ADIOF_PERVOL), cycles. */
+static void core_setsound(int ch, const AudioKit *d, uint32_t offset, uint16_t cycles)
+{
+    AudioWrite w = {core_bank.samples + core_bank.sams[d->sample].offset + offset,
+                    d->length - offset, d->period, (uint16_t)(d->volume < 0 ? 0 : d->volume), cycles};
+    audio_write(ch,&w);
+}
+/* _PlaySound(sound,ch) asm:20307-20386: unsigned bounds; a busy channel
+ * keeps its sound against a lower d+4 (_Soundpri). The second request's
+ * long offset is built from two pushed words, sams[].+2:d+6 (asm:20371-20380);
+ * its cycles slot lies past the pushed arguments, so the port uses d+6. */
+static int core_PlaySound(int sound, int ch)
+{
+    if ((uint16_t)sound >= (uint16_t)no_sounds || (uint16_t)ch > 3 ||
+        !core_bank.kit || (uint16_t)sound >= core_bank.kit_count) return 0;
+    const AudioKit *d = &core_bank.kit[(uint16_t)sound];
+    if (!core_check_effect(ch) && d->volume < Soundpri(ch)) return 0;
+    audio_abort(ch);
+    Soundpri(ch) = d->volume;
+    core_setsound(ch,d,0,1);
+    if (d->loop) core_setsound(ch,d,(uint32_t)core_bank.sams[d->sample].loop << 16 | d->loop,d->loop);
+    return 1;
+}
+/* _PlayMeas asm:20433-20518: one beat on all four tracks ('A' = sound 0,
+ * below 'A' is out of range), then the measure/sequence advance. _curtime
+ * is never reset after _load_sound, as in the original. */
+static void core_PlayMeas(void)
+{
+    if (!core_bank.kit || !core_bank.seq_count) return;
+    const uint8_t *m = core_bank.measures + core_curmeas + (uint16_t)curbeat;
+    for (int track = 0; track < 4; ++track) core_PlaySound((int16_t)(m[track*0x40] - 0x41),track);
+    curbeat = (int16_t)(curbeat+1);
+    if (core_bank.measln[core_bank.sequn[(uint16_t)curseq][0]] != (uint16_t)curbeat) return;
+    curtime = (int16_t)(curtime+1); curbeat = 0;
+    if ((uint16_t)curtime >= core_bank.sequn[(uint16_t)curseq][1] && ++curseq == seqlen) curseq = 0;
+    core_curmeas = (uint32_t)core_bank.sequn[(uint16_t)curseq][0] << 8;
+}
+/* _free_all_sounds asm:20522-20565. */
+static void core_free_all_sounds(void) { core_kill_effect(0,4); audio_bank_free(&core_bank); }
+/* _load_sound asm:20712-20872, from <assets>/raw/<name>; 0 or -1. */
+static int core_load_sound(const char *name)
+{
+    const char *directory = getenv("POPULOUS_ASSET_DIR");
+    if (!directory) directory = POPULOUS_DEFAULT_ASSET_DIR;
+    char path[1024], error[128];
+    snprintf(path,sizeof path,"%s/raw/%s",directory,name);
+    FILE *file = fopen(path,"rb");
+    if (!file) { fprintf(stderr,"Sound %s: %s\n",path,strerror(errno)); return -1; }
+    static uint8_t data[0x40000];
+    size_t size = fread(data,1,sizeof data,file);
+    int big = fgetc(file) != EOF;
+    fclose(file);
+    AudioBank bank;
+    if (big || !audio_bank_parse(&bank,data,size,error,sizeof error)) {
+        fprintf(stderr,"Sound %s: %s\n",path,big ? "file too large" : error);
+        return -1;
+    }
+    core_free_all_sounds();
+    core_bank = bank;
+    no_sounds = (int16_t)bank.kit_count; seqlen = (int16_t)bank.seq_count;
+    core_curmeas = (uint32_t)bank.sequn[0][0] << 8;
+    curtime = curseq = curbeat = 0;
+    for (int ch = 0; ch < 4; ++ch) Soundpri(ch) = 0;
+    return 0;
+}
+/* Vertical blank sound part, asm:19620-19672: music every _music frames,
+ * a pending _effect on channels 2 and 3 (delaying music to 40 frames),
+ * else the population heartbeat 0x47/0x48 on channel 0. */
+static void core_vbi_audio(void)
+{
+    if (music_off) {
+        int16_t now = (int16_t)(music_now+1);
+        if (now == music) { music = 10; core_PlayMeas(); now = 0; }
+        music_now = now;
+    }
+    if (!effect_off) return;
+    if (effect) {
+        music = 0x28;
+        core_PlaySound(effect,2); core_PlaySound(effect,3);
+        effect = 0;
+    } else if (!sound_in && tempo) {
+        tempo_now = (int16_t)(tempo_now+1);
+        if (tempo_now >= tempo) { core_PlaySound(0x47,0); tempo_now = 0; }
+        else if ((int16_t)(tempo-beat_two) == tempo_now) core_PlaySound(0x48,0);
+    }
+}
+/* _animate asm:564-605: heartbeat rate from enemy/own population, then
+ * the _toggle flip (asm:606-612). Run once per main-loop pass. */
+static void core_tempo_pass(void)
+{
+    if (core_good_pop(player)) {
+        int32_t own = (int32_t)core_good_pop(player), other = (int32_t)core_good_pop(player ? 0 : 1);
+        tempo = (int16_t)(0x32 - 2*(other/own));
+        if (tempo < 7) tempo = 7;
+        beat_two = (int16_t)(tempo/3);
+    } else { tempo = 0; beat_two = 1; }
+    if (tempo_now > tempo) tempo_now = tempo;
+    toggle = !toggle;
+}
+/* _start_game asm:13966-13972 (_open_channels, _load_sound "gmusic1")
+ * plus the data defaults _tempo $32, _music_off/_effect_off 1
+ * (asm:24129-24134) and _music 10 (_setup_mouse asm:19687). */
+static void core_sound_start(void)
+{
+    tempo = 0x32; music_off = effect_off = 1; music = 10;
+    audio_open();
+    core_load_sound("gmusic1");
+}
 /* _do_quake asm:7895-7925: screen_origin -40, then per frame -120/+120
  * bytes; at 40 bytes a row that is -4 lines on even c, -1 on odd c. */
 static int core_quake_shake_dy(int c) { return c&1 ? -1 : -4; }
-static void core_quake_delay_sdl(int ms) { SDL_Delay((Uint32)ms); }
+/* The vbi keeps running during the synchronous shake: _effect 0x4c plays. */
+static void core_quake_delay_sdl(int ms) { core_vbi_audio(); SDL_Delay((Uint32)ms); }
 static void (*core_quake_delay)(int ms) = core_quake_delay_sdl;
 /* 20 synchronous frames of pre-quake terrain (no ticks), unconditional on
  * owner; each frame is presented and waits about one vblank. */
@@ -1945,6 +2066,7 @@ static void core_quake_shake(void)
     }
     core_shake_dy = 0;
 }
+/* _do_quake asm:7863-8042, gameplay only (P is not the editor). */
 static int core_quake(int owner, int column, int row, WorldRandom random)
 {
     if (owner < 0 || owner > 1 || column < 0 || column > 56 || row < 0 || row > 56 ||
@@ -1971,6 +2093,7 @@ static int core_quake(int owner, int column, int row, WorldRandom random)
     if (A4_WORD(0x2f90) > 63) A4_WORD(0x2f90) = 63;
     core_make_map_region(A4_WORD(0x2f8a)-1,A4_WORD(0x2f8e)-1,
                          A4_WORD(0x2f8c),A4_WORD(0x2f90));
+    core_kill_effect(2,4);   /* asm:8037-8040: cut the rumble */
     return 1;
 }
 /* _do_volcano asm:8046-8267, gameplay only: P is not the editor. */
@@ -2362,14 +2485,20 @@ static void _animate(void)
     /* _start_of_game == 2 (asm:536-551): the world screen first. */
     if (requested_world) { core_message[0] = 0; core_world_open(CORE_WORLD_START); }
     game_render();
-    Uint32 next_tick = SDL_GetTicks() + 50;
+    Uint32 next_tick = SDL_GetTicks() + 50, next_vbi = SDL_GetTicks() + 20;
     while (!prg_quit) {
         ___keyboard();
         if (prg_quit) break;
         Uint32 now = SDL_GetTicks();
         int catch_up = 0;
+        /* 50 Hz vertical blank sound interrupt (asm:19620-19672). */
+        while ((Sint32)(now-next_vbi) >= 0 && catch_up++ < 10) { core_vbi_audio(); next_vbi += 20; }
+        if ((Sint32)(now-next_vbi) >= 0) next_vbi = now+20;
+        catch_up = 0;
         while ((Sint32)(now-next_tick) >= 0 && catch_up++ < 5) {
             if (core_req.kind == CORE_REQ_WORLD) ++core_world.blink;
+            /* Modal requesters and the end screen leave the main loop. */
+            if (!core_req.kind && !core_result) core_tempo_pass();
             game_tick(); next_tick += 50;
         }
         if ((Sint32)(now-next_tick) >= 0) next_tick = now+50;
@@ -2459,6 +2588,13 @@ static int game_reset_start(StartSelection selection)
             memcpy(staged + 32768 + (int16_t)offset, A4_DISP(offset), (size_t)kept[field].size);
         }
     }
+    /* Sound state is static data in the original, never reset by a start:
+     * _music_now.._sound_in, _seqlen, _no_sounds.._Soundpri, the toggles. */
+    static const struct { int offset, size; } sound_kept[] = {
+        {0x3152,6},{0x3378,2},{0x3542,0x14},{0x8250,4}};
+    for (size_t field = 0; field < sizeof sound_kept / sizeof sound_kept[0]; ++field)
+        memcpy(staged + 32768 + (int16_t)sound_kept[field].offset, A4_DISP(sound_kept[field].offset),
+               (size_t)sound_kept[field].size);
     memcpy(prg_a4_area, staged, sizeof prg_a4_area);
     const uint16_t *tables[] = {loaded.population_add,loaded.mana_add,loaded.weapons_add,loaded.battle_add1,loaded.battle_add2,loaded.weapons_order};
     const int offsets[] = {0x2fe2,0x2fb6,0x2fcc,0x2ffa,0x3010,0x2f96};
@@ -3576,8 +3712,9 @@ static void core_draw_icons(void)
     else if (core_swamp_selected) core_xor_icon(0x12c0,2,2);
     else if (core_tool == 2) core_xor_icon(0x12c0,6,0);
     else core_xor_icon(0x12c0,6,1);
-    if (!A4_WORD(0x8250)) core_xor_icon(0x17e4,0,3);
-    if (!A4_WORD(0x8252)) core_xor_icon(0x17e4,0,4);
+    /* Toggled at startup with both flags 1 (asm:513-536,24131-24134). */
+    if (music_off) core_xor_icon(0x17e4,0,3);
+    if (effect_off) core_xor_icon(0x17e4,0,4);
     if (pause) core_xor_icon(0x17e4,1,3);
 }
 
@@ -3688,11 +3825,16 @@ static void draw_original(int view_x, int view_y)
      * Core movement commits its destination immediately: no second interpolation.
      * A shaken screen_origin skips _move_sprite entirely (asm:15842-15849). */
     if (!dy) no_sprites = 0;
+    sound_effect = 0;   /* asm:614, before _draw_it */
     for (int v=0; v<8 && !dy; ++v) for (int u=0; u<8; ++u) {
         int cell=(view_y+v)*64+view_x+u, person=(int)map_who[cell]-1;
         if (person<0 || person>=no_peeps || peep_word(person,4)<=0 || peep_word(person,8)!=cell) continue;
         int left,top,owner=peep_owner(person),flags=peeps[person*22];
         if (owner>1 || !graphics_tile(u,v,map_alt[cell],&left,&top)) continue;
+        /* _move_sprite dispatch asm:15996-16016,16042: ==1, ==2 and bits
+         * 4..6 take other branches; then battle (bit 3) before bit 7. */
+        if (flags != 1 && flags != 2 && !(flags & 0x70))
+            sound_effect |= flags & 8 ? 8 : flags & 0x80;
         int frame=graphics_walker_frame(peep_word(person,10),owner,phase);
         int sx=left+8, sy=top-8+(map_blk[cell]==15 ? 0 : 4);
         if (flags==5 || flags==6 || flags==0x80 || flags==0x22 ||
@@ -3921,6 +4063,10 @@ static void _move_peeps(void)
         core_target(0) = core_target(1) = 0x820;
         A4_WORD(0xae78) = A4_WORD(0xae76) = 0x820;
     }
+    /* asm:3434-3454: sounds flagged by the last _move_sprite pass. */
+    if (sound_effect & 8) effect = (int16_t)(toggle + 0x43);
+    if (sound_effect & 0x80) { if (!last_fire) effect = 0x46; last_fire = 3; }
+    else if (last_fire) --last_fire;
     /* Existing walker/town/battle/remnant consumption; nonwar AI remains disabled. */
     for (int person = 0; person < no_peeps; ++person) {
         if (peep_word(person,4) <= 0) continue;
@@ -4134,8 +4280,9 @@ static int core_toolbar(int sx, int sy, int left, int post)
         /* System icons asm:1700-1829: options, game options, pause, sound. */
         int icon = (c-0x110)/16, line = (r-0x20)/16;
         if (icon == 0 && line == 0) { if (post) { mailbox[0] = 14; mailbox[1] = (uint8_t)left; mailbox[2] = 7; } }
-        else if (icon == 0 && line == 3) A4_WORD(0x8250) = !A4_WORD(0x8250); /* _music_off */
-        else if (icon == 0 && line == 4) A4_WORD(0x8252) = !A4_WORD(0x8252); /* _effect_off */
+        /* asm:1744-1781: switching on also stops all four channels. */
+        else if (icon == 0 && line == 3) { if ((music_off = !music_off)) core_kill_effect(0,4); }
+        else if (icon == 0 && line == 4) { if ((effect_off = !effect_off)) core_kill_effect(0,4); }
         else if (icon == 1 && line == 1) { if (post) { mailbox[0] = 14; mailbox[2] = 8; } }
         /* _do_action y=6 asm:18591-18608. The port's pause also stops the
          * mailbox consumer, so this icon toggles directly rather than posting. */
@@ -4211,7 +4358,7 @@ static void ___open_screen(void)
 }
 static void ___read_sprites(int16_t n){printf("[PRG] read_sprites %d\n",n);}
 static void ___sprite_to_amiga(void){printf("[PRG] sprite_to_amiga\n");}
-static void ___start_game(void){printf("[PRG] start_game\n");}
+static void ___start_game(void){printf("[PRG] start_game\n"); core_sound_start();}
 static void ___set_serial(void){printf("[PRG] set_serial\n");}
 static void ___load_ground(int16_t a, int16_t terrain)
 {
@@ -4380,8 +4527,8 @@ static void ___RemIntServer(int16_t l,void *is){printf("[PRG] RemIntServer %d\n"
 static void ___Delay(int16_t t){/*SDL_Delay*/;}
 static void ___reset_screen(void *v){printf("[SDL] reset\n");}
 static void ___free_amiga_sprites(void){printf("[PRG] free sprites\n");}
-static void ___free_all_sounds(void){printf("[PRG] free sounds\n");}
-static void ___close_channels(void){printf("[PRG] close channels\n");}
+static void ___free_all_sounds(void){core_free_all_sounds();}
+static void ___close_channels(void){audio_close();}
 static void *___FindTask(void *t){return (void*)1;}
 static void ___exit(int16_t c){printf("[PRG] exit\n");exit(c);}
 static int32_t ___mulu(int32_t a,int32_t b){return a*b;}

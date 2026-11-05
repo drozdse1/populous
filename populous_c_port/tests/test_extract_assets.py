@@ -210,6 +210,52 @@ class AssetTests(unittest.TestCase):
                 self.module.export_assets(adf, link / "nested" / "export")
             self.assertFalse((outside / "nested" / "export").exists())
 
+    @staticmethod
+    def sound_bank(measure=0, measure_length=0x1000, kit_sample=1, size_delta=0):
+        """Hand-built _load_sound file: measln, 1 sequence entry, 2 kits, 2 samples."""
+        data = struct.pack(">64H", *([48] + [64] * 63)) + struct.pack(">H2H", 1, measure, 1)
+        data += struct.pack(">I", measure_length) + b"B" + b" " * (measure_length - 1)
+        data += struct.pack(">H", 2) + struct.pack(">HHbbH", 400, 6, 64, 0, 0)
+        data += struct.pack(">HHbbH", 300, 4, 20, kit_sample, 2)
+        data += struct.pack(">H", 2) + struct.pack(">HHI", 6, 6, 0xdeadbeef) + struct.pack(">HHI", 4, 0, 0)
+        data += struct.pack(">I", 10) + bytes(range(10)) + b"\x1b\x39"
+        return data + bytes(size_delta) if size_delta >= 0 else data[:size_delta]
+
+    def test_sound_bank_layout_and_strict_rejections(self):
+        bank = self.module.sound_values(self.sound_bank())
+        self.assertEqual(bank["measln"][0], 48)
+        self.assertEqual(bank["sequence"], [[0, 1]])
+        self.assertEqual(bank["measures_offset"], 128 + 2 + 4 + 4)
+        self.assertEqual(bank["no_sounds"], 2)
+        self.assertEqual(bank["drumkit"][1], {"sound": 1, "period": 300, "length": 4, "volume": 20,
+                                              "sample": 1, "repeat_word": 2})
+        # File pointers are ignored; offsets follow the lengths (asm:20823-20843).
+        self.assertEqual([sam["offset"] for sam in bank["samples"]], [0, 6])
+        self.assertEqual(bank["all_sample_length"], 10)
+        self.assertEqual(self.module.sound_values(self.sound_bank(measure_length=0x1800))["measure_length"], 0x1800)
+        for broken in (self.sound_bank(size_delta=1), self.sound_bank(size_delta=-1),
+                       self.sound_bank(measure=16), self.sound_bank(measure_length=0x800),
+                       self.sound_bank(kit_sample=2), self.sound_bank()[:100]):
+            with self.assertRaises(ValueError):
+                self.module.sound_values(broken)
+
+    def test_export_sound_bank_raw_and_values(self):
+        payload = self.sound_bank()
+        image = make_file_disk(payload)
+        image[900 * 512 + 432:900 * 512 + 441] = b"\x07gmusic1\0"
+        checksum(image, 900)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            adf = root / "source.adf"
+            adf.write_bytes(image)
+            manifest = self.module.export_assets(adf, root / "out")
+            entry = manifest["present"]["gmusic1"]
+            self.assertEqual((entry["status"], entry["no_sounds"], entry["sample_count"]), ("verified", 2, 2))
+            self.assertEqual((root / "out" / "raw" / "gmusic1").read_bytes(), payload)
+            values = json.loads((root / "out" / "values.json").read_text())
+            self.assertEqual(values["sounds"]["gmusic1"]["drumkit"][0]["period"], 400)
+            self.assertIn("gwords", manifest["missing"])
+
     def test_cli_unknown_picture_variant_keeps_raw_and_marks_unsupported(self):
         image = make_file_disk(b"unknown")
         image[900 * 512 + 433:900 * 512 + 441] = b"load.pic"

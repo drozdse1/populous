@@ -136,6 +136,14 @@
       "sha256": "cd5bedb77ad978ff40ae0e6a69b636728dc8170bfae399589ad4e697a3b313db",
       "size": 4400
     },
+    "raw/gmusic1": {
+      "sha256": "4ae1ec26ec8c76f7e8ee48f5c56c334878e5434e91e29bfd34ead2600f573efe",
+      "size": 90534
+    },
+    "raw/gwords": {
+      "sha256": "8ea349d2f50bb7f34fec8831161c0b21bc506e4a79dee42968da2fdf433890c7",
+      "size": 79076
+    },
     "raw/land0": {
       "sha256": "4aafd9834d181e59359ec77a7ec01fb5a107738ae2a815e929641423c9c7bd19",
       "size": 33714
@@ -181,8 +189,8 @@
       "size": 23520
     },
     "values.json": {
-      "sha256": "405849552fbcffd94af8a63da76358ca7ccea851df2b74270f009f897389802f",
-      "size": 25135
+      "sha256": "9ae1800da617659bc3fb57407e6fb90cc943162f06c58ad3179b784af2519acf",
+      "size": 64594
     }
   },
   "limitations": [
@@ -192,7 +200,7 @@
     "Mask PNG: white=keep background, black=replace; sheet padding is transparent. Raw masks and indices remain authoritative.",
     "Missing numbered variants are absent from this disk, not synthesized or claimed necessary.",
     "OFS checks selected chains, not the full volume bitmap or allocation of unselected files.",
-    "No executable data tables, sounds, saves or campaign maps are decoded."
+    "No executable data tables, saves or campaign maps are decoded; sound banks are validated and tabulated in values.json, PCM stays raw."
   ],
   "missing": [
     "spr_321.dat",
@@ -238,6 +246,28 @@
       "sha256": "cd5bedb77ad978ff40ae0e6a69b636728dc8170bfae399589ad4e697a3b313db",
       "size": 4400,
       "status": "unsupported"
+    },
+    "gmusic1": {
+      "format": "_load_sound bank: measures, sequence, drumkit, signed 8-bit PCM",
+      "limitations": [],
+      "no_sounds": 104,
+      "raw": "raw/gmusic1",
+      "sample_count": 12,
+      "sha256": "4ae1ec26ec8c76f7e8ee48f5c56c334878e5434e91e29bfd34ead2600f573efe",
+      "size": 90534,
+      "source": "src/populous_prg.asm:20712-20872",
+      "status": "verified"
+    },
+    "gwords": {
+      "format": "_load_sound bank: measures, sequence, drumkit, signed 8-bit PCM",
+      "limitations": [],
+      "no_sounds": 104,
+      "raw": "raw/gwords",
+      "sample_count": 9,
+      "sha256": "8ea349d2f50bb7f34fec8831161c0b21bc506e4a79dee42968da2fdf433890c7",
+      "size": 79076,
+      "source": "src/populous_prg.asm:20712-20872",
+      "status": "verified"
     },
     "land0": {
       "faithful_alpha": true,
@@ -3520,7 +3550,7 @@
     }
   },
   "schema_version": 1,
-  "selection": "Explicit root allowlist: land0..3, sprites0..9.dat, spr_320..329.dat, four pictures, level.dat, font.dat, mouths.pic. No executables or audio.",
+  "selection": "Explicit root allowlist: land0..3, sprites0..9.dat, spr_320..329.dat, four pictures, level.dat, font.dat, mouths.pic, sound banks gmusic1 and gwords. No executables; popsam/awords are not loaded by populous.prg.",
   "source": {
     "format": "880 KiB DOS0/OFS, root 880",
     "modified": false,

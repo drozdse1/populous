@@ -5118,14 +5118,14 @@ static void test_toolbar_icon_highlight(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
     int16_t saved_tend=core_tendency(player);
-    /* Defaults asm:513-536: music, effects, terrain, plus current tendency. */
-    A4_WORD(0x8250)=A4_WORD(0x8252)=0; pause=0; core_tool=0; core_swamp_selected=0;
+    /* Defaults asm:513-536: music, effects (both flags 1), terrain, plus current tendency. */
+    A4_WORD(0x8250)=A4_WORD(0x8252)=1; pause=0; core_tool=0; core_swamp_selected=0;
     core_tendency(player)=1; game_render();
     assert(icon_lit(0x17e4,0,3) && icon_lit(0x17e4,0,4) && !icon_lit(0x17e4,1,3));
     assert(icon_lit(0x12c0,6,1) && icon_lit(0x12c0,4,3) && !icon_lit(0x12c0,6,2));
     /* Toggling music changes exactly the (0,3) diamond, centre included. */
     static uint8_t on[320*200]; memcpy(on,game_pixels,sizeof on);
-    A4_WORD(0x8250)=1; game_render(); A4_WORD(0x8250)=0;
+    A4_WORD(0x8250)=0; game_render(); A4_WORD(0x8250)=1;
     int changed=0, x0=8*(0x17e4%40)-48, y0=0x17e4/40+24;
     for (int i=0;i<320*200;++i) if (on[i]!=game_pixels[i]) {
         int x=i%320-x0, y=i/320-y0;
@@ -5144,7 +5144,7 @@ static void test_toolbar_icon_highlight(void)
     core_swamp_selected=0; core_tool=2; game_render();
     assert(icon_lit(0x12c0,6,0) && !icon_lit(0x12c0,6,1) && !icon_lit(0x12c0,6,2));
     core_tool=0;
-    A4_WORD(0x8250)=1; A4_WORD(0x8252)=1; pause=1; game_render();
+    A4_WORD(0x8250)=0; A4_WORD(0x8252)=0; pause=1; game_render();
     assert(!icon_lit(0x17e4,0,3) && !icon_lit(0x17e4,0,4) && icon_lit(0x17e4,1,3));
     A4_WORD(0x8250)=A4_WORD(0x8252)=0; pause=0;
     core_tendency(player)=saved_tend;
@@ -11513,6 +11513,11 @@ static void test_start_reset(void)
         A4_WORD(0x82ca+46) = 0x0505; A4_WORD(0x82cc+46) = 0x0606;
         A4_LONG(0x82d8) = 0x00000007; A4_LONG(0x82dc) = 0x00000008; A4_LONG(0x82e0) = 0x00000009;
         A4_LONG(0x82d8+46) = 0x0000000a; A4_LONG(0x82dc+46) = 0x0000000b; A4_LONG(0x82e0+46) = 0x0000000c;
+        /* Sound statics (_music_now.._sound_in, _seqlen, _no_sounds.._Soundpri,
+         * _music_off/_effect_off) are loaded once by _start_game (asm:13966-13972)
+         * and never written by a start. */
+        memset(A4_DISP(0x3152), 0xa5, 6); memset(A4_DISP(0x3378), 0xa5, 2);
+        memset(A4_DISP(0x3542), 0xa5, 0x14); memset(A4_DISP(0x8250), 0xa5, 4);
         prg_a4 = live;
         if (!pass) assert(game_reset(0));
         else { SDL_Event reset = {.type = SDL_KEYDOWN}; reset.key.keysym.sym = SDLK_r; game_handle_event(&reset); }
@@ -12203,6 +12208,142 @@ static void test_world_screen(void)
     _closeall(); SDL_Quit();
 }
 
+/* Channel ch plays drumkit entry `sound` from its start (one-shot request). */
+static int sound_playing(int ch, int sound)
+{
+    AudioWrite w;
+    if (!audio_current(ch,&w)) return 0;
+    const AudioKit *d = &core_bank.kit[sound];
+    return w.data == core_bank.samples + core_bank.sams[d->sample].offset &&
+           w.length == d->length && w.period == d->period && w.volume == d->volume && w.cycles == 1;
+}
+
+/* Sound triggers against the extracted gmusic1 (asm:19620-19672,20307-20518). */
+static void test_sound(void)
+{
+    char saved[4096] = ""; const char *old = getenv("POPULOUS_ASSET_DIR");
+    if (old) snprintf(saved,sizeof saved,"%s",old);
+    assert(!setenv("POPULOUS_ASSET_DIR",POPULOUS_DEFAULT_ASSET_DIR,1));
+    audio_close();   /* no device thread: the mixer only moves when asked */
+    int loaded = core_load_sound("gmusic1") == 0;
+    if (old) setenv("POPULOUS_ASSET_DIR",saved,1); else unsetenv("POPULOUS_ASSET_DIR");
+    if (!loaded) { puts("sound: extracted gmusic1 absent, skipped"); return; }
+    assert(no_sounds == 104 && seqlen == 8 && !curseq && !curbeat && !curtime);
+    for (int ch = 0; ch < 4; ++ch) assert(!Soundpri(ch) && !audio_busy(ch));
+
+    /* Every _effect id (powers asm:4075-8529, battle/fire asm:3434-3454)
+     * plays its own drumkit entry on channels 2 and 3, delays music to 40. */
+    static const int effects[][3] = {          /* id, period, sample */
+        {0x42,654,3},{0x43,701,4},{0x44,715,4},{0x45,714,5},{0x46,480,6},{0x49,3367,8},
+        {0x4a,759,9},{0x4b,1704,10},{0x4c,357,11},{0x4d,952,1}};
+    music_off = 0; effect_off = 1; tempo = 0;
+    for (size_t k = 0; k < sizeof effects/sizeof effects[0]; ++k) {
+        core_kill_effect(0,4); Soundpri(2) = Soundpri(3) = 0;
+        effect = (int16_t)effects[k][0]; music = 10;
+        core_vbi_audio();
+        assert(!effect && music == 0x28 && !audio_busy(0) && !audio_busy(1));
+        for (int ch = 2; ch < 4; ++ch) {
+            assert(sound_playing(ch,effects[k][0]));
+            assert(core_bank.kit[effects[k][0]].period == effects[k][1]);
+            assert(core_bank.kit[effects[k][0]].sample == effects[k][2]);
+            assert(Soundpri(ch) == core_bank.kit[effects[k][0]].volume);
+        }
+    }
+    /* A cast end to end: _do_war's 0x49 (asm:8529). */
+    core_kill_effect(0,4); Soundpri(2) = Soundpri(3) = 0;
+    no_peeps = 0; pause = 0; core_result = 0; A4_WORD(0xae80) = 0;
+    A4_LONG(0x84a6) = 1; A4_LONG(0x9a02) = 1; A4_WORD(0x82c4) = 0x100;
+    assert(core_war(0) && effect == 0x49);
+    core_vbi_audio();
+    assert(sound_playing(2,0x49) && sound_playing(3,0x49));
+    A4_WORD(0xae80) = 0;
+
+    /* The quake rumble queues its repeat request: offset sams.+2:d+6 = 5. */
+    core_kill_effect(0,4); Soundpri(2) = 0;
+    assert(core_PlaySound(0x4c,2) && audio_current(2,NULL) == 2);
+    /* Priority: a busy channel keeps against a lower d+4, not an equal one. */
+    core_kill_effect(0,4); Soundpri(2) = 0;
+    assert(core_PlaySound(0x4a,2) && sound_playing(2,0x4a));          /* 64 */
+    assert(!core_PlaySound(0x43,2) && sound_playing(2,0x4a));         /* 51 */
+    assert(core_PlaySound(0x44,2) && sound_playing(2,0x44));          /* 64 */
+    core_kill_effect(2,3);
+    assert(core_PlaySound(0x43,2) && sound_playing(2,0x43) && Soundpri(2) == 51);
+    /* Unsigned bounds: negative notes and channels above 3 are ignored. */
+    assert(!core_PlaySound(-1,0) && !core_PlaySound(104,0) && !core_PlaySound(0x42,4));
+
+    /* _effect_off == 0 mutes: nothing plays and _effect stays pending. */
+    core_kill_effect(0,4);
+    effect_off = 0; effect = 0x4a; music = 10; music_now = 3;
+    core_vbi_audio();
+    for (int ch = 0; ch < 4; ++ch) assert(!audio_busy(ch));
+    assert(effect == 0x4a && music_now == 3 && music == 10);
+    effect = 0;
+
+    /* Heartbeat: 0x48 at _tempo-_beat_two, 0x47 at _tempo, channel 0. */
+    effect_off = 1; tempo = 9; beat_two = 3; tempo_now = 5; Soundpri(0) = 0;
+    core_vbi_audio();
+    assert(tempo_now == 6 && sound_playing(0,0x48));
+    core_kill_effect(0,1);
+    core_vbi_audio(); core_vbi_audio();
+    assert(tempo_now == 8 && !audio_busy(0));
+    core_vbi_audio();
+    assert(tempo_now == 0 && sound_playing(0,0x47));
+    sound_in = 1; core_kill_effect(0,4); tempo_now = 8;
+    core_vbi_audio();
+    assert(tempo_now == 8 && !audio_busy(0));
+    sound_in = 0;
+
+    /* _tempo from enemy/own population (asm:564-605) and the _toggle flip. */
+    player = 0; core_good_pop(0) = 100; core_good_pop(1) = 300; toggle = 0; tempo_now = 60;
+    core_tempo_pass();
+    assert(tempo == 44 && beat_two == 14 && tempo_now == 44 && toggle == 1);
+    core_good_pop(1) = 10000; core_tempo_pass();
+    assert(tempo == 7 && beat_two == 2 && toggle == 0);
+    player = 1; core_tempo_pass();
+    assert(tempo == 0x32 && beat_two == 16);
+    core_good_pop(1) = 0; core_tempo_pass();
+    assert(tempo == 0 && beat_two == 1 && tempo_now == 0);
+    player = 0;
+
+    /* Music: a beat every _music frames; measure 2 beat 0 is 'A' on track 0. */
+    core_kill_effect(0,4); for (int ch = 0; ch < 4; ++ch) Soundpri(ch) = 0;
+    music_off = 1; effect_off = 0; music = 10; music_now = 8;
+    core_vbi_audio();
+    assert(music_now == 9 && !audio_busy(0));
+    core_vbi_audio();
+    assert(!music_now && music == 10 && curbeat == 1 && sound_playing(0,0));
+    assert(audio_current(0,NULL) == 2 && !audio_busy(1) && !audio_busy(2) && !audio_busy(3));
+    /* 64 beats end measure 2; sequence entry 0 repeats once (curtime 1). */
+    for (int beat = 1; beat < 64; ++beat) { music_now = 9; core_vbi_audio(); }
+    assert(!curbeat && curtime == 1 && curseq == 1 && core_curmeas == 3u*256);
+    music_off = 0;
+
+    /* Toolbar: switching sound on stops all channels (asm:1744-1781). */
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    toolbar_fixture(); music_off = effect_off = 0;
+    assert(core_PlaySound(0x47,0) && core_PlaySound(0x4a,2));
+    system_click(0,4,SDL_BUTTON_LEFT);
+    assert(effect_off == 1 && !audio_busy(0) && !audio_busy(2));
+    assert(core_PlaySound(0x4a,2)); Soundpri(2) = 0;
+    system_click(0,4,SDL_BUTTON_LEFT);
+    assert(!effect_off && audio_busy(2));      /* switching off keeps playing */
+    system_click(0,3,SDL_BUTTON_LEFT);
+    assert(music_off == 1 && !audio_busy(2));
+
+    /* _move_sprite's flags reach _effect via _move_peeps (asm:3434-3454). */
+    A4_WORD(0x82be) = A4_WORD(0x82be + 46) = 1; no_peeps = 0; pause = 0;
+    effect = 0; last_fire = 0; toggle = 1; sound_effect = 8;
+    _move_peeps(); assert(effect == 0x44 && !last_fire);
+    effect = 0; sound_effect = 0x80;
+    _move_peeps(); assert(effect == 0x46 && last_fire == 3);
+    effect = 0; _move_peeps(); assert(!effect && last_fire == 3);
+    sound_effect = 0; _move_peeps(); assert(last_fire == 2);
+    effect = last_fire = 0; music_off = effect_off = 0;
+    core_free_all_sounds();
+    assert(!core_PlaySound(0x4a,2) && !audio_busy(2));
+    SDL_Quit();
+}
+
 int main(int argc, char **argv)
 {
     /* Shake frames are checked in test_quake_shake; elsewhere skip the 20 ms vblanks. */
@@ -12565,6 +12706,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_cli();
     test_reset_and_input();
     test_lifecycle();
+    test_sound();
     cleanup_rule_data();
     puts("game memory/start/render/input/lifecycle: PASS");
     return 0;

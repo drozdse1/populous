@@ -408,7 +408,8 @@ The original `_load_ground` reads gameplay tables from `landN` files, including
 (`src/populous_prg.asm:16468-16514`). Reset validates the selected file before
 changing A4 and installs its actual values plus original initialized tables.
 Missing/invalid files fail startup: there is no invented-rule fallback.
-Audio, save/load and multiplayer remain absent; the conquest campaign is
+Original sound effects, the heartbeat and the in-game `gmusic1` music play
+(see "Sound"); save/load and multiplayer remain absent; the conquest campaign is
 partially ported (see "Game end, score and conquest"). The original toolbar
 is clickable (see Controls); its options and game-options icons open the
 original requesters (see "Requesters and options"); the message requester is
@@ -458,7 +459,8 @@ make -C populous_c_port test-assets
 
 The export contains `raw/` byte-exact original files, `graphics/` PNG sheets and
 full pictures, `pixels/` frame-major/row-major byte indices and keep masks,
-`values.json` with stored LAND tables, palettes and neutral level records, and
+`values.json` with stored LAND tables, palettes, neutral level records and the
+`_load_sound` tables of the sound banks `gmusic1`/`gwords` (PCM stays raw), and
 `manifest.json` with source/artifact SHA-256 hashes, frame offsets/coordinates,
 present/missing assets and verified/inferred/unsupported format status. The
 manifest itself is not included in its own artifact hash table. This checkout
@@ -740,7 +742,7 @@ C bounds checks precede map reads, unlike the unsafe assembly read ordering.
 An ordinary walker dies on swamp at its next completed eight-frame walking cycle,
 before navigation and walking loss. Shallow swamp returns to block 15; bottomless
 swamp (game-mode bit 1) remains. This is not water/drowning. Frame 53 already comes
-from LAND; the original effect code is recorded, but audio is not implemented.
+from LAND; the original effect code 66 plays its drumkit sound (see "Sound").
 Editor free casting is deliberately absent: `P` remains diagnostic display state
 and never bypasses costs or permissions. The toolbar swamp icon arms targeting
 (and, as in the original, also in editor mode). Editor free casting and computer
@@ -768,7 +770,8 @@ move (panel, HUD and shield stay), peeps are not drawn (asm:15842-15849) and the
 frames show the pre-quake terrain. Ticks are frozen during the synchronous loop;
 each frame is presented and waits about one vblank (20 ms). Without a screen or
 assets (headless rule tests) the shake is skipped; rules are identical either way.
-Sound and editor bypass remain TODOs; the toolbar icon posts opcode 3.
+Effect 76 rumbles during the shake and is cut afterwards (`_kill_effect(2,4)`,
+asm:8037-8040). Editor bypass remains a TODO; the toolbar icon posts opcode 3.
 
 ## Flood power
 
@@ -785,7 +788,7 @@ change during casting. The first subsequent resident update marks newly submerge
 non-combat residents wet and removes their town footprint without population loss;
 water loss or fatal removal follows on the next wet update. These rules still use
 the port's immediate movement model and battle-water exemption, not full original
-drowning/tick parity. Sound, editor bypass,
+drowning/tick parity. Effect 74 plays (see "Sound"); editor bypass
 and AI power selection remain deferred; the toolbar icon posts opcode 14/4. `P` never makes it free.
 
 ## Volcano power
@@ -806,7 +809,7 @@ stale owner-0 leader references are rejected before payment as a host-safety gua
 Only actual height changes expand dirty bounds; lava writes do not. The original
 clamped bounds rectangle is rebuilt rather than unconditionally rebuilding the
 whole footprint. No residents or occupancy are changed directly by casting.
-The toolbar icon posts opcode 6. Audio, editor mode and exact queued-command timing remain open.
+The toolbar icon posts opcode 6. Effect 75 plays; editor mode and exact queued-command timing remain open.
 
 ## Knight power
 
@@ -825,7 +828,7 @@ normal dispatch order. A second cast needs a newly acquired leader.
 Pursuit, swamp avoidance, combat completion, town burning, timed remnants and
 canonical original sprites are connected. Terrain/tool use remains available;
 Armageddon later clears headings through its existing path. The toolbar icon
-posts opcode 14/5. Audio, strategic AI, phased movement and complete combat parity remain open.
+posts opcode 14/5. Effect 69 plays; strategic AI, phased movement and complete combat parity remain open.
 
 `--knight` checks atomic casts, all 256 leader flags, costs, permissions, HUD and
 post-cast ordinary actions. Its controlled SDL-K scenario reaches pursuit,
@@ -851,12 +854,52 @@ available. Armed swamp/tool selection is retained. There is no editor bypass.
 
 This is gameplay integration, not complete original-game parity (the toolbar
 icon posts opcode 14/3 outside editor mode):
-audio, editor/AI activation, other special figures, phased water behavior and original end-game
+editor/AI activation (effect 73 plays), other special figures, phased water behavior and original end-game
 accounting beyond `good_pop` remain open. In the controlled cast-through-SDL
 island test, either caster activates war, a route is raised, combat starts at
 tick 41 and the stronger blue party wins at tick 43 (2963/0 population), identically
 in normal and sanitized runs. Funding and unequal armies are test fixtures;
 there is no terrain/population injection after the cast.
+
+## Sound
+
+`audio.c` emulates the four Paula channels behind the original `audio.device`
+requests: signed 8-bit samples, rate = 3546895 / period Hz (PAL), volume 0..64
+per request, zero-order hold, channels 0/3 left and 1/2 right, request queues
+with cycle counts (0 repeats until aborted). SDL is optional at runtime: without
+an audio device (`SDL_AUDIODRIVER=dummy` or none) the mixer still runs and the
+game is silent. `_start_game` opens the channels and loads `raw/gmusic1` from
+`POPULOUS_ASSET_DIR` (asm:13966-13972); a missing or invalid bank is reported
+and the game continues silently.
+
+`gmusic1` (90534 bytes) follows `_load_sound` (asm:20712-20872, big-endian):
+64 measure lengths, sequence (8 entries), measure block (16384 bytes, 0x1000
+read, rest skipped), 104 drumkit entries (period, length, volume = priority,
+sample, repeat word), 12 sample lengths and 73046 bytes of PCM, plus a final
+word. The loader rejects any file not consumed exactly or with indices outside
+the original buffers. `gwords` (79076 bytes, 9 speech samples) is extracted and
+validated but unused: it is the `_won_conquest` lord speech (asm:14503-14765),
+whose lord/mouth sequence is not ported.
+
+What plays (all faithful to the 50 Hz vbi, asm:19620-19672):
+
+- `_effect` on channels 2 and 3 (then music waits 40 frames): 0x42 walker
+  drowns in swamp, 0x45 knight, 0x49 Armageddon, 0x4a flood, 0x4b volcano,
+  0x4c quake, 0x4d magnet; 0x43/0x44 (by `_toggle`) for a visible battle and
+  0x46 for a visible flag-0x80 remnant (`_move_sprite` flags read by
+  `_move_peeps`, asm:3434-3454, re-arming after 3 passes).
+- Heartbeat: 0x47 every `_tempo` frames and 0x48 at `_tempo-_beat_two` on
+  channel 0; `_tempo = 50 - 2*(enemy/own population)`, at least 7
+  (asm:564-605). Only while effects are on.
+- Music: `_PlayMeas` plays one beat on all four tracks every 10 frames
+  (note `'A'`+n = sound n, below `'A'` is silent) and follows the sequence.
+- `_PlaySound` keeps a busy channel's sound against a lower priority; a drumkit
+  repeat word queues a second request.
+
+Deviations: the second `_PlaySound` request's cycle count lies past the pushed
+arguments in the original (an undefined stack word); the port uses the repeat
+word itself (5 for the quake rumble, 6..14 for music pads). `_PlayMeas` is
+skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
 
 ## Controls
 
@@ -887,7 +930,8 @@ there is no terrain/population injection after the cast.
     battle search never ends when no battle exists after the last viewed slot;
     the port bounds that scan. Viewing marks a 10-turn temporary view.
 - Lower-right system icons: `zzZ` toggles pause (also while paused or after the
-  end); the music and FX icons toggle their flags (no audio yet). Options, game
+  end); the music and FX icons toggle `_music_off`/`_effect_off` (nonzero = on;
+  switching on stops all channels, asm:1744-1781). Options, game
   options and the message icon post their original `_do_action` codes 7/8/2;
   the consumer opens `_options` (7) and `_game_options` (8) at the next tick,
   the message requester (2) stays inert. While a requester is open the game
@@ -1066,7 +1110,11 @@ errors. `test-game` includes the production PRG and launcher code and checks A4
 boundaries/unaligned access, map separation, all eight start populations and
 occupancy, deterministic reset, renderer output, SDL event handling, pause,
 scroll limits, scaled mouse coordinates, inert powers, allocation-failure
-cleanup, repeated Escape/quit, and CLI failure propagation. These and `test-graphics` are included
+cleanup, repeated Escape/quit, CLI failure propagation and the sound triggers
+(effect ids to drumkit samples, priorities, heartbeat, music beats, toggles).
+`test-audio` covers the mixer (period to rate, volume, panning, one-shot,
+cycles, loops, queues), the `_load_sound` parser and the no-device path.
+These and `test-graphics` are included
 in `test` and ASan/UBSan `test-sanitize`; each invocation has a 20-second timeout.
 
 `test-game` additionally exercises legal start plots, source-derived capacity,

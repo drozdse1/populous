@@ -19,9 +19,12 @@ from extract_land import ADF_SIZE, LAND_NAMES, LAND_SIZE, extract_ofs_files
 # src/populous_prg.asm:24264-24268; also populous_main.asm:5492-5495.
 PALETTE = (0x000, 0x444, 0x666, 0x888, 0xaaa, 0xccc, 0x620, 0x840,
            0xa00, 0xa60, 0xaa0, 0x4a0, 0x280, 0x262, 0x248, 0x26c)
+# _load_sound callers: gmusic1 in play (asm:13969-13972,14756), gwords for _won_conquest (asm:14516).
+SOUND_NAMES = ("gmusic1", "gwords")
 ASSET_NAMES = (LAND_NAMES + tuple(f"sprites{index}.dat" for index in range(10)) +
                tuple(f"spr_32{index}.dat" for index in range(10)) +
-               ("qaz.pic", "demo.pic", "lord.pic", "load.pic", "level.dat", "font.dat", "mouths.pic"))
+               ("qaz.pic", "demo.pic", "lord.pic", "load.pic", "level.dat", "font.dat", "mouths.pic") +
+               SOUND_NAMES)
 PICTURES = {
     "qaz.pic": (4, False, "src/populous_prg.asm:16359-16402,24264-24268"),
     "demo.pic": (4, False, "src/populous_main.asm:1754-1780,5492-5495"),
@@ -118,6 +121,67 @@ def level_values(data):
             for offset in range(0, len(data), 10)]
 
 
+def sound_values(data):
+    """_load_sound layout, src/populous_prg.asm:20712-20872, big-endian.
+
+    Strict like audio.c: the loader's reads must consume the file exactly and
+    every index _PlaySound/_PlayMeas follow must stay inside its buffer.
+    """
+    def take(fmt):
+        nonlocal at
+        size = struct.calcsize(fmt)
+        if at + size > len(data):
+            raise ValueError("truncated sound file")
+        values = struct.unpack_from(fmt, data, at)
+        at += size
+        return values
+
+    at = 0
+    measln = list(take(">64H"))
+    seqlen, = take(">H")
+    if seqlen > 128:  # _sequn A4 0x3178..0x3377
+        raise ValueError("sequence longer than _sequn")
+    sequence = [list(take(">2H")) for _ in range(seqlen)]
+    if any(measure >= 16 or not 1 <= measln[measure] <= 64 for measure, _ in sequence):
+        raise ValueError("sequence measure outside the 0x1000 measure buffer")
+    measure_length, = take(">I")
+    if measure_length < 0x1000:
+        raise ValueError("measure block shorter than the 0x1000 read")
+    measures_at = at
+    take(f">{measure_length}x")
+    no_sounds, = take(">H")
+    kit = [take(">HHbbH") for _ in range(no_sounds)]
+    sample_count, = take(">H")
+    if sample_count > 40:  # _sams A4 0x33fa..0x3539
+        raise ValueError("more samples than _sams holds")
+    sams, offset = [], 0
+    for _ in range(sample_count):
+        length, loop, _pointer = take(">HHI")
+        sams.append({"length": length, "loop_word": loop, "offset": offset})
+        offset += length
+    sample_length, = take(">I")
+    if offset > sample_length:
+        raise ValueError("sample lengths exceed all_sample_length")
+    samples_at = at
+    take(f">{sample_length}x")
+    take(">H")
+    if at != len(data):
+        raise ValueError("unexpected sound file size")
+    drumkit = []
+    for index, (period, length, volume, sample, loop) in enumerate(kit):
+        if not 0 <= sample < sample_count or length > sams[sample]["length"]:
+            raise ValueError(f"drumkit entry {index} outside its sample")
+        # Second request offset: two pushed words, sams[].+2:kit+6 (asm:20371-20380).
+        if loop and (sams[sample]["loop_word"] << 16 | loop) > length:
+            raise ValueError(f"drumkit entry {index} repeat request outside its sample")
+        drumkit.append({"sound": index, "period": period, "length": length, "volume": volume,
+                        "sample": sample, "repeat_word": loop})
+    return {"measln": measln, "sequence": sequence, "measure_length": measure_length,
+            "measures_offset": measures_at, "no_sounds": no_sounds, "drumkit": drumkit,
+            "samples": sams, "all_sample_length": sample_length, "samples_offset": samples_at,
+            "pcm": "signed 8-bit; Paula rate 3546895 / period Hz"}
+
+
 def json_bytes(value):
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
@@ -172,7 +236,7 @@ def export_assets(adf, output):
         image = source.read(ADF_SIZE + 1)
     files = extract_ofs_files(image, ASSET_NAMES)
     artifacts, present = {}, {}
-    values = {"palettes": {"gameplay_rgb12": list(PALETTE)}, "land": {}, "levels": None,
+    values = {"palettes": {"gameplay_rgb12": list(PALETTE)}, "land": {}, "levels": None, "sounds": {},
               "encoding": "LAND words unsigned BE16 as stored; level bytes 0..7 and BE16 at 8",
               "sources": ["src/populous_prg.asm:16483-16529,12321-12362,24264-24268",
                           "src/populous_main.asm:5492-5495", "populous_c_port/land_data.c:23-65"],
@@ -227,6 +291,12 @@ def export_assets(adf, output):
                 if len(data) != 990:
                     entry["status"] = "inferred"
                     entry["limitations"].append("Source documents 99 records; this file has a different complete-record count.")
+            elif name in SOUND_NAMES:
+                values["sounds"][name] = sound_values(data)
+                entry.update({"no_sounds": values["sounds"][name]["no_sounds"],
+                              "sample_count": len(values["sounds"][name]["samples"]),
+                              "source": "src/populous_prg.asm:20712-20872",
+                              "format": "_load_sound bank: measures, sequence, drumkit, signed 8-bit PCM"})
             else:
                 raise ValueError("Original auxiliary graphics preserved raw; font/mouth layout and palette not verified by this exporter")
         except ValueError as error:
@@ -238,7 +308,7 @@ def export_assets(adf, output):
         "source": {"path": str(adf.resolve()), "size": len(image), "sha256": hashlib.sha256(image).hexdigest(),
                    "format": "880 KiB DOS0/OFS, root 880", "modified": False},
         "present": present, "missing": sorted(set(ASSET_NAMES) - set(files)),
-        "selection": "Explicit root allowlist: land0..3, sprites0..9.dat, spr_320..329.dat, four pictures, level.dat, font.dat, mouths.pic. No executables or audio.",
+        "selection": "Explicit root allowlist: land0..3, sprites0..9.dat, spr_320..329.dat, four pictures, level.dat, font.dat, mouths.pic, sound banks gmusic1 and gwords. No executables; popsam/awords are not loaded by populous.prg.",
         "status_meaning": {"verified": "layout documented in local source and file size validated; not a historical authenticity claim",
                            "inferred": "source-family layout fits but variant interpretation is not independently verified",
                            "unsupported": "raw preserved; decoded interpretation unavailable"},
@@ -248,7 +318,7 @@ def export_assets(adf, output):
                         "Mask PNG: white=keep background, black=replace; sheet padding is transparent. Raw masks and indices remain authoritative.",
                         "Missing numbered variants are absent from this disk, not synthesized or claimed necessary.",
                         "OFS checks selected chains, not the full volume bitmap or allocation of unselected files.",
-                        "No executable data tables, sounds, saves or campaign maps are decoded."],
+                        "No executable data tables, saves or campaign maps are decoded; sound banks are validated and tabulated in values.json, PCM stays raw."],
         "artifacts": {name: {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
                       for name, data in sorted(artifacts.items())},
     }

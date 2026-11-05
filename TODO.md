@@ -230,7 +230,7 @@ Belege: `populous_c_port/populous_prg.c:1030-1062`, `:1509-1543`;
 - [ ] **Teilweise:** Toolbar anklickbar (alle `_zoom_map`-Icons, asm:1700-2451). Erledigt: Abfragemodus (`_interogate`) mit Schild (`_show_the_shield`, ohne Flaggen-/Waffen-Icons mangels `_icon_data`) und dauerhafte Icon-Hervorhebung (`_toggle_icon`) fuer Tendenz, Modus, Musik, FX und Pause. Options- und Spieloptionen-Requester (`_do_action` 7/8) oeffnen die originalen Dialoge. Offen: Nachrichten-Requester (`_do_action` 2), kurze Tastendruck-Blitze der Power-/View-Icons.
 - [ ] **Teilweise:** Originale Manaanzeige erledigt (`_move_mana` asm:3164-3244: Sprite 69 auf der Manaskala nach `_mana_values`, reine Praesentation). Offen: weitere Bewohner-/Siedlungs-Informationsanzeigen.
 - [ ] **Teilweise:** Requester und Optionen. Erledigt: `_requester` (Rahmen aus `_icon_data` 12..23, OK/CANCEL), `_check_cancel`, `_options` (Machtbits, Aggression, Rate), `_game_options` (Spiel/Karte malen, Gut/Boese, Mensch/Amiga, Custom Game, naechste Karte/Neustart fuer Eroberungswelten, Aufgeben), `_set_options` (`_game_mode`-Bits); Simulation pausiert, Eingabe geht an den Requester. Eroberung oeffnet die Weltauswahl `_show_world` mit `_get_name`. Offen (angezeigt, aber wirkungslos): Zwei Spieler/Seriell, Speichern/Laden, naechste Karte/Neustart im Custom Game (Kartengenerator fehlt), Nachrichten-Requester, Requester in der Diagnoseansicht.
-- [ ] **Fehlt:** Originalschrift dekodieren und verwenden; eingebettetes `_font_data` und separates Launcher-`font.dat` vergleichen, nicht ungeprueft gleichsetzen.
+- [x] **Erledigt:** Originalschrift dekodiert und genutzt (`amiga_text`, `_text` asm:19973-20052); `raw/font.dat` ist byteweise identisch mit dem eingebetteten `_font_data` (asm:21949-22372, 4400 Bytes geprueft).
 - [ ] **Teilweise:** Originaler Mauszeiger erledigt (`_pointer` A4 0x84b6 wie im Original gesetzt, `_a_sprite`-Frames aus `_sprite_to_amiga` asm:16783-16830, Hotspot oben links nach `_move_pointer` asm:19928-19972; Ersatzkreuz entfernt). Abweichung: nach Sumpfziel bleibt der Port-Magnet samt Zeiger. Offen: weitere Auswahl-/Zielanzeigen.
 - [x] Port-HUD (keine Originalfunktion, y 200..255) nutzt die Originalschrift ueber `amiga_text`, 40 Spalten x 7 Zeilen; Ersatzschrift `hud_text` entfernt.
 - [ ] **Fehlt:** Bereits extrahierte 32x32-Grosssprites in Laufzeit-Assets, Zeichnen und passende Spielzustaende integrieren.
@@ -273,7 +273,7 @@ Belege: `populous_c_port/populous_init.c:265-290`, `:363-378`;
 - [x] **Erledigt:** Levelcodes `_code`/`_decode`, `GENESIS`, CLI `--code NAME`.
 - [x] **Erledigt:** Fortschritt nach Sieg (`_won_conquest`: naechster Level, Obergrenze 2470, Umlauf auf 0), Wiederholung nach Niederlage, Neustart bei synthetischen Szenarien.
 - [x] **Erledigt:** Weltauswahl `_show_world` mit Namenseingabe `_get_name`, `level.dat`-Parameterzeilen, GENESIS, "NO SUCH WORLD", Seed-Eingabe; geoeffnet per `--conquest`, Spieloptionen "Eroberung" und nach einem Eroberungssieg (naechste Welt vorbelegt).
-- [ ] **Fehlt:** Lord-/Mund-Animation, Sprache/Musik, Endbildschirm in der Diagnoseansicht, "Disk einlegen"-Meldung bei fehlender `level.dat`.
+- [ ] **Fehlt:** Lord-/Mund-Animation, Lord-Sprache (`gwords`), Endbildschirm in der Diagnoseansicht, "Disk einlegen"-Meldung bei fehlender `level.dat`.
 - [ ] **Pruefen:** Gleichzeitige Ausloeschung und Aufgabe gegen Referenzlaeufe; Punktestand gegen einen echten Amiga-Lauf; alle originalen Spiel-/Optionsmodi.
 
 **Abhaengigkeiten:** Original-UI (Requester), Audio, Lord-Bilder.
@@ -289,18 +289,23 @@ Belege: `populous_c_port/populous_prg.c` (`core_end_stats`, `core_code`,
 
 ## P2 - Audio
 
-- [ ] **Pruefen:** Originale Audioquellen, Sample-/Instrumentformate, Sequenzen, Frequenzen und Ereigniszuordnung aus ADF und Assembly bestimmen. Der bisherige Export schliesst Audio aus.
-- [ ] **Fehlt:** Benoetigte Audiodaten nachvollziehbar extrahieren und validieren.
-- [ ] **Fehlt:** SDL-Audiopfad mit Kanalverwaltung, Mixing, Prioritaeten und sauberem Ressourcenlebenszyklus.
-- [ ] **Fehlt:** Soundeffekte und originale Sequenz-/Measure-Wiedergabe an die richtigen Spiel-/Introereignisse anbinden.
-- [ ] **Pruefen:** Timing, Lautstaerken, Unterbrechung/Priorisierung, Pause und Verhalten ohne Audiogeraet gegen Referenzen pruefen.
+- [x] **Erledigt:** Quellen bestimmt: `_load_sound`/`_PlaySound`/`_setsound`/`_PlayMeas`/`_kill_effect`/`_check_effect` (asm:20307-20908), Vbi-Teil (asm:19620-19672), `_effect`-Setzer (asm:3434-3454, 4075, 6786, 7605-7647, 7900, 8088, 8266, 8477, 8529), Herzschlag-`_tempo` (asm:564-605). Spiel-Bank `gmusic1`, Sprach-Bank `gwords` (`_won_conquest`); `popsam` ist Intro-Musik von `populous_main`, `awords` wird von `populous.prg` nicht geladen.
+- [x] **Erledigt:** `extract_assets.py` exportiert `raw/gmusic1` (90534 B) und `raw/gwords` (79076 B) mit strenger `_load_sound`-Validierung (exakter Verbrauch, Pufferindizes) und Tabellen in `values.json`; PCM bleibt roh. Beide Rohdateien liegen wie die uebrigen `raw/`-Dateien im Repo.
+- [x] **Erledigt:** `audio.c`: Paula-Mixer (4 Kanaele, 8-Bit signed, 3546895/Periode, Lautstaerke 0..64, Zyklen/Schleifen, Warteschlange, Stereo 0/3 links, 1/2 rechts); ohne Audiogeraet stumm und lauffaehig.
+- [x] **Erledigt:** Effekte 0x42..0x4d auf Kanal 2+3, Kampf 0x43/0x44 und Feuer 0x46 ueber `_move_sprite`-Flags, Herzschlag 0x47/0x48 auf Kanal 0, Prioritaeten (`_Soundpri`), Beben-Abbruch `_kill_effect(2,4)`, Musik `_PlayMeas` (`gmusic1`), Toolbar-Schalter (`_music_off`/`_effect_off` != 0 = an, Einschalten stoppt alle Kanaele).
+- [ ] **Abweichung:** Zyklenzahl der zweiten `_PlaySound`-Anforderung liegt im Original ausserhalb der Argumente (undefiniertes Stackwort); der Port nutzt das Wiederholwort (+6) des Drumkit-Eintrags.
+- [ ] **Fehlt:** Lord-Sprache (`gwords`, asm:14503-14765) mit der Lord-/Mund-Animation; Intro-Musik `popsam` (`populous_main`).
+- [ ] **Pruefen:** Timing, Lautstaerken und Klang gegen einen echten Amiga bzw. Emulator hoeren; Vbi wird im Port per `SDL_GetTicks` getaktet.
 
 **Abnahme:** Verifizierte Originaldaten werden ereignis- und zeitgerecht abgespielt;
 kein erfundener Ersatzsound gilt als abgeschlossene Audiomigration.
 
-Belege: `populous_c_port/populous_init.c:302`,
-`populous_c_port/populous_prg.c:433-439`, `:1675-1676`;
-`populous_c_port/extract_assets.py:241`; `src/populous_prg.asm:20307-20821`.
+Belege: `populous_c_port/audio.c`, `populous_c_port/populous_prg.c`
+(`core_PlaySound`, `core_PlayMeas`, `core_load_sound`, `core_vbi_audio`,
+`core_tempo_pass`), `populous_c_port/extract_assets.py` (`sound_values`),
+`populous_c_port/tests/test_audio.c`, `tests/test_game.c` (`test_sound`);
+`src/populous_prg.asm:564-614`, `:1744-1781`, `:3434-3454`, `:13966-13972`,
+`:19620-19672`, `:20307-20908`, `:24129-24134`.
 
 ## P2 - Speichern und Laden
 
