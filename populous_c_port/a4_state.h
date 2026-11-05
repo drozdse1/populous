@@ -55,6 +55,8 @@ typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
 #define conq_02_enemypow (*(uint8_t *)A4_DISP(0x84be))
 #define conq_03_yourpow  (*(uint8_t *)A4_DISP(0x84bf))
 #define conq_04_mode     (*(uint8_t *)A4_DISP(0x84c0))
+#define conq_06_your_count  (*(uint8_t *)A4_DISP(0x84c2))
+#define conq_07_enemy_count (*(uint8_t *)A4_DISP(0x84c3))
 #define game_mode        A4_WORD(0x84b8)
 #define level_number     A4_WORD(0xae7e)   /* _level_number */
 
@@ -135,8 +137,19 @@ typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
 #define stats_cmd_y(owner)           (stats_bytes(owner)[2])
 #define stats_build_mode(owner)      A4_WORD(stats_base(owner) + 0x06) /* 0x82bc */
 #define stats_build_latch(owner)     A4_WORD(stats_base(owner) + 0x08) /* 0x82be */
-#define stats_power_mask(owner)      A4_WORD(0x82c4 + (owner) * 46)
-#define stats_build_period(owner)    A4_WORD(0x82c6 + (owner) * 46)
+#define stats_power_mask(owner)      A4_WORD(stats_base(owner) + 0x0e) /* 0x82c4 */
+#define stats_build_period(owner)    A4_WORD(stats_base(owner) + 0x10) /* 0x82c6 */
+#define stats_rating(owner)          A4_WORD(stats_base(owner) + 0x0c) /* 0x82c2; custom peep count */
+#define stats_send_flag(owner)       A4_WORD(stats_base(owner) + 0x12) /* 0x82c8 */
+#define stats_city_count(owner)      A4_WORD(stats_base(owner) + 0x14) /* 0x82ca */
+#define stats_town_tally(owner)      A4_WORD(stats_base(owner) + 0x16) /* 0x82cc; published town_age */
+#define stats_ai_seed(owner)         A4_WORD(stats_base(owner) + 0x18) /* 0x82ce */
+#define stats_ai_delay(owner)        A4_WORD(stats_base(owner) + 0x1a) /* 0x82d0 */
+#define stats_go_to_mode(owner)      A4_WORD(stats_base(owner) + 0x1c) /* 0x82d2; battle/goto view */
+#define stats_go_to_pos(owner)       A4_WORD(stats_base(owner) + 0x1e) /* 0x82d4 */
+#define stats_best_town_ref(owner)   A4_LONG(stats_base(owner) + 0x22) /* 0x82d8; peep slot+1 */
+#define stats_oldest_town_ref(owner) A4_LONG(stats_base(owner) + 0x26) /* 0x82dc */
+#define stats_youngest_town_ref(owner) A4_LONG(stats_base(owner) + 0x2a) /* 0x82e0 */
 
 #define inkey            (*(uint8_t *)A4_DISP(0xae6c))
 #define bitfield_51645   (*(uint8_t *)A4_DISP(0x8257))
@@ -182,11 +195,63 @@ typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
 #define life_water_flag  A4_WORD(0x2fb2)
 #define life_swamp_count A4_WORD(0x2ff8)
 
-/* Mana / power cost tables (longs) referenced by gameplay gates. */
-#define mana_floor       A4_LONG(0x8486)
-#define mana_raise_cost  A4_LONG(0x848a)
-#define mana_magnet_cost A4_LONG(0x848e)
-#define mana_flood_cost  A4_LONG(0x84a2)
+/* Mana / power cost tables (longs) referenced by gameplay gates.
+ * Index into the 11-entry mana_value_table installed at reset. */
+#define mana_floor         A4_LONG(0x8486)
+#define mana_raise_cost    A4_LONG(0x848a)
+#define mana_magnet_cost   A4_LONG(0x848e)
+#define mana_quake_cost    A4_LONG(0x8492)
+#define mana_swamp_cost    A4_LONG(0x8496)
+#define mana_knight_cost   A4_LONG(0x849a)
+#define mana_volcano_cost  A4_LONG(0x849e)
+#define mana_flood_cost    A4_LONG(0x84a2)
+#define mana_war_cost      A4_LONG(0x84a6)   /* Armageddon */
+#define mana_value_table(i) A4_LONG(0x8486 + (i) * 4)
+#define mana_high_bonus    A4_LONG(0x9a12)   /* set to 2700 on high internal levels */
+
+/* LAND rule tables (words, 11 entries unless noted). */
+#define land_weapons_order(i)  A4_WORD(0x2f96 + (i) * 2)
+#define land_cheat_owner       A4_WORD(0x2fb4)          /* nonzero = force capacity cheat */
+#define land_mana_add(i)       A4_WORD(0x2fb6 + (i) * 2)
+#define land_weapons_add(i)    A4_WORD(0x2fcc + (i) * 2)
+#define land_population_add(i) A4_WORD(0x2fe2 + (i) * 2)
+#define land_battle_add1(i)    A4_WORD(0x2ffa + (i) * 2)
+#define land_battle_add2(i)    A4_WORD(0x3010 + (i) * 2)
+
+/* Direction offsets (25) and city block ids (9) copied into A4 at reset. */
+#define dir_offset_table(i)    A4_WORD(0x842c + (i) * 2)
+#define city_block_table(i)    A4_WORD(0x8474 + (i) * 2)
+
+/* Sprite records: 8 bytes each at 0x9a22 (x, y, pad, who). */
+#define sprite_x(i)    A4_WORD(0x9a22 + (i) * 8)
+#define sprite_y(i)    A4_WORD(0x9a24 + (i) * 8)
+#define sprite_who(i)  A4_WORD(0x9a28 + (i) * 8)
+
+/* End-game scoreboard rows: 7 x 46 bytes at 0x8e7e (x, y, w, text). */
+#define end_row_base(r)  (0x8e7e + (r) * 46)
+#define end_row_x(r)     A4_WORD(end_row_base(r) + 0)
+#define end_row_y(r)     A4_WORD(end_row_base(r) + 2)
+#define end_row_w(r)     A4_WORD(end_row_base(r) + 4)
+#define end_row_text(r)  ((char *)A4_DISP(end_row_base(r) + 6))
+#define core_end_row(r)   end_row_text(r)   /* legacy test alias */
+
+/* UI / save path / checksum scratch. */
+#define core_message     ((char *)A4_DISP(0x3058))
+#define core_drawer      ((char *)A4_DISP(0x302c))
+#define core_filename    ((char *)A4_DISP(0x3040))
+#define land_checksum    A4_WORD(0x3082)
+
+/* Requester OK/CANCEL and menu tables (46-byte entries). */
+#define core_end_ok          A4_DISP(0x84c6)
+#define core_end_cancel      A4_DISP(0x84f4)
+#define core_option_entry(i) A4_DISP(0x8522 + (i) * 46)
+#define core_game_entry(i)   A4_DISP(0x87ee + (i) * 46)
+#define core_set_entry(i)    A4_DISP(0x8fc0 + (i) * 46)
+
+/* Serial baud/period scratch used around _set_serial. */
+#define serial_period    A4_WORD(0x98a2)
+#define serial_read_vec  A4_DISP(0x99b4)
+#define serial_write_vec A4_DISP(0x99ca)
 
 /* Interrupt / serial scratch labels kept for faithful layout. */
 #define LAB_52C40        (*(uint8_t *)A4_DISP(0x9852))
