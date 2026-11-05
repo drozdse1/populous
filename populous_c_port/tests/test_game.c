@@ -11835,6 +11835,16 @@ static void entry_click(const uint8_t *entry, int dx, int dy)
 {
     screen_click(core_rec_w(entry,0)+dx+1, core_rec_w(entry,2)+dy+1, SDL_BUTTON_LEFT);
 }
+static void world_ok_click(void) { screen_click(core_rec_w(core_world_ok,0)+4, core_rec_w(core_world_ok,2)+8, SDL_BUTTON_LEFT); }
+static void world_new_click(void) { screen_click(core_rec_w(core_world_cancel,0)+4, core_rec_w(core_world_cancel,2)+8, SDL_BUTTON_LEFT); }
+static void world_type(const char *text)
+{
+    for (; *text; ++text) {
+        SDL_Event key = {.type = SDL_KEYDOWN};
+        key.key.keysym.sym = *text == '\n' ? SDLK_RETURN : *text == '\b' ? SDLK_BACKSPACE : (SDL_Keycode)*text;
+        game_handle_event(&key);
+    }
+}
 static void ok_click(void) { screen_click(core_rec_w(core_end_ok,0)+4, core_rec_w(core_end_ok,2)+8, SDL_BUTTON_LEFT); }
 static void cancel_click(void) { screen_click(core_rec_w(core_end_cancel,0)+4, core_rec_w(core_end_cancel,2)+8, SDL_BUTTON_LEFT); }
 
@@ -11952,9 +11962,9 @@ static void test_requesters(void)
     assert(player==0 && not_player==1 && core_rec_w(core_stats(0),6)==0 && core_rec_w(core_stats(1),6)==1 && pointer==1);
     entry_click(core_game_entry(8),16,16); assert(core_rec_w(core_stats(0),6)==1 && core_rec_w(core_stats(1),6)==1);
     entry_click(core_game_entry(7),16,16); assert(core_rec_w(core_stats(0),6)==0 && core_rec_w(core_stats(1),6)==1);
-    /* Inert: TWO PLAYERS, CONQUEST, SAVE, LOAD. */
+    /* Inert: TWO PLAYERS, SAVE, LOAD (CONQUEST opens _show_world, test_world_screen). */
     memcpy(before,prg_a4_area,sizeof before);
-    entry_click(core_game_entry(2),16,16); entry_click(core_game_entry(9),16,16);
+    entry_click(core_game_entry(2),16,16);
     entry_click(core_game_entry(12),16,16); entry_click(core_game_entry(13),16,16);
     keep_mouse(before); assert(a4_same(before) && core_req.kind==CORE_REQ_GAME);
     entry_click(core_game_entry(1),16,16); assert(serial_off==1 && core_rec_text(core_game_entry(1))[0]==(char)0x81);
@@ -12017,7 +12027,11 @@ static void test_end_transition(void)
     SDL_Event escape = key; escape.key.keysym.sym = SDLK_ESCAPE;
     game_handle_event(&escape); assert(prg_quit && core_result == 1); prg_quit = 0;
     game_handle_event(&key);
-    assert(!core_result && !core_end_shown && current_start.kind == START_ORIGINAL && current_start.number == next/5);
+    /* _won_conquest: _show_world with the next world's code (asm:14492-14501, 14766-14772). */
+    assert(core_req.kind == CORE_REQ_WORLD && core_world.origin == CORE_WORLD_WON && core_world.shown &&
+           !strcmp(core_message, code) && core_world.level == next && core_result == 1);
+    world_ok_click();
+    assert(!core_req.kind && !core_result && !core_end_shown && current_start.kind == START_ORIGINAL && current_start.number == next/5);
     assert(A4_WORD(0xae7e) == next && in_conquest == next && A4_LONG(0xae72) == 10 && !A4_WORD(0x82bc));
     /* Conquest loss: the same world again, by a click on the requester
      * button (_check_cancel(button,0), asm:14370-14385); a click elsewhere
@@ -12039,6 +12053,7 @@ static void test_end_transition(void)
     end_kill(1);
     assert(core_end_next == 0 && core_end_finished && strstr(core_end_conquest[0], "EVIL"));
     end_button_click();
+    assert(core_req.kind == CORE_REQ_WORLD && !core_world.level); world_ok_click();
     assert(current_start.kind == START_ORIGINAL && !current_start.number && !A4_WORD(0xae7e));
     /* Synthetic scenarios are not conquest: restart them. */
     assert(game_reset(3));
@@ -12081,6 +12096,110 @@ static void test_end_transition(void)
     snprintf(path, sizeof path, "%s/level.dat", test_data_directory); assert(!unlink(path));
     assert(game_reset(0) && !game_font_loaded);
     copy_real_font();
+    _closeall(); SDL_Quit();
+}
+
+/* _show_world asm:12190-12773 with _get_name asm:10307-10488. */
+static void test_world_screen(void)
+{
+    if (getenv("POPULOUS_TEST_REAL_DATA")) return;
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    /* Fixture: base record (startable), records 1 and 7 differ for display. */
+    uint8_t bytes[LEVEL_FILE_SIZE];
+    for (int index = 0; index < LEVEL_RECORD_COUNT; ++index) {
+        uint8_t record[] = {7, 9, 135, 63, 19, 2, 1, 1, 0xab, 0xcd};
+        if (index == 1) { uint8_t other[] = {1, 10, 0x15, 0x2a, 0x0a, 1, 12, 30, 0x01, 0x23}; memcpy(record, other, 10); }
+        if (index == 7) { uint8_t other[] = {10, 2, 0x3f, 0x00, 0x10, 3, 5, 6, 0x12, 0x34}; memcpy(record, other, 10); }
+        memcpy(bytes + 10 * index, record, 10);
+    }
+    char path[512]; snprintf(path, sizeof path, "%s/level.dat", test_data_directory);
+    FILE *file = fopen(path, "wb");
+    assert(file && fwrite(bytes, 1, sizeof bytes, file) == sizeof bytes && !fclose(file));
+    /* --conquest: _start_of_game == 2 (asm:536-551). */
+    char *arguments[] = {"populous", "--conquest", NULL};
+    StartSelection selection;
+    assert(parse_start(2, arguments, &selection) && requested_world && selection.kind == START_ORIGINAL && !selection.number);
+    arguments[1] = "--conquests"; assert(!parse_start(2, arguments, &selection) && !requested_world);
+    /* Start: GENESIS by default, record 0 into _conquest, the lines shown. */
+    assert(game_reset_start((StartSelection){START_ORIGINAL, 2}));
+    core_message[0] = 0; core_world_open(CORE_WORLD_START);
+    assert(core_req.kind == CORE_REQ_WORLD && core_world.shown && !core_world.entry && !core_world.level &&
+           !strcmp(core_message, "GENESIS") && !memcmp(A4_DISP(0x84bc), bytes, 8) && (uint16_t)conq_08_seed == 0xabcd);
+    assert(core_rec_w(core_world_ok,0) == 32 && core_rec_w(core_world_ok,2) == 168 && core_rec_w(core_world_cancel,2) == 168);
+    char line[48], you[8], him[8];
+    static const char *const genesis[15] = {NULL, "BATTLE NUMBER IS 0", "WORLDS LANDSCAPE IS SNOW AND ICE",
+        "HIS REACTIONS ARE VERY SLOW", "HIS RATING IS POOR", "LAND BUILT JUST ON TOWNS", "THE SWAMPS ARE BOTTOMLESS",
+        "WATER IS FATAL", "               YOU    HIM", "POPULATION"};
+    for (int i = 1; i < 10; ++i) { core_world_line(i, line, you, him); assert(!strcmp(line, genesis[i])); }
+    core_world_line(9, line, you, him); assert(!strcmp(you, "1") && !strcmp(him, "1"));
+    for (int i = 10; i < 15; ++i) {   /* yourpow 63, enemypow 135 = bits 0,1,2 (+7) */
+        core_world_line(i, line, you, him);
+        assert(!strcmp(line, core_world_template[i].text) && !strcmp(you, "YES") && !strcmp(him, i < 13 ? "YES" : "NO"));
+    }
+    /* Paused while open; keys typed now are ignored (no entry). */
+    uint8_t before[sizeof prg_a4_area]; memcpy(before, prg_a4_area, sizeof before);
+    game_tick(); world_type("ab"); assert(!memcmp(before, prg_a4_area, sizeof before));
+    draw_original(xoff, yoff);
+    assert_tile(16,24,12); assert_tile(288,24,14); assert_tile(16,168,15); assert_tile(32,168,21); assert_tile(288,168,17);
+    assert(!game_pixels[0] && !game_pixels[319]);   /* ___clr_wsc */
+    /* NEW GAME: an empty entry; a world of record 1 (worlds 25..49). */
+    world_new_click();
+    assert(core_world.entry && !core_world.shown && !core_world.length && (uint8_t)core_message[0] == 0x82 && !core_message[16]);
+    char name[16]; core_code(name, core_code_rand(30));
+    for (char *c = name; *c; ++c) *c = (char)tolower((unsigned char)*c);
+    world_type("X\b"); assert(!core_world.length && (uint8_t)core_message[0] == 0x82);
+    world_type(name); world_type("\n");
+    core_code(name, core_code_rand(30));
+    assert(!strcmp(core_message, name) && core_world.shown && core_world.level == 30 && !memcmp(A4_DISP(0x84bc), bytes+10, 8));
+    static const char *const second[8] = {NULL, "BATTLE NUMBER IS 6", "WORLDS LANDSCAPE IS DESERT",
+        "HIS REACTIONS ARE VERY SLOW", "HIS RATING IS VERY GOOD", "LAND ONLY BUILT UP", "THE SWAMPS ARE BOTTOMLESS", "WATER IS HARMFUL"};
+    for (int i = 1; i < 8; ++i) { core_world_line(i, line, you, him); assert(!strcmp(line, second[i])); }
+    core_world_line(9, line, you, him); assert(!strcmp(you, "12") && !strcmp(him, "30"));
+    core_world_line(10, line, you, him); assert(!strcmp(you, "NO") && !strcmp(him, "YES"));
+    core_world_line(11, line, you, him); assert(!strcmp(you, "YES") && !strcmp(him, "NO"));
+    /* A world of record 7 (175..199). */
+    world_new_click(); core_code(name, core_code_rand(180)); world_type(name); world_type("\n");
+    assert(core_world.level == 180 && !memcmp(A4_DISP(0x84bc), bytes+70, 8) && (uint16_t)conq_08_seed == 0x1234);
+    core_world_line(3, line, you, him); assert(!strcmp(line, "HIS REACTIONS ARE VERY FAST"));
+    core_world_line(4, line, you, him); assert(!strcmp(line, "HIS RATING IS VERY POOR"));
+    core_world_line(5, line, you, him); assert(!strcmp(line, "LAND BUILT JUST ON TOWNS"));
+    core_world_line(14, line, you, him); assert(!strcmp(you, "NO") && !strcmp(him, "YES"));
+    /* Invalid: "NO SUCH WORLD", the entry stays; Escape keeps the host quit. */
+    world_new_click(); world_type("NOWHERE\n");
+    assert(core_req.kind == CORE_REQ_WORLD && core_world.error && core_world.entry && !core_world.shown && core_world.level < 0);
+    draw_original(xoff, yoff); memcpy(before, prg_a4_area, sizeof before);
+    SDL_Event escape = {.type = SDL_KEYDOWN}; escape.key.keysym.sym = SDLK_ESCAPE;
+    game_handle_event(&escape); assert(prg_quit && core_req.kind == CORE_REQ_WORLD); prg_quit = 0;
+    /* GENESIS by name, started with START GAME after the entry ends. */
+    /* _get_name resumes after the rejected name (strlen, asm:10308-10312). */
+    assert(core_world.length == 7 && !strcmp(core_message, "NOWHERE\x82\x82\x82\x82\x82\x82\x82\x82\x82"));
+    world_type("\b\b\b\b\b\b\bgenesis"); assert(core_world.length == 7);
+    world_ok_click(); assert(core_world.shown && !core_world.error && !core_world.level);
+    world_ok_click();
+    assert(!core_req.kind && current_start.kind == START_ORIGINAL && !current_start.number && !A4_WORD(0xae7e) && !in_conquest);
+    /* A valid name starts its world. */
+    core_message[0] = 0; core_world_open(CORE_WORLD_START); world_new_click();
+    core_code(name, core_code_rand(10)); world_type(name); world_type("\n"); world_ok_click();
+    assert(!core_req.kind && current_start.number == 2 && A4_WORD(0xae7e) == 10 && in_conquest == 10 && !player && serial_off == 1);
+    /* A number: _start_seed/_seed, -1 -> the start loop shows it again. */
+    core_message[0] = 0; core_world_open(CORE_WORLD_START); world_new_click(); world_type("123\n");
+    assert(core_req.kind == CORE_REQ_WORLD && start_seed == 123 && seed == 123 && !strcmp(core_message, "GENESIS") && core_world.shown);
+    /* Game options CONQUEST: _show_world with an empty _message; START GAME
+     * sets _new_map and starts the world (asm:13221-13239). */
+    toolbar_fixture(); in_conquest = -1;
+    core_game_options_open(); entry_click(core_game_entry(9),16,16);
+    assert(core_req.kind == CORE_REQ_WORLD && core_world.origin == CORE_WORLD_OPTIONS && !strcmp(core_message, "GENESIS") &&
+           core_rec_text(core_game_entry(9))[0] == (char)0x81 && core_rec_text(core_game_entry(10))[0] == (char)0x80);
+    draw_original(xoff, yoff); assert_tile(16,24,12);   /* over the setup frame, its bottom row below */
+    for (int x = 0; x < 16; ++x) assert(game_pixels[188*320+16+x] == icon_pixel(15, x, 12));
+    world_new_click(); core_code(name, core_code_rand(10)); world_type(name); world_type("\n"); world_ok_click();
+    assert(!core_req.kind && current_start.kind == START_ORIGINAL && current_start.number == 2 && in_conquest == 10);
+    /* _animate with --conquest opens the screen before the first frame. */
+    requested_world = 1; requested_start = (StartSelection){START_ORIGINAL, 0};
+    SDL_Event quit = {.type = SDL_QUIT}; assert(SDL_PushEvent(&quit) == 1);
+    _animate(); assert(core_req.kind == CORE_REQ_WORLD && core_world.origin == CORE_WORLD_START);
+    requested_world = 0; core_req.kind = CORE_REQ_NONE; prg_quit = 0;
+    assert(!unlink(path));
     _closeall(); SDL_Quit();
 }
 
@@ -12411,6 +12530,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_original_reset();
     test_start_reset();
     test_end_transition();
+    test_world_screen();
     test_requesters();
     test_original_graphics_output();
     test_toolbar_icon_highlight();

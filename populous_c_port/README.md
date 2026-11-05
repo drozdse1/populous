@@ -660,6 +660,15 @@ the code). The name is uppercased; unknown syllables, extra characters, unused
 codes and worlds above 2470 (no `level.dat` record) fail like other bad arguments.
 World `n` starts `--level n/5`.
 
+```sh
+./populous_c_port/populous_init_port --conquest
+```
+
+`--conquest` opens the world selection screen first, as the original's CLI
+argument `2` (`_start_of_game == 2`, asm:85-91, 536-551); GENESIS runs paused
+behind it. The original's default start (no argument) does not show it, so the
+port's default start is unchanged. See "World selection".
+
 `level_data.c` decodes exactly 990 bytes into 99 ten-byte records. Selection uses
 record `N/5`, internal level `5*N`, and seed `(seed_offset + ((5*N) & 7)) & 0xffff`.
 The parser rejects unsupported terrain outside 0..3, nonregular/symlink files,
@@ -939,7 +948,9 @@ Continuing (see Controls):
   (asm:14460-14491) advances `_level_number` by `score/5000 + 1`, rounds up to
   a multiple of 5 and caps at 2470; winning 2470 wraps to world 0. The box shows
   `WELL DONE <rank> YOU CONQUERED` and `<old> NOW BATTLE AT <new code>` before
-  the click; the next world then starts through the normal reset;
+  the click; after the click the world selection screen opens with `_message`
+  set to the next world's code (asm:14492-14501, 14766-14772), and START GAME
+  starts it through the normal reset;
 - conquest loss: the same world again;
 - synthetic scenarios are no conquest: the selected scenario restarts.
 
@@ -949,8 +960,41 @@ clears `_score`. The box is the original `_requester(d_screen,16,16,0x120,
 the conquest-win lines, shown on the lord screen after the click in the
 original (x 8, y 0xb2/0xba), are shown before it on a cleared strip at y
 0x98/0xa0 so that they do not cover the button. Not ported: the lord/mouth
-animation, speech and music, the `_show_world` name-entry loop after a conquest
-win, and the end screen in the diagnostic view.
+animation, speech and music, and the end screen in the diagnostic view.
+
+## World selection
+
+`_show_world` (asm:12190-12773) is ported as the requester `CORE_REQ_WORLD`
+(`core_world_*` in `populous_prg.c`); the simulation is paused while it is open.
+`_requester(d_screen,16,0x18,0x120,0xa0,"START GAME","NEW GAME")`, `WORLD TO
+CONQUER`, the 16-box name field at 0x20,0x2c with `_message` (A4 0x3058, empty
+-> `GENESIS`). A name is a world: `GENESIS` is 0, others go through `_decode`;
+an unknown name prints `NO SUCH WORLD` (asm:12296-12309) and returns to the
+entry. For a valid world, record `level/25` of `level.dat` is read into
+`_conquest` 0x84bc..0x84c5 (asm:12315-12368, the seed word big-endian) and
+the lines 1..14 of `_c_text` (asm:24621-24725) are shown with `_con_text`
+values (asm:12380-12743): battle number, landscape, reactions, rating, land,
+swamps, water, population and YES/NO per power for YOU/HIM.
+
+- START GAME: `_player` 0, `_serial_off` 1, `_paint_map`/`_war` 0, the
+  `_stats` flags of asm:12762-12770 and `_level_number`; the result goes to
+  `_in_conquest` and the world starts.
+- NEW GAME: empties `_message` and starts the `_get_name` entry
+  (asm:10307-10488): keys 0x20..0x7a (upper-cased, at most 15), Backspace /
+  Delete, Return; START GAME ends the entry, NEW GAME empties it. After a
+  rejected name the entry continues after it (strlen), as the original.
+- A number (`atoi` != 0) sets `_start_seed`/`_seed` and returns -1: the start
+  and conquest-win loops show the screen again; from the game options it makes
+  a custom game (`_in_conquest` -1), whose map generator is not ported (inert).
+
+Opened from `--conquest`, game options CONQUEST (asm:13221-13239, also sets
+`_new_map`) and after a conquest win. Keys are SDL key-down symbols (no text
+input needed); Escape has no meaning in `_get_name` and keeps the port's quit.
+Port deviations: the cursor (0x83) blinks every 10 frame ticks instead of 36
+loop passes, and Backspace clears the deleted cell at once instead of at the
+next blink; a missing `level.dat` stays in the entry instead of the "insert
+disk" message; worlds above 2470 (no record) cannot be started; START/conquest
+screens clear the screen, the game-options one draws over the setup screen.
 
 ## Requesters and options
 
@@ -987,8 +1031,8 @@ when a requester opens rather than on every draw.
   the setup screen: custom games toggle the `_game_mode` bits (water fatal,
   swamps bottomless, cannot build, only build up, build near towns); CANCEL
   restores `_game_mode`; it shows `LANDSCAPE NO <_start_seed>`.
-- Shown but inert: TWO PLAYERS (`_two_players`, serial), CONQUEST
-  (`_show_world` name entry), SAVE A GAME / LOAD A GAME (`_save_load`), MOVE TO
+- CONQUEST opens the world selection (see "World selection").
+- Shown but inert: TWO PLAYERS (`_two_players`, serial), SAVE A GAME / LOAD A GAME (`_save_load`), MOVE TO
   NEXT MAP / RESTART THIS MAP in a custom game (the custom map generator is
   not ported), the two-player serial exchange after both dialogs, and the
   message requester (y=2).

@@ -399,7 +399,7 @@ static void core_set_pointer(void);
  * _do_action, so nothing else moves; the port keeps the state here, stops
  * game_tick while kind is set and routes left presses to it. _set_options
  * runs inside _game_options and returns to it. */
-enum { CORE_REQ_NONE, CORE_REQ_OPTIONS, CORE_REQ_GAME, CORE_REQ_SET };
+enum { CORE_REQ_NONE, CORE_REQ_OPTIONS, CORE_REQ_GAME, CORE_REQ_SET, CORE_REQ_WORLD };
 static struct {
     int kind, side;
     uint8_t saved_stats[46];                /* _options -56(A5) */
@@ -410,6 +410,16 @@ static void core_options_open(int side);
 static void core_game_options_open(void);
 static void core_requester_click(void);
 static void core_draw_requester(void);
+/* _show_world state, see core_world_open. */
+enum { CORE_WORLD_START, CORE_WORLD_OPTIONS, CORE_WORLD_WON };
+static struct { int origin, shown, entry, error, level, length, blink; } core_world;
+static uint8_t core_world_ok[46], core_world_cancel[46];
+#define core_message ((char *)A4_DISP(0x3058))
+static void core_world_open(int origin);
+static void core_world_key(int key);
+static void core_world_layout(int draw);
+static void core_world_click(void);
+static void core_draw_world(void);
 static void core_end_button_layout(int draw);
 static int core_check_cancel(const uint8_t *ok, const uint8_t *cancel);
 static void _where_do_i_go(void);
@@ -648,6 +658,7 @@ static int current_start_pop_enemy = 10;
 typedef enum { START_SYNTHETIC, START_ORIGINAL } StartKind;
 typedef struct { StartKind kind; int number; } StartSelection;
 static StartSelection current_start, requested_start;
+static int requested_world;   /* --conquest: _start_of_game == 2 */
 static int current_scenario;
 static int game_reset(int scenario);
 static int game_reset_start(StartSelection selection);
@@ -674,7 +685,12 @@ static int parse_scenario(int argc, char **argv, int *scenario)
 static int parse_start(int argc, char **argv, StartSelection *out)
 {
     StartSelection selected = {START_SYNTHETIC, 0};
-    if (argc == 3 && argv && argv[1] && !strcmp(argv[1], "--level")) {
+    requested_world = 0;
+    if (argc == 2 && argv && argv[1] && !strcmp(argv[1], "--conquest")) {
+        /* The CLI argument 2 of _main (asm:85-91); GENESIS runs behind it. */
+        selected = (StartSelection){START_ORIGINAL, 0};
+        requested_world = 1;
+    } else if (argc == 3 && argv && argv[1] && !strcmp(argv[1], "--level")) {
         if (!argv[2] || !argv[2][0]) return 0;
         for (const char *digit = argv[2]; *digit; ++digit)
             if (*digit < '0' || *digit > '9') return 0;
@@ -703,7 +719,7 @@ void prg_main(void)
     prg_status = EXIT_SUCCESS;
     prg_quit = 0;
     if (!parse_start(g_argc, g_argv, &requested_start)) {
-        fprintf(stderr, "Usage: populous_init_port [nonnegative integer <= INT_MAX | --level 0..494 | --code WORLDNAME]\n");
+        fprintf(stderr, "Usage: populous_init_port [nonnegative integer <= INT_MAX | --level 0..494 | --code WORLDNAME | --conquest]\n");
         prg_status = EXIT_FAILURE;
         return;
     }
@@ -2318,15 +2334,21 @@ static void core_enter_end(void)
     }
 }
 
-/* After the click (asm:14386-14402): won conquest -> next world (the
- * _show_world name entry is skipped); a lost conquest keeps in_conquest,
- * i.e. the same world; non-conquest -> restart the current start. */
+/* After the click (asm:14386-14402): won conquest -> _level_number and
+ * _message = the next world's code (asm:14492-14501), then _show_world
+ * until != -1 (asm:14766-14772); a lost conquest keeps in_conquest, i.e.
+ * the same world; non-conquest -> restart the current start. */
 static int core_leave_end(void)
 {
     if (!core_end_shown) return 0;
     A4_WORD(0x82bc + player*46) = 0;
+    if (core_end_next >= 0) {
+        A4_WORD(0xae7e) = (int16_t)core_end_next;
+        core_code(core_message, core_code_rand(core_end_next));
+        core_world_open(CORE_WORLD_WON);
+        return 1;
+    }
     StartSelection next = current_start;
-    if (core_end_next >= 0) next = (StartSelection){START_ORIGINAL, core_end_next / 5};
     if (!game_reset_start(next)) {
         fprintf(stderr, "End of game: next world could not be started.\n");
         return 0;
@@ -2337,6 +2359,8 @@ static int core_leave_end(void)
 static void _animate(void)
 {
     if (!game_reset_start(requested_start)) { prg_status = EXIT_FAILURE; return; }
+    /* _start_of_game == 2 (asm:536-551): the world screen first. */
+    if (requested_world) { core_message[0] = 0; core_world_open(CORE_WORLD_START); }
     game_render();
     Uint32 next_tick = SDL_GetTicks() + 50;
     while (!prg_quit) {
@@ -2345,6 +2369,7 @@ static void _animate(void)
         Uint32 now = SDL_GetTicks();
         int catch_up = 0;
         while ((Sint32)(now-next_tick) >= 0 && catch_up++ < 5) {
+            if (core_req.kind == CORE_REQ_WORLD) ++core_world.blink;
             game_tick(); next_tick += 50;
         }
         if ((Sint32)(now-next_tick) >= 0) next_tick = now+50;
@@ -3071,6 +3096,7 @@ static void core_requester_layout(void)
     if (core_req.kind == CORE_REQ_OPTIONS) core_requester(0x10,0x10,0x120,0xa6,core_end_ok,core_end_cancel,0);
     else if (core_req.kind == CORE_REQ_GAME) core_requester(0x10,0x10,0x120,0xb0,core_end_ok,core_end_cancel,0);
     else if (core_req.kind == CORE_REQ_SET) core_requester(0x20,0x18,0x100,0x70,core_end_ok,core_end_cancel,0);
+    else if (core_req.kind == CORE_REQ_WORLD) core_world_layout(0);
     if (core_req.kind) tempo = 0;
 }
 /* _options(side) asm:13617-13660: keep a copy of _stats[side], show the
@@ -3156,9 +3182,9 @@ static void core_game_options_close(void)
         fprintf(stderr, "Game options: map restart failed; keeping the current game.\n");
 }
 /* _game_options click, asm:12878-13350. In a conquest game entries 0..8
- * are ignored. Inert here: TWO PLAYERS (_two_players, serial), CONQUEST
- * (_show_world name entry), SAVE/LOAD (_save_load); ONE PLAYER only ticks,
- * as _serial_off is always 1. */
+ * are ignored. Inert here: TWO PLAYERS (_two_players, serial), SAVE/LOAD
+ * (_save_load); ONE PLAYER only ticks, as _serial_off is always 1.
+ * CONQUEST (asm:13221-13239) opens _show_world with an empty _message. */
 static void core_game_options_click(void)
 {
     int i = 0;
@@ -3184,6 +3210,7 @@ static void core_game_options_click(void)
         core_game_tick(8,7); core_rec_w(core_stats(player),6) = 1;
         if (serial_off) core_rec_w(core_stats(!player),6) = 1;
         break;
+    case 9: core_game_tick(9,10); core_message[0] = 0; core_world_open(CORE_WORLD_OPTIONS); return;
     case 10: core_game_tick(10,9); in_conquest = -1; break;
     case 11: core_set_options_open(); return;
     case 14: A4_WORD(0x309a) = 1; core_game_options_close(); return;
@@ -3230,6 +3257,7 @@ static void core_requester_click(void)
     if (core_req.kind == CORE_REQ_OPTIONS) core_options_click();
     else if (core_req.kind == CORE_REQ_GAME) core_game_options_click();
     else if (core_req.kind == CORE_REQ_SET) core_set_options_click();
+    else if (core_req.kind == CORE_REQ_WORLD) core_world_click();
 }
 
 static void core_draw_game_options(void)
@@ -3255,6 +3283,7 @@ static void core_draw_requester(void)
                                     core_rec_w(entry,2)+16, marker);
         }
     } else if (core_req.kind == CORE_REQ_GAME) core_draw_game_options();
+    else if (core_req.kind == CORE_REQ_WORLD) core_draw_world();
     else if (core_req.kind == CORE_REQ_SET) {
         /* _set_options draws over the game options screen. */
         core_draw_game_options();
@@ -3297,6 +3326,212 @@ static void core_draw_end_screen(void)
         core_fill(0,0x96,320,20,0);
         amiga_text(game_pixels, 8, 0x98, core_end_conquest[0]);
         amiga_text(game_pixels, 8, 0xa0, core_end_conquest[1]);
+    }
+}
+
+/* _show_world asm:12190-12773, run as a requester (CORE_REQ_WORLD): the
+ * original loops inside the caller, so the game is paused while it is
+ * open. _requester(d_screen,16,0x18,0x120,0xa0,"START GAME","NEW GAME")
+ * (asm:12193-12216); the buttons are _show_world's locals -72/-118(A5).
+ * Phases: shown (the parameter lines, waiting for START GAME/NEW GAME,
+ * asm:12744-12761) or entry (_get_name, asm:12240-12260). */
+/* _c_text asm:24621-24725 (A4 0x8afc): word x, y, then the put_in_string
+ * offset (lines 9..14: the pixel offset of the YOU/HIM columns), text. */
+static const CoreMenuEntry core_world_template[15] = {
+    {0x10,0x0a,0x10,"WORLD TO CONQUER"},     {0x10,0x1e,0x11,"BATTLE NUMBER IS "},
+    {0x10,0x26,0x14,"WORLDS LANDSCAPE IS "}, {0x10,0x2e,0x12,"HIS REACTIONS ARE "},
+    {0x10,0x36,0x0e,"HIS RATING IS "},       {0x10,0x3e,0x05,"LAND "},
+    {0x10,0x46,0x0f,"THE SWAMPS ARE "},      {0x10,0x4e,0x09,"WATER IS "},
+    {0x10,0x58,0x48,"               YOU    HIM"}, {0x10,0x60,0x78,"POPULATION"},
+    {0x10,0x68,0x78,"EARTHQUAKES"}, {0x10,0x70,0x78,"SWAMPS"}, {0x10,0x78,0x78,"KNIGHTS"},
+    {0x10,0x80,0x78,"VOLCANOS"},    {0x10,0x88,0x78,"FLOODS"},
+};
+/* _con_text asm:24726-24750 (strings asm:21257-21330). */
+static const char *const core_con_text[24] = {"GRASS PLANES","DESERT","SNOW AND ICE","ROCKY",
+    "VERY SLOW","SLOW","MEDIUM","FAST","VERY FAST","VERY POOR","POOR","AVERAGE","GOOD","VERY GOOD",
+    "CANNOT BE BUILT","BUILT JUST ON TOWNS","ONLY BUILT UP","BUILT ON PEOPLE",
+    "SHALLOW","BOTTOMLESS","HARMFUL","FATAL","YES","NO"};
+static const char *core_con(unsigned index) { return index < 24 ? core_con_text[index] : ""; }
+
+static void core_world_layout(int draw)
+{
+    static const CoreMenuEntry buttons[] = {{0,0,0,"START GAME"},{0,0,0,"NEW GAME"}};
+    core_menu_install(core_world_ok, buttons, 1); core_menu_install(core_world_cancel, buttons+1, 1);
+    core_requester(0x10,0x18,0x120,0xa0,core_world_ok,core_world_cancel,draw);
+}
+/* Line i of the jump table asm:12380-12743 (put_in_string asm:12163-12186
+ * truncates the text at the offset and appends). Lines 9..14 also give
+ * the YOU/HIM columns (x+off+16, x+off+0x48). */
+static void core_world_line(int i, char *line, char you[8], char him[8])
+{
+    const CoreMenuEntry *entry = &core_world_template[i];
+    const char *value = NULL;
+    snprintf(line, 48, "%s", entry->text); you[0] = him[0] = 0;
+    switch (i) {
+    case 1: { char number[12]; snprintf(number, sizeof number, "%d", core_world.level / 5); value = number;
+              line[entry->w] = 0; strcat(line, value); return; }
+    case 2: value = core_con(conq_05_terrain); break;
+    case 3: value = core_con((uint16_t)(10 - conq_01_speed) / 2 + 4); break;   /* LSR.W asm:12441 */
+    case 4: value = core_con((uint16_t)(10 - conquest) / 2 + 9); break;
+    case 5: value = core_con(conq_04_mode & 4 ? 14 : conq_04_mode & 0x10 ? 15 : conq_04_mode & 8 ? 16 : 17); break;
+    case 6: value = core_con(conq_04_mode & 2 ? 19 : 18); break;
+    case 7: value = core_con(conq_04_mode & 1 ? 21 : 20); break;
+    case 9: snprintf(you, 8, "%u", A4_DISP(0x84c2)[0]); snprintf(him, 8, "%u", A4_DISP(0x84c3)[0]); return;
+    default:
+        if (i >= 10) {
+            strcpy(you, core_con(conq_03_yourpow & (1 << (i-10)) ? 22 : 23));
+            strcpy(him, core_con(conq_02_enemypow & (1 << (i-10)) ? 22 : 23));
+        }
+        return;
+    }
+    line[entry->w] = 0; strncat(line, value, 47 - strlen(line));
+}
+/* level.dat record level/25 into _conquest 0x84bc..0x84c5 (asm:12315-12368). */
+static int core_world_read(int record)
+{
+    char fallback[4096], path[4200];
+    const char *directory = getenv("POPULOUS_DATA_DIR"), *assets = getenv("POPULOUS_ASSET_DIR");
+    if (!assets) assets = POPULOUS_DEFAULT_ASSET_DIR;
+    snprintf(fallback, sizeof fallback, "%s/raw", assets);
+    if (!directory) directory = fallback;
+    snprintf(path, sizeof path, "%s/level.dat", directory);
+    FILE *file = fopen(path, "rb");
+    if (!file) return 0;
+    uint8_t bytes[10];
+    /* ___Seek/___Read: a short read past the end keeps the old bytes. */
+    if (!fseek(file, (long)record * 10, SEEK_SET) && fread(bytes, 1, 10, file) == 10) {
+        memcpy(A4_DISP(0x84bc), bytes, 8);
+        conq_08_seed = (int16_t)(bytes[8] << 8 | bytes[9]);
+    }
+    fclose(file);
+    return 1;
+}
+/* The callers' MOVE.W D0,_in_conquest: the conquest start (asm:543-551)
+ * and _won_conquest (asm:14766-14772) loop while it is -1, then start
+ * the world; _game_options (asm:13236-13239) sets _new_map, whose restart
+ * cannot build a custom (-1) map in the port. */
+static void core_world_return(int result)
+{
+    in_conquest = (int16_t)result;
+    if (result == -1 && core_world.origin != CORE_WORLD_OPTIONS) { core_world_open(core_world.origin); return; }
+    if (core_world.origin == CORE_WORLD_OPTIONS) A4_WORD(0x309a) = 1;
+    if (result != -1 && !game_reset_start((StartSelection){START_ORIGINAL, result / 5})) {
+        fprintf(stderr, "World selection: world %d could not be started.\n", result);
+        in_conquest = (int16_t)A4_WORD(0xae7e);
+        if (core_world.origin != CORE_WORLD_OPTIONS) return;   /* keep the screen */
+    }
+    core_req.kind = CORE_REQ_NONE; left_button = 2;
+}
+/* _get_name(d_screen,_message,0x20,0x2c,16) entry, asm:10307-10330:
+ * from strlen, bytes <= 0x20 and past the end become 0x82 boxes. */
+static void core_world_entry(void)
+{
+    core_world.shown = 0; core_world.entry = 1; core_world.blink = 0;
+    core_world.length = (int)strlen(core_message);
+    int end = 0;
+    for (int i = 0; i < 16; ++i) {
+        if (!core_message[i]) end = 1;
+        if ((uint8_t)core_message[i] <= 0x20 || end) core_message[i] = (char)0x82;
+    }
+    core_message[16] = 0; left_button = 2;
+}
+/* LAB_4712A..LAB_47236, asm:12262-12378. */
+static void core_world_evaluate(void)
+{
+    int value = atoi(core_message);
+    if (value) {   /* a number: landscape seed for a custom game */
+        start_seed = seed = (int16_t)value; core_message[0] = 0;
+        core_world_return(-1); return;
+    }
+    if (core_message[0]) {
+        core_world.level = core_decode(core_message);   /* GENESIS: 0 */
+        if (core_world.level < 0) core_world.error = 1;   /* "NO SUCH WORLD" */
+    }
+    if (core_world.level < 0) { core_world_entry(); return; }
+    /* Port: a missing level.dat stays in the entry ("insert disk" loops). */
+    if (!core_world_read(core_world.level / 25)) {
+        fprintf(stderr, "World selection: level.dat not found.\n");
+        core_world_entry(); return;
+    }
+    core_world.shown = 1; core_world.entry = 0; left_button = 2;
+}
+static void core_world_open(int origin)
+{
+    core_req.kind = CORE_REQ_WORLD;
+    memset(&core_world, 0, sizeof core_world); core_world.origin = origin;
+    if (!core_message[0]) strcpy(core_message, "GENESIS");
+    core_requester_layout();
+    core_world_evaluate();
+}
+/* _get_name end (LAB_45ABA asm:10461-10488): drop the trailing boxes;
+ * then _show_world blanks the "NO SUCH WORLD" line (asm:12251-12260). */
+static void core_world_entry_done(void)
+{
+    core_message[core_world.length] = (char)0x82;
+    for (int i = 15; i >= 0 && (uint8_t)core_message[i] > 0x80; --i) core_message[i] = 0;
+    core_world.entry = 0; core_world.error = 0;
+    core_world_evaluate();
+}
+/* _get_name keys, asm:10397-10431 (_asckey from ___keyboard): 0x20..0x7a
+ * appended upper-cased while length < 15, 8/0x7f delete, 13 ends. */
+static void core_world_key(int key)
+{
+    if (!core_world.entry) return;
+    if (key >= 0x20 && key <= 0x7a) {
+        if (core_world.length >= 15) return;
+        core_message[core_world.length++] = (char)(key >= 'a' ? key - 0x20 : key);
+    } else if ((key == 8 || key == 0x7f) && core_world.length) {
+        core_message[core_world.length--] = (char)0x82;
+        core_message[core_world.length] = (char)0x82;   /* the original waits for the cursor blink */
+    } else if (key == 13) core_world_entry_done();
+}
+/* _check_cancel: in _get_name (asm:10432-10446) START GAME ends the
+ * entry, NEW GAME empties it; on the shown world (asm:12749-12773) NEW
+ * GAME clears _message and re-enters, START GAME starts it. */
+static void core_world_click(void)
+{
+    int result = core_check_cancel(core_world_ok, core_world_cancel);
+    if (core_world.entry) {
+        if (result == 1) core_world_entry_done();
+        else if (result == 2) { core_message[0] = 0; core_world.entry = core_world.error = 0; core_world_evaluate(); }
+        return;
+    }
+    if (result == 2) { core_message[0] = 0; core_world_entry(); return; }
+    if (result != 1) return;
+    if (core_world.level / 5 >= LEVEL_COUNT) {   /* port: no level.dat record above 2470 */
+        fprintf(stderr, "World selection: world %d has no level.dat record.\n", core_world.level);
+        return;
+    }
+    /* asm:12762-12771 */
+    player = 0; not_player = 1; A4_WORD(0x82ea) = 1; A4_WORD(0x82bc) = 0; A4_WORD(0x82be) = 1;
+    A4_WORD(0x82ec) = 0; serial_off = 1; paint_map = 0; A4_WORD(0xae80) = 0;
+    A4_WORD(0xae7e) = (int16_t)core_world.level;
+    core_world_return(core_world.level);
+}
+/* The caller clears the screen first (___clr_wsc asm:540, 14757), except
+ * _game_options, which draws over its own setup screen. */
+static void core_draw_world(void)
+{
+    if (core_world.origin == CORE_WORLD_OPTIONS) core_draw_game_options();
+    else memset(game_pixels, 0, sizeof game_pixels);
+    core_world_layout(1);
+    const CoreMenuEntry *t = core_world_template;
+    amiga_text(game_pixels, t[0].x+16, t[0].y+24, t[0].text);
+    /* LAB_525C8: the 16-box field, then _message (asm:12228-12239). */
+    char field[17], name[17];
+    memset(field, 0x82, 16); field[16] = 0;
+    snprintf(name, sizeof name, "%s", core_message);
+    if (core_world.entry && !(core_world.blink / 10 & 1)) name[core_world.length] = (char)0x83;   /* cursor, asm:10351-10372 */
+    amiga_text(game_pixels, 0x20, 0x2c, field);
+    amiga_text(game_pixels, 0x20, 0x2c, name);
+    if (core_world.error) amiga_text(game_pixels, t[1].x+16, t[1].y+24, "NO SUCH WORLD");
+    if (!core_world.shown) return;
+    for (int i = 1; i < 15; ++i) {
+        char line[48], you[8], him[8];
+        core_world_line(i, line, you, him);
+        if (you[0]) amiga_text(game_pixels, t[i].x+t[i].w+16, t[i].y+24, you);
+        if (him[0]) amiga_text(game_pixels, t[i].x+t[i].w+0x48, t[i].y+24, him);
+        amiga_text(game_pixels, t[i].x+16, t[i].y+24, line);
     }
 }
 
@@ -4023,6 +4258,12 @@ static void game_handle_event(const SDL_Event *event)
     if (event->type == SDL_KEYDOWN) {
         SDL_Keycode key = event->key.keysym.sym;
         if (key == SDLK_ESCAPE) { prg_quit = 1; return; }
+        /* _show_world's _get_name reads ___keyboard (_asckey). */
+        if (core_req.kind == CORE_REQ_WORLD) {
+            if (key == SDLK_RETURN || key == SDLK_KP_ENTER) core_world_key(13);
+            else if (key >= 0 && key < 0x80) core_world_key((int)key);
+            return;
+        }
         if (core_req.kind) return;   /* the requester loops read only the mouse */
         /* _end_game waits for the requester (asm:14370-14385): any other key. */
         if (core_end_shown && core_result) { if (!event->key.repeat) core_leave_end(); return; }
