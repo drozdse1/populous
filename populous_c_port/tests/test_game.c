@@ -12272,6 +12272,49 @@ static int sound_playing(int ch, int sound)
 }
 
 /* Sound triggers against the extracted gmusic1 (asm:19620-19672,20307-20518). */
+/* The launcher's $42 word becomes _start_of_game without arguments (prg
+ * asm:94-96): 1 the default start, 2 the world screen, 3 the tutorial
+ * (_start_game asm:13975-13999). Arguments always win (CLI bypass). */
+static void test_launcher_start(void)
+{
+    char *arguments[] = {"populous", "--conquest", NULL};
+    char saved[4096]; snprintf(saved, sizeof saved, "%s", getenv("POPULOUS_DATA_DIR"));
+    char raw[4160]; snprintf(raw, sizeof raw, "%s/raw", POPULOUS_DEFAULT_ASSET_DIR);
+    assert(!setenv("POPULOUS_DATA_DIR", raw, 1));   /* the world screen reads level.dat */
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    g_argv = arguments;
+    for (int run = 0; run < 5; ++run) {
+        g_argc = run < 3 ? 1 : 2;
+        g_start_of_game = run < 3 ? run + 1 : 3;
+        if (run == 4) { arguments[1] = "--tutorial"; g_start_of_game = 0; }
+        ensure_prg_screen();
+        SDL_Event quit = {.type = SDL_KEYDOWN};
+        quit.key.keysym.sym = SDLK_ESCAPE;
+        assert(SDL_PushEvent(&quit) == 1);
+        prg_main();
+        assert(prg_exit_status() == 0 && prg_screen == NULL);
+        int world = run == 1 || run == 3, tutorial = run == 2 || run == 4;
+        assert(requested_world == world);
+        assert(current_start.kind == (tutorial ? START_TUTORIAL : world ? START_ORIGINAL : START_SYNTHETIC));
+        if (world) assert(current_start.number == 0 && core_req.kind == CORE_REQ_WORLD);
+        if (!tutorial) continue;
+        /* seed 0x69bc, _tutorial_game_mode, _pause, LAB_5188C mana, the
+         * copied _stats powers/speeds and conq_06/07 people (score 15*10). */
+        assert(in_conquest == -1 && start_seed == 0x69bc && game_mode == 1 && pause == 1);
+        assert(A4_LONG(0x9a02) == 10000 && A4_LONG(0xae72) == 150 && no_peeps == 18);
+        assert(A4_WORD(0x82c4) == 0x3f && A4_WORD(0x82c4 + 46) == 3);
+        assert(A4_WORD(0x82c2) == 10 && A4_WORD(0x82c6 + 46) == 10 && A4_WORD(0x82be + 46) == 1);
+        assert(!core_conquest_game());
+    }
+    char *tutorial[] = {"populous", "--tutorial", NULL};
+    StartSelection selected;
+    assert(parse_start(2, tutorial, &selected) && selected.kind == START_TUTORIAL && !requested_world);
+    assert(!game_reset_start((StartSelection){START_TUTORIAL, 1}));
+    g_argc = 0; g_argv = NULL; g_start_of_game = 0;
+    assert(!setenv("POPULOUS_DATA_DIR", saved, 1));
+    SDL_Quit();
+}
+
 static void test_sound(void)
 {
     char saved[4096] = ""; const char *old = getenv("POPULOUS_ASSET_DIR");
@@ -12930,6 +12973,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_reset_and_input();
     test_lifecycle();
     test_sound();
+    test_launcher_start();
     cleanup_rule_data();
     puts("game memory/start/render/input/lifecycle: PASS");
     return 0;

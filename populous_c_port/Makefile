@@ -7,11 +7,13 @@ TEST_TIMEOUT ?= 20s
 SANITIZER_FLAGS = -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 
 TARGET = populous_init_port
-SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c
+SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c
 CPPFLAGS += -DPOPULOUS_DEFAULT_ASSET_DIR='"$(abspath ../binaries/populous-extracted)"'
 OBJS = $(SRCS:.c=.o)
 HEADERS = $(wildcard *.h)
-RUNTIME_SOURCES = tests/test_runtime.c populous_init.c sdl_lowlevel.c $(HEADERS)
+RUNTIME_SOURCES = tests/test_runtime.c populous_init.c sdl_lowlevel.c graphics.c audio.c title_music.c $(HEADERS)
+# The launcher's asset, mixer and title replayer units; the test includes the rest.
+RUNTIME_LINK = graphics.c audio.c title_music.c
 
 .PHONY: all clean run test-runtime test test-sanitize
 all: $(TARGET)
@@ -23,15 +25,17 @@ $(TARGET): $(OBJS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 tests/test_runtime: $(RUNTIME_SOURCES)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< -o $@ $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< $(RUNTIME_LINK) -o $@ $(LDLIBS)
 
 tests/test_runtime_sanitize: $(RUNTIME_SOURCES)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< -o $@ $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< $(RUNTIME_LINK) -o $@ $(LDLIBS)
 
 define runtime_checks
 	SDL_VIDEODRIVER=dummy timeout $(TEST_TIMEOUT) $(1) screen
 	SDL_VIDEODRIVER=dummy timeout $(TEST_TIMEOUT) $(1) failures
-	SDL_VIDEODRIVER=dummy timeout $(TEST_TIMEOUT) $(1) launcher
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout $(TEST_TIMEOUT) $(1) launcher
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout $(TEST_TIMEOUT) $(1) intro
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout $(TEST_TIMEOUT) $(1) cli
 	SDL_VIDEODRIVER=populous-invalid-driver timeout $(TEST_TIMEOUT) $(1) invalid-driver
 endef
 
@@ -46,11 +50,11 @@ test-sanitize: tests/test_runtime_sanitize
 # Only activate game checks once the core step supplies real test sources.
 ifneq ($(wildcard tests/test_game.c),)
 .PHONY: test-game
-tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c $(HEADERS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c -o $@ $(LDLIBS)
+tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c -o $@ $(LDLIBS)
 
-tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c $(HEADERS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c -o $@ $(LDLIBS)
+tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c -o $@ $(LDLIBS)
 
 test-game: tests/test_game
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout $(TEST_TIMEOUT) ./tests/test_game
@@ -128,12 +132,12 @@ test-level-local: tests/test_game
 	@test -n "$(LEVEL_DATA_DIR)" || { printf '%s\n' 'Set LEVEL_DATA_DIR to an external raw data directory'; exit 1; }
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout $(LEVEL_TEST_TIMEOUT) ./tests/test_game --levels "$(LEVEL_DATA_DIR)"
 
-# Mixer and _load_sound parser; the device check uses SDL's dummy driver.
+# Mixer, _load_sound and popsam parsers, title replayer; the device check uses SDL's dummy driver.
 .PHONY: test-audio test-audio-sanitize
-tests/test_audio: tests/test_audio.c audio.c audio.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< audio.c -o $@ $(LDLIBS)
-tests/test_audio_sanitize: tests/test_audio.c audio.c audio.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< audio.c -o $@ $(LDLIBS)
+tests/test_audio: tests/test_audio.c audio.c audio.h title_music.c title_music.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< audio.c title_music.c -o $@ $(LDLIBS)
+tests/test_audio_sanitize: tests/test_audio.c audio.c audio.h title_music.c title_music.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< audio.c title_music.c -o $@ $(LDLIBS)
 test-audio: tests/test_audio
 	SDL_AUDIODRIVER=dummy timeout $(TEST_TIMEOUT) ./tests/test_audio
 test-audio-sanitize: tests/test_audio_sanitize

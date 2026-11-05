@@ -77,6 +77,41 @@ int audio_current(int channel, AudioWrite *write)
     return count;
 }
 
+void audio_paula_start(int channel, const int8_t *data, uint32_t length, uint16_t period, uint16_t volume)
+{
+    if (channel < 0 || channel >= AUDIO_CHANNELS) return;
+    AudioWrite write = {data, length, period, volume, 0};
+    lock();
+    AudioChannel *c = &channels[channel];
+    c->queue[0] = write; c->count = 1; c->position = 0; c->left = 0;
+    unlock();
+}
+
+/* The running pass ends normally; the latched pair then repeats. */
+void audio_paula_latch(int channel, const int8_t *data, uint32_t length)
+{
+    if (channel < 0 || channel >= AUDIO_CHANNELS) return;
+    lock();
+    AudioChannel *c = &channels[channel];
+    if (c->count) {
+        AudioWrite next = c->queue[0];
+        next.data = data; next.length = length; next.cycles = 0;
+        c->queue[1] = next; c->count = 2; c->left = 1;
+    }
+    unlock();
+}
+
+void audio_paula_period(int channel, uint16_t period)
+{
+    if (channel < 0 || channel >= AUDIO_CHANNELS) return;
+    lock();
+    for (int index = 0; index < channels[channel].count; ++index) channels[channel].queue[index].period = period;
+    unlock();
+}
+
+void audio_lock(void)   { lock(); }
+void audio_unlock(void) { unlock(); }
+
 void audio_reset(void)
 {
     for (int channel = 0; channel < AUDIO_CHANNELS; ++channel) audio_abort(channel);

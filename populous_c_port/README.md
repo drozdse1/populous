@@ -460,7 +460,8 @@ make -C populous_c_port test-assets
 The export contains `raw/` byte-exact original files, `graphics/` PNG sheets and
 full pictures, `pixels/` frame-major/row-major byte indices and keep masks,
 `values.json` with stored LAND tables, palettes, neutral level records and the
-`_load_sound` tables of the sound banks `gmusic1`/`gwords` (PCM stays raw), and
+`_load_sound` tables of the sound banks `gmusic1`/`gwords` and the eight
+launcher title samples of `popsam` (PCM stays raw), and
 `manifest.json` with source/artifact SHA-256 hashes, frame offsets/coordinates,
 present/missing assets and verified/inferred/unsupported format status. The
 manifest itself is not included in its own artifact hash table. This checkout
@@ -632,15 +633,20 @@ Requires GCC-compatible C11, GNU make, SDL2 development files (`sdl2-config`), a
 
 ```sh
 make -C populous_c_port
-./populous_c_port/populous_init_port
-./populous_c_port/populous_init_port 7
+./populous_c_port/populous_init_port          # launcher: load.pic, intro, choice
+./populous_c_port/populous_init_port 7        # any argument skips the launcher
+./populous_c_port/populous_init_port --tutorial
 make -C populous_c_port test
 make -C populous_c_port test-sanitize
 ```
 
-The optional positional argument is a decimal integer from 0 through `INT_MAX`;
-selection is `N % 8`, so 8 selects slot 0. No argument also selects slot 0. These
-eight configurations retain their synthetic terrain and low-byte seed offsets.
+Without arguments the original launcher screens run first (see "Launcher and
+intro"); its choice selects the start. Every argument bypasses the launcher and
+goes straight to the game. The optional positional argument is a decimal integer
+from 0 through `INT_MAX`; selection is `N % 8`, so 8 selects slot 0. The
+launcher's "normal game" choice also selects slot 0. These eight configurations
+retain their synthetic terrain and low-byte seed offsets. `--tutorial` (port
+flag) starts the tutorial like the launcher's tutorial button.
 
 ### Original world starts
 
@@ -672,8 +678,65 @@ World `n` starts `--level n/5`.
 
 `--conquest` opens the world selection screen first, as the original's CLI
 argument `2` (`_start_of_game == 2`, asm:85-91, 536-551); GENESIS runs paused
-behind it. The original's default start (no argument) does not show it, so the
-port's default start is unchanged. See "World selection".
+behind it. The launcher's conquest button does the same. See "World selection".
+
+## Launcher and intro
+
+`populous_main` (src/populous_main.asm) is the launcher; `populous_init.c` ports
+its flow. `SUB_41C` (asm:330-346) loops over `SUB_456` (asm:347-442): `load.pic`
+(5 planes, own 32-colour palette, `SUB_17B2` asm:1842-1865) waits for a fresh
+left click, latched by the vertical blank handler (asm:3743-3800: `-32004`
+button, `-32000` X, `-32002` Y in lo-res pixels, Y 0..199). The click position
+picks the choice that `SUB_16E` stores at `$42` and `populous.prg` reads as
+`_start_of_game` (prg asm:94-96):
+
+| click (lo-res) | choice | port path |
+| --- | --- | --- |
+| X >= 231, 156 <= Y < 170 | 3 tutorial | `_start_game` asm:13975-13999: `_tutorial`/`LAB_5172E` stats, seed `0x69bc`, `_tutorial_game_mode` 1, `_pause`, 10000 mana (asm:1134), 15 vs 3 people, ground 0, custom game (`in_conquest` -1) |
+| X >= 231, 170 <= Y < 184 | 2 conquest | world selection first, as `--conquest` |
+| X >= 241, Y >= 184 | 1 game | the default start (synthetic slot 0) |
+| elsewhere, or no click for ~5 s | 0 | the intro, then `load.pic` again |
+
+The labels of the three bottom-right buttons were not read from the picture; the
+mapping follows the code. The original's timeout is a busy loop of 0x55730
+passes (asm:404-407); the port uses 250 frames (5 s, about 94 cycles per pass on
+a 7.09 MHz 68000). Escape or closing the window quits (port addition).
+
+The intro `SUB_1186` (asm:1517-1566) shows `demo.pic` (gameplay palette), starts
+the title music and runs, one step per 50 Hz frame:
+
+1. `SUB_10A2`/`SUB_110A` (asm:1428-1516, launcher RNG `SUB_6538` seeded 1): 100
+   land0 blocks of the 10x10 `LAB_640C` landscape (heights `<< 3`, `SUB_1BE8`)
+   fall from 232..244 lines above and bounce into place (`SUB_1C12`
+   asm:2200-2284 isometric positions, `SUB_19EE` clipping).
+2. `SUB_E40` (asm:1234-1427): 18 title letters fall, then rise to the top.
+3. `SUB_714`: the credits list `LAB_1DCE` (23 lines, `SUB_1D1A` 8x8 font.dat
+   rendering).
+
+After the credits `load.pic` returns (`SUB_41C` loops). A fresh left click in
+any phase ends the intro at once (asm:1553-1555 and the other loops); no key
+advances it in the original. With the default timer the phases take 59, 58+48
+and 23 x 50 frames.
+
+Deviations: the title letters (`SUB_1802`) come from `LAB_5A0C` inside the
+launcher executable, which is not extracted, so phase 2 keeps its timing but
+draws nothing; `SUB_714`'s script (byte code `LAB_1272`..`LAB_15F6`, the upper
+block layer, copper strip and scrolling) is not ported: each credit line is
+shown for 50 frames at the bottom of the screen and the intro ends after one
+pass instead of following the script; `SUB_1D1A`'s fifth plane is dropped on
+the 16-colour demo palette. Palette fades are not reproduced.
+
+Title music: `SUB_2C36` (asm:2418-2471) reads `popsam` (one 0x1c01e-byte Read; the file has that size),
+`SUB_2F9C` (asm:2645-2698) starts song 0 and `LAB_3060` (asm:2706-2896) runs per
+vertical blank; `title_music.c` ports this Rob Hubbard replayer. `popsam` holds
+only eight samples (BE32 length, BE16 rate in Hz, signed 8-bit PCM; period base
+`0x369e99 / rate`). The score, 16 instruments (loop points, volume, vibrato,
+pulse-width limits), three pulse waves and the note table are launcher code
+(`LAB_3532`..`LAB_3F91`, asm:2899-3089), transcribed byte-exact from the
+listing into `title_music.c`. Paula DMA restart/latch semantics (play LC/LEN,
+then repeat the pair written later) are emulated in `audio.c`. The music plays
+only during the intro and is stopped before the game starts. A missing or
+invalid `raw/popsam` leaves the intro silent.
 
 `level_data.c` decodes exactly 990 bytes into 99 ten-byte records. Selection uses
 record `N/5`, internal level `5*N`, and seed `(seed_offset + ((5*N) & 7)) & 0xffff`.
@@ -1146,7 +1209,11 @@ does not imply every modified level table is valid or every campaign feature exi
 
 `test-runtime` checks real SDL software rendering and partial-initialization
 cleanup, injected resource failures, launcher handoff, and invalid video driver
-errors. `test-game` includes the production PRG and launcher code and checks A4
+errors; with an injected frame hook and no-op wait (no real sleeps) it clicks
+each `load.pic` region through SDL events, steps the intro state machine on the
+VBI clock (timeout, three phases, credits, return, click abort in every phase,
+deterministic drops), runs the timeout into the intro with music, and checks
+that every CLI argument bypasses the launcher. `test-game` includes the production PRG and launcher code and checks A4
 boundaries/unaligned access, map separation, all eight start populations and
 occupancy, deterministic reset, renderer output, SDL event handling, pause,
 scroll limits, scaled mouse coordinates, inert powers, allocation-failure

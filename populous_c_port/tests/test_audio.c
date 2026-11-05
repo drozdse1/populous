@@ -5,6 +5,7 @@
 #include <string.h>
 #include <SDL.h>
 #include "../audio.h"
+#include "../title_music.h"
 
 #ifndef POPULOUS_DEFAULT_ASSET_DIR
 #define POPULOUS_DEFAULT_ASSET_DIR "../binaries/populous-extracted"
@@ -213,6 +214,115 @@ static void test_original_banks(void)
     audio_bank_free(&bank);
 }
 
+/* Paula DMA as the title replayer drives it: the started pair plays
+ * once, then the latched pair repeats; PER changes reach both. */
+static void test_paula(void)
+{
+    audio_reset();
+    for (int i = 0; i < 8; ++i) samples[i] = (int8_t)(10 + i);
+    int rate = (int)(AUDIO_PAL_CLOCK / 128);   /* one source byte per frame */
+    audio_paula_start(1, samples, 4, 128, 64);
+    audio_paula_latch(1, samples + 6, 2);
+    audio_paula_period(1, 128);
+    AudioWrite w;
+    assert(audio_current(1, &w) == 2 && w.data == samples && w.period == 128);
+    int16_t expect[] = {10, 11, 12, 13, 16, 17, 16, 17, 16};
+    for (size_t i = 0; i < sizeof expect / sizeof expect[0]; ++i) {
+        audio_mix(out, 1, rate);
+        assert(out[0] == 0 && out[1] == expect[i] * 64 * 2);
+    }
+    assert(audio_current(1, &w) == 1 && w.data == samples + 6 && w.cycles == 0);
+    audio_paula_latch(1, samples, 1);          /* re-latch while repeating */
+    audio_mix(out, 2, rate);
+    assert(audio_current(1, &w) == 1 && w.data == samples);
+    audio_paula_latch(2, samples, 1);          /* DMA off: nothing to latch */
+    assert(!audio_busy(2));
+    audio_reset();
+}
+
+static size_t build_popsam(uint8_t *file, uint16_t rate)
+{
+    size_t at = 0;
+    for (int index = 0; index < TITLE_SAMPLES; ++index) {
+        uint32_t length = 64;
+        file[at] = 0; file[at+1] = 0; file[at+2] = 0; file[at+3] = (uint8_t)length;
+        file[at+4] = (uint8_t)(rate >> 8); file[at+5] = (uint8_t)rate; at += 6;
+        for (uint32_t k = 0; k < length; ++k) file[at++] = (uint8_t)(index * 16 + k);
+    }
+    return at;
+}
+
+/* popsam: 8 x (BE32 length, BE16 rate, PCM), SUB_2F9C asm:2650-2662. */
+static void test_title_bank(void)
+{
+    static uint8_t file[TITLE_POPSAM_SIZE + 8];
+    TitleBank bank;
+    char error[128];
+    size_t size = build_popsam(file, 8000);
+    assert(title_bank_parse(&bank, file, size, error, sizeof error));
+    assert(bank.samples[0].offset == 6 && bank.samples[1].offset == 76 && bank.samples[7].length == 64);
+    assert(bank.samples[3].rate == 8000 && bank.pcm[bank.samples[1].offset] == 16);
+    title_bank_free(&bank);
+    assert(!title_bank_parse(&bank, file, size - 1, error, sizeof error) && !strcmp(error, "truncated popsam"));
+    assert(!title_bank_parse(&bank, file, size + 1, error, sizeof error) && !strcmp(error, "unexpected popsam size"));
+    assert(!title_bank_parse(&bank, file, TITLE_POPSAM_SIZE + 1, error, sizeof error));
+    size = build_popsam(file, 54);             /* 0x369e99/54 overflows DIVU */
+    assert(!title_bank_parse(&bank, file, size, error, sizeof error));
+    size = build_popsam(file, 0);
+    assert(!title_bank_parse(&bank, file, size, error, sizeof error));
+    assert(!title_music_start(NULL, 0) && !title_music_playing());
+}
+
+/* The extracted popsam with the transcribed score (asm:2899-3089). */
+static void test_title_music(void)
+{
+    size_t size;
+    uint8_t *data = read_raw("popsam", &size);
+    if (!data) { puts("original popsam absent: skipped"); return; }
+    TitleBank bank;
+    char error[128];
+    assert(size == TITLE_POPSAM_SIZE && title_bank_parse(&bank, data, size, error, sizeof error));
+    static const uint32_t lengths[] = {21004, 6032, 8244, 35662, 15340, 8008, 1754, 18626};
+    static const uint16_t rates[] = {10000, 10000, 8000, 8000, 4000, 8000, 5300, 8000};
+    for (int i = 0; i < TITLE_SAMPLES; ++i) assert(bank.samples[i].length == lengths[i] && bank.samples[i].rate == rates[i]);
+    audio_reset();
+    assert(title_music_start(&bank, 0) && title_music_playing() && title_music_tempo() == 9);
+    /* LAB_3532 note steps; period = step * (0x369e99 / rate) >> 10 (asm:2806-2814). */
+    static const uint16_t steps[] = {0x1000,0x0f18,0x0e40,0x0d74,0x0cb4,0x0bfc,0x0b50,0x0aac,0x0a14,0x0984,0x08fc,
+        0x0878,0x0800,0x078c,0x0720,0x06ba,0x065a,0x05fe,0x05a8,0x0556,0x050a,0x04c2,0x047e,0x043c,0x0400,0x03c6,
+        0x0390,0x035d,0x032d,0x02ff,0x02d4,0x02ab,0x0285,0x0261,0x023f,0x021e,0x0200,0x01e3,0x01c8,0x01ae,0x0196,
+        0x017f,0x016a,0x0155,0x0142,0x0130,0x011f,0x010f,0x0100};
+    int notes = 0, rests = 0, sounding = 0;
+    long energy = 0;
+    TitleVoice before[TITLE_VOICES];
+    for (int v = 0; v < TITLE_VOICES; ++v) assert(title_music_voice(v, &before[v]) && before[v].counter == 1);
+    for (int frame = 0; frame < 3000; ++frame) {
+        title_music_vbi();
+        for (int v = 0; v < TITLE_VOICES; ++v) {
+            TitleVoice now;
+            assert(title_music_voice(v, &now));
+            /* An event reloads the counter with duration * tempo. */
+            int reloaded = now.counter > before[v].counter;
+            if (reloaded) assert(now.counter % 9 == 0 && now.event);
+            if (reloaded && now.event == 2) ++rests;
+            if (reloaded && now.event == 1 && now.instrument >= 0 && now.instrument < TITLE_SAMPLES) {
+                uint32_t base = 0x369e99u / rates[now.instrument];
+                assert(now.period == (uint16_t)((steps[now.note] * base) >> 10));
+                ++notes;
+            }
+            before[v] = now;
+            if (audio_busy(v)) ++sounding;
+        }
+        audio_mix(out, 882, 44100);
+        for (int k = 0; k < 2 * 882; ++k) energy += abs(out[k]);
+    }
+    assert(notes > 100 && notes + rests < 3000 * TITLE_VOICES && sounding > 3000 && energy > 0);
+    title_music_stop();
+    assert(!title_music_playing());
+    for (int v = 0; v < TITLE_VOICES; ++v) assert(!audio_busy(v));
+    title_bank_free(&bank);
+}
+
 /* No device must never stop the game: the mixer keeps its state. */
 static void test_device(void)
 {
@@ -241,6 +351,9 @@ int main(void)
     test_one_shot_and_loops();
     test_bank();
     test_original_banks();
+    test_paula();
+    test_title_bank();
+    test_title_music();
     test_device();
     puts("audio tests: PASS");
     return 0;

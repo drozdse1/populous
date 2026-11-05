@@ -34,6 +34,16 @@ uint32_t audio_step(uint16_t period, int rate);
 /* Interleaved stereo S16; usable without a device (tests, callback). */
 void audio_mix(int16_t *out, int frames, int rate);
 
+/* Paula registers for the launcher's title replayer, which writes
+ * AUDxLC/LEN/PER/VOL and DMACON itself (LAB_3060 populous_main.asm:2706-2896):
+ * DMA on plays LC/LEN, then reloads the pair latched by later writes. */
+void audio_paula_start(int channel, const int8_t *data, uint32_t length, uint16_t period, uint16_t volume);
+void audio_paula_latch(int channel, const int8_t *data, uint32_t length);
+void audio_paula_period(int channel, uint16_t period);
+/* Serialises sample memory the replayer rewrites (pulse waves) with mixing. */
+void audio_lock(void);
+void audio_unlock(void);
+
 /* _load_sound asm:20712-20872 file layout, big-endian:
  * measln[64] w, seqlen w, sequn[seqlen] (measure w, repeats w),
  * measure_length l, measures (0x1000 read, rest skipped), no_sounds w,

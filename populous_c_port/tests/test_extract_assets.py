@@ -239,6 +239,41 @@ class AssetTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.module.sound_values(broken)
 
+    @staticmethod
+    def popsam(rate=8000, size_delta=0):
+        """Hand-built title sample file: 8 x (BE32 length, BE16 rate, PCM)."""
+        data = b"".join(struct.pack(">IH", 2 + index, 10000 if index == 0 else rate) + bytes(range(2 + index))
+                        for index in range(8))
+        return data + bytes(size_delta) if size_delta >= 0 else data[:size_delta]
+
+    def test_popsam_layout_and_strict_rejections(self):
+        title = self.module.popsam_values(self.popsam())
+        # SUB_2F9C asm:2650-2662: data follows each 6-byte header; DIVU 0x369e99/rate.
+        self.assertEqual([sample["offset"] for sample in title["samples"]][:3], [6, 14, 23])
+        self.assertEqual(title["samples"][0], {"sample": 0, "offset": 6, "length": 2, "rate_hz": 10000,
+                                               "period_base": 357})
+        self.assertEqual(title["samples"][7]["period_base"], 0x369e99 // 8000)
+        for broken in (self.popsam(size_delta=1), self.popsam(size_delta=-1), self.popsam(rate=0),
+                       self.popsam(rate=54), self.popsam()[:20], self.popsam(size_delta=0x1c01e)):
+            with self.assertRaises(ValueError):
+                self.module.popsam_values(broken)
+
+    def test_export_popsam_raw_and_values(self):
+        payload = self.popsam()
+        image = make_file_disk(payload)
+        image[900 * 512 + 432:900 * 512 + 440] = b"\x06popsam\0"
+        checksum(image, 900)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            adf = root / "source.adf"
+            adf.write_bytes(image)
+            manifest = self.module.export_assets(adf, root / "out")
+            entry = manifest["present"]["popsam"]
+            self.assertEqual((entry["status"], entry["sample_count"]), ("verified", 8))
+            self.assertEqual((root / "out" / "raw" / "popsam").read_bytes(), payload)
+            values = json.loads((root / "out" / "values.json").read_text())
+            self.assertEqual(values["sounds"]["popsam"]["samples"][1]["rate_hz"], 8000)
+
     def test_export_sound_bank_raw_and_values(self):
         payload = self.sound_bank()
         image = make_file_disk(payload)

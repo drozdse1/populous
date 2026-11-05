@@ -3877,6 +3877,68 @@
       ],
       "samples_offset": 17430,
       "sequence": []
+    },
+    "popsam": {
+      "pcm": "signed 8-bit; replayer period = note step * period_base >> 10",
+      "samples": [
+        {
+          "length": 21004,
+          "offset": 6,
+          "period_base": 357,
+          "rate_hz": 10000,
+          "sample": 0
+        },
+        {
+          "length": 6032,
+          "offset": 21016,
+          "period_base": 357,
+          "rate_hz": 10000,
+          "sample": 1
+        },
+        {
+          "length": 8244,
+          "offset": 27054,
+          "period_base": 447,
+          "rate_hz": 8000,
+          "sample": 2
+        },
+        {
+          "length": 35662,
+          "offset": 35304,
+          "period_base": 447,
+          "rate_hz": 8000,
+          "sample": 3
+        },
+        {
+          "length": 15340,
+          "offset": 70972,
+          "period_base": 894,
+          "rate_hz": 4000,
+          "sample": 4
+        },
+        {
+          "length": 8008,
+          "offset": 86318,
+          "period_base": 447,
+          "rate_hz": 8000,
+          "sample": 5
+        },
+        {
+          "length": 1754,
+          "offset": 94332,
+          "period_base": 675,
+          "rate_hz": 5300,
+          "sample": 6
+        },
+        {
+          "length": 18626,
+          "offset": 96092,
+          "period_base": 447,
+          "rate_hz": 8000,
+          "sample": 7
+        }
+      ],
+      "score": "not in this file: launcher code LAB_3532..LAB_3F90 (src/populous_main.asm:2899-3089)"
     }
   },
   "sources": [

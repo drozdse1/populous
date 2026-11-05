@@ -254,18 +254,20 @@ Belege: `populous_c_port/populous_prg.c:1342-1446`, `:1545-1595`;
 
 ## P2 - Launcher, Intro und Bildschirmablaeufe
 
-- [ ] **Fehlt:** Originale Startauswahl und Mausregionen statt konstanter Auswahl.
+- [x] **Erledigt:** Originale Startauswahl `SUB_41C`/`SUB_456` (asm:330-442): `load.pic`, Klick-Latch des Vbi (asm:3743-3800), Regionen 3 Tutorial / 2 Conquest / 1 Spiel, sonst bzw. nach Zeitablauf Intro; Wahl als `_start_of_game` (`$42`, prg asm:94-96) an das PRG. Tutorial nach `_start_game` asm:13975-13999 (Seed `0x69bc`, `_tutorial_game_mode`, `_pause`, Stats, 10000 Mana, 15/3 Leute). CLI-Argumente umgehen den Launcher; `--tutorial` neu. Escape/Fenster schliessen beendet (Port).
 - [x] **Erledigt:** `lord.pic` im Lord-Bildschirm nach einem Eroberungssieg (`_read_lord` asm:16631-16663, Fehlerpfad asm:14762-14765).
-- [ ] **Fehlt:** Lade-/Intro-Bilder (`load.pic`, `demo.pic`) in die originalen Ablaeufe integrieren; die Bilder sind bereits extrahiert.
-- [ ] **Teilweise:** Bildloader/-darstellung fuer den Fuenf-Ebenen-/32-Farben-Fall von `load.pic` erweitern, ohne die Vier-Bit-Spielgrafik stillschweigend falsch zu interpretieren.
-- [ ] **Fehlt:** Introablauf, zugehoerige Sprites/Texte und Uebergaenge gemaess Launcher-Quellcode.
-- [ ] **Pruefen:** Bildschirmwechsel, Paletten, Laden, Abbruch und Rueckkehr zwischen Intro, Auswahl, Spiel und Ergebnis komplett verfolgen.
+- [x] **Erledigt:** `load.pic` (Auswahl) und `demo.pic` (Intro) in die originalen Ablaeufe integriert.
+- [x] **Erledigt:** `load.pic` mit fuenf Ebenen und eigener 32-Farben-Palette im Launcher; die Spielgrafik bleibt vierbittig.
+- [x] **Teilweise:** Intro `SUB_1186` (asm:1517-1566): fallende/abprallende land0-Bloecke `SUB_10A2`/`SUB_110A`/`SUB_1C12` mit Launcher-RNG `SUB_6538`, Titelphasen `SUB_E40` (Zeitablauf), Credits `LAB_1DCE`, Klick bricht ab, danach wieder `load.pic`; Titelmusik `popsam`.
+- [ ] **Fehlt:** Titelbuchstaben `SUB_1802` (Grafik `LAB_5A0C` steckt im Launcher-Programm, nicht extrahiert); Skript `SUB_714` (Bytecode `LAB_1272`..`LAB_15F6`, obere Blockebene, Copper-Textstreifen, Scrollen) – der Port zeigt die Credits zeilenweise je 50 Frames und endet nach einem Durchlauf; Paletten-Fades.
+- [ ] **Pruefen:** Bildschirmwechsel, Paletten, Laden, Abbruch und Rueckkehr zwischen Intro, Auswahl, Spiel und Ergebnis komplett verfolgen (Auswahl -> Intro -> Auswahl -> Spiel ist getestet; Zeitablauf 0x55730 Durchlaeufe als 250 Frames geschaetzt; Beschriftung der drei Knoepfe nicht am Bild geprueft).
 
 **Abnahme:** Start bis Spiel und Rueckkehr funktionieren ohne Testmuster oder
 konstante Auswahl; Abbruch und Ladefehler hinterlassen keine Ressourcen.
 
-Belege: `populous_c_port/populous_init.c:265-290`, `:363-378`;
-`src/populous_main.asm:383-443`; `populous_c_port/graphics.c:57`.
+Belege: `populous_c_port/populous_init.c` (`sub_456`, `launch_step`),
+`populous_c_port/title_music.c`, `populous_c_port/tests/test_runtime.c` (`launcher`, `intro`, `cli`);
+`src/populous_main.asm:330-442`, `:1234-1566`, `:2200-2339`, `:2418-3089`, `:3743-3800`.
 
 ## P2 - Spielende, Punkte und Conquest
 
@@ -297,7 +299,7 @@ Belege: `populous_c_port/populous_prg.c` (`core_end_stats`, `core_code`,
 - [x] **Erledigt:** Effekte 0x42..0x4d auf Kanal 2+3, Kampf 0x43/0x44 und Feuer 0x46 ueber `_move_sprite`-Flags, Herzschlag 0x47/0x48 auf Kanal 0, Prioritaeten (`_Soundpri`), Beben-Abbruch `_kill_effect(2,4)`, Musik `_PlayMeas` (`gmusic1`), Toolbar-Schalter (`_music_off`/`_effect_off` != 0 = an, Einschalten stoppt alle Kanaele).
 - [ ] **Abweichung:** Zyklenzahl der zweiten `_PlaySound`-Anforderung liegt im Original ausserhalb der Argumente (undefiniertes Stackwort); der Port nutzt das Wiederholwort (+6) des Drumkit-Eintrags.
 - [x] **Erledigt:** Lord-Sprache `gwords` (asm:14503-14765): Bank statt `gmusic1` geladen, `_words`/`_end_words` auf Kanal 2 per `_check_effect(2)` synchronisiert, danach `gmusic1` und die Schalter zurueck.
-- [ ] **Fehlt:** Intro-Musik `popsam` (`populous_main`).
+- [x] **Erledigt:** Intro-Musik `popsam` (`populous_main`): `extract_assets.py` exportiert `raw/popsam` (114718 B = 0x1c01e, `SUB_2C36` asm:2418-2471) mit strenger Pruefung der 8 Samples (BE32 Laenge, BE16 Rate, PCM; `SUB_2F9C` asm:2645-2662) und Tabelle in `values.json`; `title_music.c` portiert den Hubbard-Replayer `LAB_3060` (asm:2706-2896) mit der aus dem Listing uebernommenen Partitur `LAB_3532`..`LAB_3F91`; Paula-Latch in `audio.c`. Spielt nur im Intro.
 - [ ] **Pruefen:** Timing, Lautstaerken und Klang gegen einen echten Amiga bzw. Emulator hoeren; Vbi wird im Port per `SDL_GetTicks` getaktet.
 
 **Abnahme:** Verifizierte Originaldaten werden ereignis- und zeitgerecht abgespielt;

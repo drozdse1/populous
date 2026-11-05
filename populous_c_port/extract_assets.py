@@ -21,10 +21,13 @@ PALETTE = (0x000, 0x444, 0x666, 0x888, 0xaaa, 0xccc, 0x620, 0x840,
            0xa00, 0xa60, 0xaa0, 0x4a0, 0x280, 0x262, 0x248, 0x26c)
 # _load_sound callers: gmusic1 in play (asm:13969-13972,14756), gwords for _won_conquest (asm:14516).
 SOUND_NAMES = ("gmusic1", "gwords")
+# Launcher title samples: SUB_2C36 reads popsam (src/populous_main.asm:2418-2471).
+TITLE_NAMES = ("popsam",)
+POPSAM_READ = 0x1c01e
 ASSET_NAMES = (LAND_NAMES + tuple(f"sprites{index}.dat" for index in range(10)) +
                tuple(f"spr_32{index}.dat" for index in range(10)) +
                ("qaz.pic", "demo.pic", "lord.pic", "load.pic", "level.dat", "font.dat", "mouths.pic") +
-               SOUND_NAMES)
+               SOUND_NAMES + TITLE_NAMES)
 PICTURES = {
     "qaz.pic": (4, False, "src/populous_prg.asm:16359-16402,24264-24268"),
     "demo.pic": (4, False, "src/populous_main.asm:1754-1780,5492-5495"),
@@ -204,6 +207,33 @@ def sound_values(data):
             "pcm": "signed 8-bit; Paula rate 3546895 / period Hz"}
 
 
+def popsam_values(data):
+    """SUB_2F9C walks 8 records (src/populous_main.asm:2645-2662): BE32 length,
+    BE16 rate in Hz, signed 8-bit PCM; period = 0x369e99 // rate (DIVU).
+
+    Strict like title_music.c: the records must consume the file exactly and
+    the file must fit the 0x1c01e Read (asm:2445-2450).
+    """
+    if len(data) > POPSAM_READ:
+        raise ValueError("popsam larger than the 0x1c01e read")
+    at, samples = 0, []
+    for index in range(8):
+        if at + 6 > len(data):
+            raise ValueError("truncated popsam")
+        length, rate = struct.unpack_from(">IH", data, at)
+        if not rate or 0x369e99 // rate > 0xffff:
+            raise ValueError("sample rate overflows the DIVU period")
+        if at + 6 + length > len(data):
+            raise ValueError("truncated popsam")
+        samples.append({"sample": index, "offset": at + 6, "length": length, "rate_hz": rate,
+                        "period_base": 0x369e99 // rate})
+        at += 6 + length
+    if at != len(data):
+        raise ValueError("unexpected popsam size")
+    return {"samples": samples, "pcm": "signed 8-bit; replayer period = note step * period_base >> 10",
+            "score": "not in this file: launcher code LAB_3532..LAB_3F90 (src/populous_main.asm:2899-3089)"}
+
+
 def json_bytes(value):
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
@@ -336,6 +366,11 @@ def export_assets(adf, output):
                               "sample_count": len(values["sounds"][name]["samples"]),
                               "source": "src/populous_prg.asm:20712-20872",
                               "format": "_load_sound bank: measures, sequence, drumkit, signed 8-bit PCM"})
+            elif name in TITLE_NAMES:
+                values["sounds"][name] = popsam_values(data)
+                entry.update({"sample_count": len(values["sounds"][name]["samples"]),
+                              "source": "src/populous_main.asm:2418-2471,2645-2662",
+                              "format": "title samples: 8 x (BE32 length, BE16 rate Hz, signed 8-bit PCM)"})
             else:
                 raise ValueError("Original auxiliary graphics preserved raw; font layout not decoded by this exporter")
         except ValueError as error:
@@ -347,7 +382,7 @@ def export_assets(adf, output):
         "source": {"path": str(adf.resolve()), "size": len(image), "sha256": hashlib.sha256(image).hexdigest(),
                    "format": "880 KiB DOS0/OFS, root 880", "modified": False},
         "present": present, "missing": sorted(set(ASSET_NAMES) - set(files)),
-        "selection": "Explicit root allowlist: land0..3, sprites0..9.dat, spr_320..329.dat, four pictures, level.dat, font.dat, mouths.pic, sound banks gmusic1 and gwords. No executables; popsam/awords are not loaded by populous.prg.",
+        "selection": "Explicit root allowlist: land0..3, sprites0..9.dat, spr_320..329.dat, four pictures, level.dat, font.dat, mouths.pic, sound banks gmusic1 and gwords, launcher title samples popsam. No executables; awords is not loaded by populous.prg or populous_main.",
         "status_meaning": {"verified": "layout documented in local source and file size validated; not a historical authenticity claim",
                            "inferred": "source-family layout fits but variant interpretation is not independently verified",
                            "unsupported": "raw preserved; decoded interpretation unavailable"},

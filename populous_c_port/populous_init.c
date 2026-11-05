@@ -24,6 +24,12 @@
 #include "sdl_lowlevel.h"
 #include "symbols.h"      /* launcher symbols */
 #include "symbols_prg.h"  /* prg (main game) symbols from this map */
+#include "graphics.h"
+#include "audio.h"
+#include "title_music.h"
+#ifndef POPULOUS_DEFAULT_ASSET_DIR
+#define POPULOUS_DEFAULT_ASSET_DIR "binaries/populous-extracted"
+#endif
 
 /* Global state (replaces the huge A4-relative area) */
 AmigaGlobals g;
@@ -77,7 +83,6 @@ static void sub_58CA(void);
 static void sub_58FA(void);
 static void sub_59CA(void);
 static void sub_59F0(void);
-static void sub_6538(void);
 static void sub_65F0(void);
 static void sub_65F8(void);
 static void sub_6730(void);
@@ -262,22 +267,348 @@ static void sub_2e2(int16_t value)
     printf("[HW] SUB_2E2 - INTENA write 0x%04x\n", (uint16_t)value);
 }
 
-/* SUB_456 - the interactive load.pic screen + mouse button choice */
+/* ========================================================================= */
+/* SUB_41C / SUB_456 / SUB_1186: load.pic choice and the demo.pic intro     */
+/* ========================================================================= */
+
+/* The game reads the choice's low word as _start_of_game (prg asm:94-96). */
+extern int g_start_of_game;
+
+enum { LAUNCH_LOAD, LAUNCH_BLOCKS, LAUNCH_TITLE, LAUNCH_RISE, LAUNCH_CREDITS };
+enum { LAUNCH_RUN, LAUNCH_START, LAUNCH_QUIT };
+/* Port timing: SUB_456 busy-waits 0x55730 passes (asm:404-407), ~94 cycles
+ * each on a 7.09 MHz 68000, i.e. about 5 s; credits advance per 50 frames. */
+#define LAUNCH_LOAD_FRAMES 250
+#define LAUNCH_LINE_FRAMES 50
+#define LAUNCH_DROPS 100
+
+typedef struct {
+    int state, frame, choice, credit, held;
+    int16_t button, x, y;                 /* -32004 latch, -32000 X, -32002 Y */
+    int16_t drop[LAUNCH_DROPS];           /* LAB_7090 (-31894,A4) */
+    int16_t speed[LAUNCH_DROPS];          /* LAB_715A (-31692,A4) */
+    int16_t settled[LAUNCH_DROPS];        /* the blocks copied into -31904 (asm:1560-1567) */
+    uint32_t seed;                        /* -32246,A4: DC.L 1 at $6f30 */
+} Launcher;
+
+static Launcher launch;
+static uint8_t launch_load_pixels[320 * 200], launch_demo_pixels[320 * 200];
+static uint16_t launch_load_palette[32];
+static uint8_t launch_font[4400];
+static int launch_font_loaded;
+static GraphicsAssets *launch_assets;
+static TitleBank launch_music;
+static int launch_audio;
+
+/* Test seams: the 50 Hz wait and per-frame event injection. */
+static void launch_vbl_wait(void) { SDL_Delay(20); }
+static void (*launch_wait)(void) = launch_vbl_wait;
+static void (*launch_frame_hook)(int frame);
+static int launch_frames;
+
+/* LAB_640C asm:4663-4682 after SUB_1BE8 (asm:2186-2198, heights << 3):
+ * land0 frame and height of the 10x10 intro blocks, row-major. The upper
+ * layer at +$64 is empty until the SUB_714 script, which is not ported. */
+static const uint8_t launch_block_type[LAUNCH_DROPS] = {
+    0,22,6,15,15,15,15,15,9,25, 0,22,6,15,15,15,15,15,9,25, 28,30,6,15,15,15,15,15,9,25,
+    12,12,14,15,15,15,15,15,9,25, 12,8,15,11,3,3,3,3,1,25, 15,9,15,9,15,15,15,27,19,17,
+    15,9,15,9,15,15,15,29,24,0, 3,1,15,9,15,15,15,15,25,0, 3,3,3,1,27,19,19,19,21,24,
+    19,19,19,19,17,0,0,0,18,17};
+static const uint8_t launch_block_height[LAUNCH_DROPS] = {
+    0,0,1,1,1,1,1,1,1,0, 0,0,1,1,1,1,1,1,1,0, 0,0,1,1,1,1,1,1,1,0, 1,1,1,1,1,1,1,1,1,0,
+    2,2,1,1,1,1,1,1,1,0, 2,2,1,1,0,0,0,0,0,0, 2,2,1,1,0,0,0,0,0,0, 2,2,1,1,0,0,0,0,0,0,
+    1,1,1,1,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0};
+
+/* LAB_1DCE asm:2368-2392, the SUB_1D1A line list ($ff ends it). */
+static const char *const launch_credits[] = {
+    "POPULOUS", "(C) 1989 BULLFROG PRODUCTIONS", "PUBLISHED BY ELECTRONIC ARTS",
+    "PROGRAMMING AND DESIGN BY", "PETER MOLYNEUX", "AND GLENN CORPES", "TECHNICAL HELP FROM",
+    "KEVIN DONKIN", "GRAPHICS BY", "GLENN CORPES", "DAN WHEELER", "SEAN COOPER", "ANDY JONES",
+    "& PETER MOLYNEUX", "GAME SOUND & MUSIC BY", "DAVE HANLON", "MUSIC IDEA BY LES EDGAR",
+    "TITLE MUSIC BY ROB HUBBARD", "SPECIAL THANKS TO", "HISOFT FOR DEVPAC 2", "ADRIAN MOORE",
+    "EVERYONE AT ULTIMA", "EXCEPT ROB"};
+#define LAUNCH_CREDIT_LINES ((int)(sizeof launch_credits / sizeof launch_credits[0]))
+
+/* SUB_6538 asm:4683-4698 (via SUB_2FC). */
+static uint16_t sub_6538(void)
+{
+    launch.seed = launch.seed * 0x41c64e6du + 0x3039u;
+    return (uint16_t)((launch.seed >> 16) & 0x7fff);
+}
+
+/* SUB_10A2 asm:1428-1466: n drops start 232..244 above, speed 0..8. */
+static void sub_10a2(int count)
+{
+    for (int i = 0; i < count; ++i) {
+        launch.drop[i] = (int16_t)(sub_6538() % 13 + 0xe8);
+        launch.speed[i] = (int16_t)(sub_6538() % 9);
+    }
+}
+
+/* SUB_110A asm:1467-1516: fall one step, bounce at 0 with half speed;
+ * returns the first nonzero speed, 0 once every drop rests. */
+static int16_t sub_110a(int count)
+{
+    int16_t first = 0;
+    for (int i = 0; i < count; ++i) {
+        int16_t speed = (int16_t)(launch.speed[i] + 1);
+        int16_t drop = (int16_t)(launch.drop[i] - speed);
+        if (drop < 0) { speed = (int16_t)-(speed / 2); drop = 0; }
+        if (!first) first = speed;
+        launch.drop[i] = drop; launch.speed[i] = speed;
+    }
+    return first;
+}
+
+/* SUB_456 asm:408-434 on the latched position (lo-res, y 0..199). */
+static int launch_region(int x, int y)
+{
+    if (y >= 0x9c && y < 0xaa && x >= 0xe7) return 3;
+    if (y >= 0xaa && y < 0xb8 && x >= 0xe7) return 2;
+    if (y >= 0xb8 && x >= 0xf1) return 1;
+    return 0;
+}
+
+/* VBI left button latch, asm:3767-3780: 2 waits for a release; a fresh
+ * press clears it and freezes the position. */
+static void launch_mouse(int pressed, int x, int y)
+{
+    if (!launch.button || (launch.button == 2 && pressed)) return;
+    launch.button = pressed ? 0 : 0x40;
+    launch.x = (int16_t)x; launch.y = (int16_t)y;
+}
+
+/* SUB_456 entry asm:388-403: _choice cleared, latch armed, counter 0. */
+static void launch_load_begin(void)
+{
+    launch.state = LAUNCH_LOAD; launch.frame = 0; launch.choice = 0; launch.button = 2;
+}
+
+/* SUB_1186 asm:1517-1532: demo.pic, SUB_2C36 popsam music, 100 drops. */
+static void launch_intro_begin(void)
+{
+    launch.state = LAUNCH_BLOCKS; launch.frame = 0; launch.credit = 0;
+    if (launch_music.pcm) {
+        launch_audio = audio_open();
+        title_music_start(&launch_music, 0);
+    }
+    sub_10a2(LAUNCH_DROPS);
+}
+
+/* LAB_1236 asm:1556-1566: SUB_2DD8 stops the music; SUB_41C loops back. */
+static void launch_intro_end(void)
+{
+    title_music_stop();
+    if (launch_audio) { audio_close(); launch_audio = 0; }
+    launch_load_begin();
+}
+
+/* One vertical blank of SUB_41C's loop. */
+static int launch_step(void)
+{
+    ++launch.frame;
+    switch (launch.state) {
+    case LAUNCH_LOAD:
+        if (launch.frame > LAUNCH_LOAD_FRAMES) { launch.button = 2; launch_intro_begin(); break; }   /* LAB_51E, choice 0 */
+        if (launch.button) break;
+        launch.choice = launch_region(launch.x, launch.y);
+        launch.button = 2;
+        if (launch.choice) return LAUNCH_START;    /* LAB_426: 1..3 run populous.prg */
+        launch_intro_begin();                      /* LAB_43E: any other click */
+        break;
+    case LAUNCH_BLOCKS:                            /* asm:1533-1555 */
+        if (sub_110a(LAUNCH_DROPS)) break;
+        memcpy(launch.settled, launch.drop, sizeof launch.settled);
+        launch.state = LAUNCH_TITLE; launch.frame = 0;
+        sub_10a2(18);                              /* SUB_E40 asm:1234-1238, same frame */
+        /* fall through */
+    case LAUNCH_TITLE:                             /* LAB_E4E asm:1239-1323 */
+        if (sub_110a(18)) break;
+        for (int i = 0; i < 18; ++i) { launch.drop[i] = 0xa0; launch.speed[i] = (int16_t)(sub_6538() & 7); }
+        launch.state = LAUNCH_RISE; launch.frame = 0;   /* LAB_F58 asm:1324-1342 */
+        /* fall through */
+    case LAUNCH_RISE:                              /* LAB_F9A asm:1343-1427 */
+        if (sub_110a(18)) break;
+        launch.state = LAUNCH_CREDITS; launch.frame = 0;   /* SUB_E40 returns 0: SUB_714 */
+        break;
+    case LAUNCH_CREDITS:
+        if (launch.frame >= LAUNCH_LINE_FRAMES) {
+            launch.frame = 0;
+            if (++launch.credit >= LAUNCH_CREDIT_LINES) { launch_intro_end(); return LAUNCH_RUN; }
+        }
+        break;
+    }
+    /* Every intro loop tests the latch after its WaitTOF (asm:1553-1555,
+     * 1313-1315, 1418-1420, 605-607); the click only ends the intro. */
+    if (launch.state != LAUNCH_LOAD && !launch.button) launch_intro_end();
+    return LAUNCH_RUN;
+}
+
+/* SUB_1D1A asm:2286-2339: one centred 8x8 line, plane 0 preset to $ff,
+ * glyph bytes 0..4 into planes 0..4. Port: plane 4 is dropped on the
+ * 4-plane demo palette and the line sits at the bottom of the screen. */
+static void launch_credit_line(uint8_t *pixels, const char *text, int top)
+{
+    int length = (int)strlen(text), left = (40 - length) / 2;
+    for (int row = 0; row < 8; ++row)
+        for (int x = 0; x < 320; ++x) pixels[(top + row) * 320 + x] = 1;
+    if (!launch_font_loaded) return;
+    for (int index = 0; index < length && left + index < 40; ++index) {
+        unsigned c = (unsigned char)text[index];
+        if (c < 0x20 || (c - 0x20) * 40 + 40 > sizeof launch_font) continue;
+        const uint8_t *glyph = launch_font + (c - 0x20) * 40;
+        for (int row = 0; row < 8; ++row, glyph += 5)
+            for (int bit = 0; bit < 8; ++bit) {
+                int colour = 0;
+                for (int plane = 0; plane < 4; ++plane) colour |= ((glyph[plane] >> (7 - bit)) & 1) << plane;
+                pixels[(top + row) * 320 + (left + index) * 8 + bit] = (uint8_t)colour;
+            }
+    }
+}
+
+/* SUB_1C12 asm:2200-2284 with LAB_7226 = $80 (scale 1, asm:1534): row r,
+ * column c at x = (c-r)*16+$90, y = (c+r)*8-height+$20-drop; SUB_19EE
+ * (asm:2024-2040) skips tiles above the top. */
+static void launch_blocks(uint8_t *pixels, const int16_t *drop)
+{
+    if (!launch_assets) return;
+    GraphicsSheet land = graphics_land(launch_assets);
+    for (int r = 0, i = 0; r < 10; ++r)
+        for (int c = 0; c < 10; ++c, ++i) {
+            int y = (c + r) * 8 - launch_block_height[i] * 8 + 0x20 - drop[i];
+            if (y < 0) continue;
+            graphics_blit(pixels, 320 * 200, 320, 200, land, launch_block_type[i], (c - r) * 16 + 0x90, y);
+        }
+}
+
+static void launch_render(void)
+{
+    static uint8_t pixels[320 * 200];
+    const uint16_t *palette = graphics_palette;
+    int colours = 16;
+    if (launch.state == LAUNCH_LOAD) {
+        memcpy(pixels, launch_load_pixels, sizeof pixels);
+        palette = launch_load_palette; colours = 32;
+    } else {
+        memcpy(pixels, launch_demo_pixels, sizeof pixels);
+        launch_blocks(pixels, launch.state == LAUNCH_BLOCKS ? launch.drop : launch.settled);
+        /* SUB_1802 title letters come from LAB_5A0C inside the launcher
+         * binary (asm:1866-1910), which is not extracted: not drawn. */
+        if (launch.state == LAUNCH_CREDITS) launch_credit_line(pixels, launch_credits[launch.credit], 192);
+    }
+    for (int i = 0; i < colours; ++i) amiga_set_color(screen, i, palette[i]);
+    for (int y = 0; y < screen->height; ++y)
+        for (int x = 0; x < screen->width; ++x)
+            screen->chunky_buffer[y * screen->width + x] =
+                y < 200 && x < 320 ? screen->palette[pixels[y * 320 + x]] : screen->palette[0];
+    amiga_present(screen);
+}
+
+static int launch_read(const char *root, const char *name, uint8_t *out, size_t size)
+{
+    char path[4160];
+    snprintf(path, sizeof path, "%s/%s", root, name);
+    FILE *file = fopen(path, "rb");
+    if (!file) return 0;
+    int ok = fread(out, 1, size, file) == size && fgetc(file) == EOF;
+    fclose(file);
+    return ok;
+}
+
+/* SUB_17B2/SUB_1696/SUB_16E4 file loads, from the verified export:
+ * load.pic 5 planes + palette, demo.pic, land0, font.dat, popsam. */
+static int launch_load_assets(void)
+{
+    const char *root = getenv("POPULOUS_ASSET_DIR");
+    if (!root) root = POPULOUS_DEFAULT_ASSET_DIR;
+    uint8_t raw_palette[64];
+    char error[160];
+    static uint8_t popsam[TITLE_POPSAM_SIZE];
+    char path[4160];
+    snprintf(path, sizeof path, "%s/raw/load.pic", root);
+    FILE *file = fopen(path, "rb");
+    int palette_ok = file && !fseek(file, 40000, SEEK_SET) && fread(raw_palette, 1, 64, file) == 64;
+    if (file) fclose(file);
+    if (!palette_ok || !launch_read(root, "pixels/load.pic.indices.u8", launch_load_pixels, sizeof launch_load_pixels) ||
+        !launch_read(root, "pixels/demo.pic.indices.u8", launch_demo_pixels, sizeof launch_demo_pixels)) {
+        fprintf(stderr, "[LOADER] load.pic/demo.pic missing in %s\n", root);
+        return 0;
+    }
+    for (int i = 0; i < 32; ++i) launch_load_palette[i] = (uint16_t)(raw_palette[2*i] << 8 | raw_palette[2*i+1]);
+    for (size_t i = 0; i < sizeof launch_load_pixels; ++i)
+        if (launch_load_pixels[i] > 31 || launch_demo_pixels[i] > 15) return 0;
+    launch_font_loaded = launch_read(root, "raw/font.dat", launch_font, sizeof launch_font);
+    launch_assets = graphics_load(root, 0, 0, error, sizeof error);
+    if (!launch_assets) fprintf(stderr, "[LOADER] intro blocks: %s\n", error);
+    snprintf(path, sizeof path, "%s/raw/popsam", root);
+    file = fopen(path, "rb");
+    size_t length = file ? fread(popsam, 1, sizeof popsam, file) : 0;
+    int whole = file && fgetc(file) == EOF;
+    if (file) fclose(file);
+    if (!whole || !title_bank_parse(&launch_music, popsam, length, error, sizeof error))
+        fprintf(stderr, "[LOADER] title music disabled: %s\n", whole ? error : "raw/popsam missing");
+    return 1;
+}
+
+static void launch_free_assets(void)
+{
+    title_music_stop();
+    if (launch_audio) { audio_close(); launch_audio = 0; }
+    title_bank_free(&launch_music);
+    graphics_free(launch_assets);
+    launch_assets = NULL;
+}
+
+static void launch_pointer(int window_x, int window_y, int *x, int *y)
+{
+    int width = 0, height = 0;
+    SDL_GetWindowSize(screen->window, &width, &height);
+    *x = width > 0 ? window_x * screen->width / width : 0;
+    *y = height > 0 ? window_y * screen->height / height : 0;
+    if (*x < 0) *x = 0;
+    if (*x > 319) *x = 319;
+    if (*y < 0) *y = 0;
+    if (*y > 199) *y = 199;     /* LAB_6FD2 = $18f, halved (asm:3757-3765) */
+}
+
+/* SUB_41C asm:330-346 around SUB_456 (asm:347-442) and SUB_1186:
+ * returns the choice 1..3, or 0 to quit (Escape / window close, port). */
 static int sub_456(void)
 {
-    printf("[LOADER] SUB_456 - showing load.pic, waiting for mouse click regions\n");
-
-    /* The disassembly polls mouse and checks regions:
-     *   0x009c-0x00aa X with certain Y → choice 3
-     *   0x00aa-0x00b8 X → choice 2
-     *   0x00b8+       → choice 1
-     */
-    /* For the port we just simulate a choice (user can change this) */
-    int choice = 1;   /* 1 = full game, 2 = ?, 3 = demo */
-
-    printf("[LOADER] Simulated mouse choice = %d\n", choice);
-    g.choice = choice;
-    return choice;
+    printf("[LOADER] SUB_456 - load.pic, click regions 3/2/1 (tutorial/conquest/game)\n");
+    memset(&launch, 0, sizeof launch);
+    launch.seed = 1;
+    launch_load_begin();
+    int result = LAUNCH_RUN;
+    while (result == LAUNCH_RUN) {
+        if (launch_frame_hook) launch_frame_hook(launch_frames);
+        ++launch_frames;
+        SDL_Event ev;
+        while (result == LAUNCH_RUN && SDL_PollEvent(&ev)) {
+            int x, y;
+            if (ev.type == SDL_QUIT || (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE)) result = LAUNCH_QUIT;
+            else if (ev.type == SDL_MOUSEMOTION) {
+                launch_pointer(ev.motion.x, ev.motion.y, &x, &y); launch_mouse(launch.held, x, y);
+            } else if ((ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_MOUSEBUTTONUP) && ev.button.button == SDL_BUTTON_LEFT) {
+                launch.held = ev.type == SDL_MOUSEBUTTONDOWN;
+                launch_pointer(ev.button.x, ev.button.y, &x, &y); launch_mouse(launch.held, x, y);
+            }
+        }
+        if (result != LAUNCH_RUN) break;
+        if (launch.state != LAUNCH_LOAD) title_music_vbi();
+        result = launch_step();
+        if (result != LAUNCH_RUN) break;
+        launch_render();
+        launch_wait();
+    }
+    if (result == LAUNCH_QUIT) {
+        if (launch.state != LAUNCH_LOAD) launch_intro_end();
+        printf("[LOADER] quit from the launcher\n");
+        return 0;
+    }
+    printf("[LOADER] choice = %d\n", launch.choice);
+    g.choice = launch.choice;
+    return launch.choice;
 }
 
 /* SUB_536 - sets up a ton of tables (the big data area after the code) */
@@ -328,70 +659,34 @@ int main(int argc, char **argv)
     }
     sub_29e();          /* display params */
 
-    /* The original then called several more inits, then the loader */
-    int choice = sub_456();     /* the interactive "load.pic" + mouse regions */
+    /* SUB_4 asm:83-86: with arguments the launcher skips its screens; the
+     * port hands them to the PRG instead (CLI starts bypass the launcher). */
+    int choice = 1;
+    if (argc <= 1) {
+        if (!launch_load_assets()) fprintf(stderr, "[LOADER] launcher screens skipped, normal game\n");
+        else choice = sub_456();     /* SUB_41C: load.pic choice, intro on timeout */
+        launch_free_assets();
+    }
+    if (!choice) { status = EXIT_SUCCESS; goto cleanup; }
 
     sub_536();          /* initialize the large data tables that follow in the binary */
 
-    /* =====================================================================
-     * Now we would load "populous.prg" (the module whose full symbol map
-     * you just pasted: ENTRY $0003E1E8, BASEREG A4 at $000593EE).
-     * In the C port we emulate that by calling prg_main() (defined in
-     * populous_prg.c, which has the complete forward decls + stubs from
-     * the map + high-level game loop _main/_animate/_setup_display etc.).
-     *
-     * prg_main emulates the JMP after the launcher has set up A4 globals area.
-     * 1993 features (save/load, IFF writer, debug, removed protection, new
-     * "LANDSCAPE NO" option string, conquest scoring) are noted in symbols_prg.h.
-     * ===================================================================== */
-    if (choice == 1) {
-        printf("\n[LAUNCHER] Choice == 1 (full game) -> jumping into prg_main (populous.prg)\n");
-        extern void prg_main(void);
-        extern int g_argc;
-        extern char **g_argv;
-        g_argc = argc;
-        g_argv = argv;
-        /* SDL belongs to the launcher; PRG owns its own screen and event loop. */
-        amiga_destroy_screen(screen);
-        screen = NULL;
-        prg_main();
-        extern int prg_exit_status(void);
-        status = prg_exit_status();
-        goto cleanup;
-    }
-
-    /* Very crude "we loaded the picture" (first-chunk demo path for other choices) */
-    printf("\n[GFX] Would now decode demo.pic / load.pic into bitplanes...\n");
-    printf("[GFX] For demo purposes we'll just put some colors on screen.\n");
-
-    /* Fake some palette and a simple pattern so the window isn't black */
-    for (int i = 0; i < 16; i++) {
-        amiga_set_color(screen, i, (i << 8) | (i << 4) | i);
-    }
-
-    /* Draw a very simple pattern using the chunky buffer */
-    for (int y = 0; y < screen->height; y++) {
-        for (int x = 0; x < screen->width; x++) {
-            int color = ((x ^ y) >> 4) & 0x0F;
-            screen->chunky_buffer[y * screen->width + x] = screen->palette[color];
-        }
-    }
-
-    printf("\nPress ESC or close the window to exit the first-chunk demo.\n");
-
-    /* Simple event loop so you can see the result */
-    int running = 1;
-    SDL_Event ev;
-    while (running) {
-        while (SDL_PollEvent(&ev)) {
-            if (ev.type == SDL_QUIT) running = 0;
-            if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) running = 0;
-        }
-        amiga_present(screen);
-        SDL_Delay(16);
-    }
-
-    status = EXIT_SUCCESS;
+    /* SUB_16E asm:120-126 stores the choice at $42; populous.prg's _main
+     * reads its low word as _start_of_game (prg asm:94-96). prg_main()
+     * emulates the JMP into the loaded hunk (ENTRY $0003E1E8, A4 $000593EE). */
+    printf("\n[LAUNCHER] Choice %d -> populous.prg (_start_of_game)\n", choice);
+    extern void prg_main(void);
+    extern int g_argc;
+    extern char **g_argv;
+    g_argc = argc;
+    g_argv = argv;
+    g_start_of_game = choice;
+    /* SDL belongs to the launcher; PRG owns its own screen and event loop. */
+    amiga_destroy_screen(screen);
+    screen = NULL;
+    prg_main();
+    extern int prg_exit_status(void);
+    status = prg_exit_status();
 cleanup:
     sub_2c6();
     amiga_destroy_screen(screen);

@@ -184,6 +184,10 @@
       "sha256": "c22adb2ce0e1aff9b21f7fd01827493876dc099be83061a6bd186a49a7d8c368",
       "size": 5040
     },
+    "raw/popsam": {
+      "sha256": "e4043fc8d0448f92db22356aba9171942d2f891e349f4fcc22786956e38989a1",
+      "size": 114718
+    },
     "raw/qaz.pic": {
       "sha256": "c30555f7b56ba69d59bf664701f5f8da6d1e11941798ee0b2a1ad37e6a0f1053",
       "size": 32000
@@ -197,8 +201,8 @@
       "size": 23520
     },
     "values.json": {
-      "sha256": "9ae1800da617659bc3fb57407e6fb90cc943162f06c58ad3179b784af2519acf",
-      "size": 64594
+      "sha256": "e61c58c7b1c2c40523344fdbc2bd6043b5d9e84fb1cad59b61a973534b2b7212",
+      "size": 66050
     }
   },
   "limitations": [
@@ -2382,6 +2386,16 @@
       "source": "src/populous_prg.asm:16668-16690,19894-19922",
       "status": "verified"
     },
+    "popsam": {
+      "format": "title samples: 8 x (BE32 length, BE16 rate Hz, signed 8-bit PCM)",
+      "limitations": [],
+      "raw": "raw/popsam",
+      "sample_count": 8,
+      "sha256": "e4043fc8d0448f92db22356aba9171942d2f891e349f4fcc22786956e38989a1",
+      "size": 114718,
+      "source": "src/populous_main.asm:2418-2471,2645-2662",
+      "status": "verified"
+    },
     "qaz.pic": {
       "format": "plane-major, 8000 bytes/plane, 40 bytes/row, MSB left",
       "height": 200,
@@ -3565,7 +3579,7 @@
     }
   },
   "schema_version": 1,
-  "selection": "Explicit root allowlist: land0..3, sprites0..9.dat, spr_320..329.dat, four pictures, level.dat, font.dat, mouths.pic, sound banks gmusic1 and gwords. No executables; popsam/awords are not loaded by populous.prg.",
+  "selection": "Explicit root allowlist: land0..3, sprites0..9.dat, spr_320..329.dat, four pictures, level.dat, font.dat, mouths.pic, sound banks gmusic1 and gwords, launcher title samples popsam. No executables; awords is not loaded by populous.prg or populous_main.",
   "source": {
     "format": "880 KiB DOS0/OFS, root 880",
     "modified": false,

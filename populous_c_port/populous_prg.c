@@ -596,6 +596,10 @@ extern const unsigned char _font_data[];
 /* Simple globals so launcher / main can pass args for quick level testing */
 int g_argc = 0;
 char **g_argv = NULL;
+/* The launcher's choice long at $42 (SUB_16E asm:120-126); _main reads its
+ * low word into _start_of_game without arguments (asm:94-96):
+ * 1 normal game, 2 conquest, 3 tutorial. */
+int g_start_of_game = 0;
 
 /* Minimal sample conquest level table for quick testing of "level loading" and init.
  * Based on the exact level.dat format documented at
@@ -665,7 +669,7 @@ static const uint8_t demo_levels[8][9] = {
 
 static int current_start_pop_you = 12;
 static int current_start_pop_enemy = 10;
-typedef enum { START_SYNTHETIC, START_ORIGINAL } StartKind;
+typedef enum { START_SYNTHETIC, START_ORIGINAL, START_TUTORIAL } StartKind;
 typedef struct { StartKind kind; int number; } StartSelection;
 static StartSelection current_start, requested_start;
 static int requested_world;   /* --conquest: _start_of_game == 2 */
@@ -696,7 +700,9 @@ static int parse_start(int argc, char **argv, StartSelection *out)
 {
     StartSelection selected = {START_SYNTHETIC, 0};
     requested_world = 0;
-    if (argc == 2 && argv && argv[1] && !strcmp(argv[1], "--conquest")) {
+    if (argc == 2 && argv && argv[1] && !strcmp(argv[1], "--tutorial")) {
+        selected = (StartSelection){START_TUTORIAL, 0};   /* port flag for _start_of_game == 3 */
+    } else if (argc == 2 && argv && argv[1] && !strcmp(argv[1], "--conquest")) {
         /* The CLI argument 2 of _main (asm:85-91); GENESIS runs behind it. */
         selected = (StartSelection){START_ORIGINAL, 0};
         requested_world = 1;
@@ -729,10 +735,14 @@ void prg_main(void)
     prg_status = EXIT_SUCCESS;
     prg_quit = 0;
     if (!parse_start(g_argc, g_argv, &requested_start)) {
-        fprintf(stderr, "Usage: populous_init_port [nonnegative integer <= INT_MAX | --level 0..494 | --code WORLDNAME | --conquest]\n");
+        fprintf(stderr, "Usage: populous_init_port [nonnegative integer <= INT_MAX | --level 0..494 | --code WORLDNAME | --conquest | --tutorial]\n");
         prg_status = EXIT_FAILURE;
         return;
     }
+    /* Without arguments _start_of_game comes from the launcher (asm:94-96):
+     * 2 opens the world screen (asm:536-551), 3 the tutorial (asm:13975). */
+    if (g_argc <= 1 && g_start_of_game == 2) { requested_start = (StartSelection){START_ORIGINAL, 0}; requested_world = 1; }
+    else if (g_argc <= 1 && g_start_of_game == 3) requested_start = (StartSelection){START_TUTORIAL, 0};
     _main();
 }
 
@@ -2297,6 +2307,44 @@ static int original_generate(const LevelStart *start)
     return 1;
 }
 
+/* _tutorial / LAB_5172E (asm:24233-24247): the 46-byte _stats records
+ * _start_game copies over _stats and strABC (asm:13976-13987). */
+static const uint8_t tutorial_stats[2][46] = {
+    {'a','b','c',0, 0,0,0,0, 0,1,0,0, 0,10,0,0x3f, 0,10,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,5,0,0},
+    {'a','b','c',0, 0,0,0,1, 0,1,0,0, 0,10,0,3, 0,10,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,1,0,0}};
+
+/* _start_of_game == 3: _start_game asm:13975-13999, then _setup_display's
+ * custom path (in_conquest == -1, asm:418-433 with argument 1: one
+ * ___newrand, ground 0 kept) and _clear_map's 10000 mana (asm:1134-1136).
+ * _place_first_people takes conq_06/07 (15/3, asm:24343-24346; asm:7656). */
+static int tutorial_generate(void)
+{
+    /* Bytes +0..+3 (command, x, y), then BE words into the host-endian A4. */
+    for (int owner = 0; owner < 2; ++owner) {
+        memcpy(A4_DISP(0x82b6 + owner*46), tutorial_stats[owner], 4);
+        for (int field = 4; field < 46; field += 2)
+            A4_WORD(0x82b6 + owner*46 + field) = (int16_t)(tutorial_stats[owner][field] << 8 | tutorial_stats[owner][field+1]);
+    }
+    in_conquest = -1;
+    conquest = 1; conq_01_speed = 1; conq_02_enemypow = 0; conq_03_yourpow = 0x3f;
+    conq_04_mode = 3; conq_05_terrain = 0; conq_08_seed = 0;
+    A4_DISP(0x84c2)[0] = 15; A4_DISP(0x84c3)[0] = 3;
+    seed = start_seed = 0x69bc;
+    game_mode = 1;                  /* _tutorial_game_mode */
+    ground_in = 0;
+    ___newrand();
+    original_clear(___newrand, 0);
+    A4_LONG(0x9a02) = 10000;        /* LAB_5188C -> LAB_52DF0 */
+    original_make_thing(2, 4, ___newrand);
+    original_make_thing(4, 2, ___newrand);
+    original_make_thing(3, 3, ___newrand);
+    _make_map();
+    original_woods(___newrand);
+    if (!original_place_people(15, 3)) return 0;
+    seed = (int16_t)((uint16_t)seed + 1u);
+    return 1;
+}
+
 /* _end_text asm:24790-24843 (A4 0x8e7e): 7 rows x 46 bytes, word x, word y,
  * word (0x48/0x18, unused here), then text. strLOST is text+5 and
  * strScoreboard text+19 of each row (asm:14025,14102). */
@@ -2531,7 +2579,8 @@ static int game_reset(int scenario)
 static int game_reset_start(StartSelection selection)
 {
     int scenario = selection.number;
-    if (scenario < 0 || (selection.kind != START_SYNTHETIC && selection.kind != START_ORIGINAL) ||
+    if (scenario < 0 || (selection.kind != START_SYNTHETIC && selection.kind != START_ORIGINAL &&
+        selection.kind != START_TUTORIAL) || (selection.kind == START_TUTORIAL && scenario) ||
         scenario >= (selection.kind == START_ORIGINAL ? LEVEL_COUNT : 8)) return 0;
     ensure_prg_screen();
     if (!prg_screen) return 0;
@@ -2554,8 +2603,12 @@ static int game_reset_start(StartSelection selection)
             return 0;
         }
         terrain = original.record.terrain;
+    } else if (selection.kind == START_TUTORIAL) {
+        /* strABC+$10 speed 10, ground 0, conq_06/07 populations. */
+        original.record = (LevelRecord){10, 10, 0, 0, 1, 0, 15, 3, 0};
+        terrain = 0;
     } else terrain = demo_levels[scenario][5];
-    unsigned selected_speed = selection.kind == START_ORIGINAL ? original.record.speed : demo_levels[scenario][1];
+    unsigned selected_speed = selection.kind != START_SYNTHETIC ? original.record.speed : demo_levels[scenario][1];
     if (!selected_speed) {
         fprintf(stderr, "Start %d rejected: unsupported zero terrain mailbox cadence divisor\n", scenario);
         return 0;
@@ -2582,6 +2635,12 @@ static int game_reset_start(StartSelection selection)
             fprintf(stderr, "Original level %d rejected: insufficient terrain or unsupported starting population\n", scenario);
             return 0;
         }
+    } else if (selection.kind == START_TUTORIAL) {
+        uint8_t *live = prg_a4;
+        prg_a4 = staged + 32768;
+        int generated = tutorial_generate();
+        prg_a4 = live;
+        if (!generated) { fprintf(stderr, "Tutorial rejected: unsupported starting population\n"); return 0; }
     }
     GraphicsAssets *loaded_assets = graphics_load(asset_directory,terrain,loaded.sprite_set,error,sizeof error);
     if (!loaded_assets) { fprintf(stderr,"Original graphics: %s\n",error); return 0; }
@@ -2659,9 +2718,16 @@ static int game_reset_start(StartSelection selection)
     A4_WORD(0x82bc) = 0; A4_WORD(0x82bc + 46) = 1;
     A4_WORD(0x82be) = 1; A4_WORD(0x82be + 46) = 0;
     A4_WORD(0x82c6) = 1; A4_WORD(0x82c6 + 46) = selected_speed;
+    if (selection.kind == START_TUTORIAL) {
+        /* The copied _stats words stand; _start_game sets _pause (asm:13988). */
+        for (int owner = 0; owner < 2; ++owner)
+            for (int field = 6; field <= 0x10; field += 2)
+                A4_WORD(0x82b6 + owner*46 + field) = (int16_t)(tutorial_stats[owner][field] << 8 | tutorial_stats[owner][field+1]);
+        pause = 1;
+    }
     core_result = core_battles = core_settlements = core_tool = core_swamp_selected = 0; core_set_pointer();
     xoff = yoff = 6;
-    if (selection.kind == START_ORIGINAL) {
+    if (selection.kind != START_SYNTHETIC) {
         /* Host camera accommodation: original inhabitants are not on demo plots. */
         int cell = peep_word(core_leader(0) - 1, 8);
         xoff = cell % 64 - 3;
