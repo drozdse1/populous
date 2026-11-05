@@ -230,6 +230,82 @@ static void test_choices(void)
     assert(SDL_WasInit(0) == 0 && live_allocations == 0 && live_windows == 0);
 }
 
+/* Composed frames on a flat background (no land0 sheet): SUB_1802 glyphs
+ * and SUB_5026 strips at the listing's positions and colours. */
+static void test_intro_frames(void)
+{
+    static uint8_t pixels[320 * 200];
+    GraphicsAssets *assets = launch_assets;
+    launch_assets = NULL;
+    memset(launch_demo_pixels, 5, sizeof launch_demo_pixels);
+    memset(&launch, 0, sizeof launch);
+    /* LAB_5A0C row 8 of glyph 0 ($5a5c): mask $800f, planes $2000 $7ff0 $2010 $5fe0. */
+    assert(intro_title_glyphs[0][8][0] == 0x800f && intro_title_glyphs[0][8][1] == 0x2000 &&
+           intro_title_glyphs[0][8][4] == 0x5fe0 && intro_title_word[1] == 1 && intro_title_word[7] == 4);
+    launch.state = LAUNCH_TITLE;                   /* drop 0 = 0: top $a8 */
+    for (int i = 1; i < 10; ++i) launch.drop[i] = 0xa9;   /* others above the top: skipped */
+    launch_compose(pixels);
+    assert(pixels[176 * 320 + 0x61] == 0xa);       /* P: opaque, planes 1 and 3 */
+    assert(pixels[176 * 320 + 0x60] == 5);         /* mask set, no planes: background */
+    assert(pixels[167 * 320 + 0x61] == 5 && pixels[176 * 320 + 0x71] == 5);
+    for (int row = 0; row < 32; ++row)             /* banner left piece, glyph 5 */
+        for (int bit = 0; bit < 16; ++bit) {
+            const uint16_t *w = intro_title_glyphs[5][row];
+            int s = 15 - bit, c = ((w[1] >> s) & 1) | ((w[2] >> s) & 1) << 1 | ((w[3] >> s) & 1) << 2 | ((w[4] >> s) & 1) << 3;
+            assert(pixels[(0xa8 + row) * 320 + 0x50 + bit] == (((w[0] >> s) & 1) ? 5 | c : c));
+        }
+    launch.drop[0] = 0xa9;                         /* top -1: SUB_1802 skips it */
+    launch_compose(pixels);
+    assert(pixels[176 * 320 + 0x61] == 5 && pixels[(0xa8 + 31) * 320 + 0x5f] == 5);
+    launch.state = LAUNCH_RISE; launch.drop[0] = 0;   /* top = drop + 8 */
+    launch_compose(pixels);
+    assert(pixels[16 * 320 + 0x61] == 0xa && pixels[176 * 320 + 0x61] == 5);
+    launch.state = LAUNCH_SCRIPT;                  /* letters gone: bare background */
+    launch_compose(pixels);
+    assert(pixels[16 * 320 + 0x61] == 5);
+
+    /* SUB_1D1A + SUB_5026 with a synthetic font: every glyph opaque on its
+     * left half (byte 0 = $0f), strip planes 2 and 4 = screen planes 1, 3: $a. */
+    uint8_t font[sizeof launch_font];
+    memcpy(font, launch_font, sizeof font);
+    int had_font = launch_font_loaded;
+    memset(launch_font, 0, sizeof launch_font);
+    for (int g = 0; g < (int)sizeof launch_font / 40; ++g)
+        for (int row = 0; row < 8; ++row) {
+            launch_font[g * 40 + row * 5] = 0x0f;
+            launch_font[g * 40 + row * 5 + 2] = 0xff;     /* plane 1 -> colour 1 */
+            launch_font[g * 40 + row * 5 + 4] = 0xff;     /* plane 3 -> colour 4 */
+        }
+    launch_font_loaded = 1;
+    memset(&launch, 0, sizeof launch);
+    launch.credit = 0;                             /* "POPULOUS": 8 chars at byte 16 */
+    launch_strip_text(1);
+    assert(launch.credit == 1 && launch.strip[1][0][0] == 0xff && launch.strip[1][0][16] == 0x0f &&
+           launch.strip[1][0][24] == 0xff && launch.strip[1][4][23] == 0xff && launch.strip[1][4][24] == 0);
+    launch.state = LAUNCH_CREDITS;
+    launch.strip_y[0] = 0x4b;                      /* slot 0 still empty: all keep */
+    launch.strip_y[1] = 25; launch.strip_fade[1] = 25;   /* LAB_1F62 words 25..27 = 0 */
+    launch_compose(pixels);
+    for (int row = 0; row < 8; ++row)
+        for (int x = 0; x < 320; ++x) {
+            int inside = x >= 128 && x < 192 && x % 8 < 4;
+            assert(pixels[(25 + row) * 320 + x] == (inside ? 0xa : 5));
+        }
+    assert(pixels[24 * 320 + 128] == 5 && pixels[33 * 320 + 128] == 5);
+    launch.strip_fade[1] = 0;                      /* words 0..2 = $ffff: nothing */
+    launch_compose(pixels);
+    assert(pixels[25 * 320 + 128] == 5);
+    launch.strip_fade[1] = 10;                     /* words 8, 9: fade + 0 = $5555, fade + 1 = $4aa9 */
+    launch_compose(pixels);
+    for (int bit = 0; bit < 4; ++bit) {
+        assert(pixels[25 * 320 + 128 + bit] == (((0x5555 >> (15 - bit)) & 1) ? 5 : 0xa));
+        assert(pixels[25 * 320 + 144 + bit] == (((0x4aa9 >> (15 - bit)) & 1) ? 5 : 0xa));
+    }
+    memcpy(launch_font, font, sizeof font);
+    launch_font_loaded = had_font;
+    launch_assets = assets;
+}
+
 /* State progression on the injected VBI clock (launch_step per frame). */
 static void test_intro(void)
 {
@@ -252,17 +328,28 @@ static void test_intro(void)
     assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_BLOCKS);   /* timeout, choice 0 */
     for (int i = 0; i < LAUNCH_DROPS; ++i)
         assert(launch.drop[i] >= 0xe8 && launch.drop[i] <= 0xf4 && launch.speed[i] >= 0 && launch.speed[i] <= 8);
-    int blocks = 0, title = 0, rise = 0, credits = 0;
+    int blocks = 0, title = 0, rise = 0, setup = 0;
     while (launch.state == LAUNCH_BLOCKS) { assert(launch_step() == LAUNCH_RUN); ++blocks; }
     for (int i = 0; i < LAUNCH_DROPS; ++i) assert(launch.settled[i] >= 0 && launch.settled[i] < 8);
     while (launch.state == LAUNCH_TITLE) { assert(launch_step() == LAUNCH_RUN); ++title; }
     while (launch.state == LAUNCH_RISE) { assert(launch_step() == LAUNCH_RUN); ++rise; }
-    assert(launch.state == LAUNCH_CREDITS && blocks > 20 && blocks < 1000 && rise > 0);
-    while (launch.state == LAUNCH_CREDITS) { assert(launch_step() == LAUNCH_RUN); ++credits; }
-    /* 23 SUB_1D1A lines, 50 frames each; then SUB_41C shows load.pic again. */
-    assert(credits == LAUNCH_CREDIT_LINES * LAUNCH_LINE_FRAMES && LAUNCH_CREDIT_LINES == 23);
-    assert(launch.state == LAUNCH_LOAD && launch.frame == 0 && launch.button == 2);
-    printf("intro frames: blocks %d, title %d, rise %d, credits %d\n", blocks, title, rise, credits);
+    /* SUB_536's 16-drop loop: one frame per SUB_110A, the zero one too. */
+    assert(launch.state == LAUNCH_SCRIPT && blocks > 20 && blocks < 1000 && rise > 0);
+    while (launch.state == LAUNCH_SCRIPT) { assert(launch_step() == LAUNCH_RUN); ++setup; }
+    assert(setup > 1 && launch.state == LAUNCH_CREDITS);
+    /* SUB_714 first frame: slot 1 (50) takes line 0 at row 50, fade 0;
+     * slot 0 (75) waits 25 frames; each slot then repeats every 51. */
+    assert(launch.strip_count[0] == 0x4a && launch.strip_count[1] == 49 && launch.credit == 1);
+    assert(launch.strip_y[0] == 0x4b && launch.strip_fade[0] == 0 && launch.strip_y[1] == 50 && launch.strip_fade[1] == 0);
+    for (int frame = 1; frame <= 25; ++frame) assert(launch_step() == LAUNCH_RUN);
+    assert(launch.strip_y[0] == 50 && launch.strip_y[1] == 25 && launch.strip_fade[1] == 25 && launch.credit == 2);
+    for (int frame = 26; frame <= 50; ++frame) assert(launch_step() == LAUNCH_RUN);
+    assert(launch.strip_y[1] == 0 && launch.strip_fade[1] == 0 && launch.strip_count[1] == 50);
+    assert(launch_step() == LAUNCH_RUN && launch.strip_y[1] == 50 && launch.credit == 3);
+    /* The script never ends by itself: LAB_1F9E wraps after 23 lines. */
+    for (int frame = 52; frame < 51 * 13; ++frame) assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_CREDITS);
+    assert(LAUNCH_CREDIT_LINES == 23 && launch.credit == 26 - 23);
+    printf("intro frames: blocks %d, title %d, rise %d, setup %d\n", blocks, title, rise, setup);
     /* Same seed, same drops: the sequence is deterministic. */
     int again = 0;
     memset(&launch, 0, sizeof launch);
@@ -272,6 +359,7 @@ static void test_intro(void)
     assert(again == blocks);
     /* A fresh click in any intro phase ends it (asm:1553-1555). */
     for (int phase = LAUNCH_BLOCKS; phase <= LAUNCH_CREDITS; ++phase) {
+        if (phase == LAUNCH_SCRIPT) continue;   /* tested below */
         memset(&launch, 0, sizeof launch);
         launch.seed = 1; launch_load_begin(); launch.frame = LAUNCH_LOAD_FRAMES;
         launch_step();
@@ -281,6 +369,15 @@ static void test_intro(void)
         launch_mouse(0, 250, 190); launch_mouse(1, 250, 190);
         assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_LOAD && launch.choice == 0);
     }
+    /* SUB_536's loop has no latch test: the click ends the first SUB_714 frame. */
+    memset(&launch, 0, sizeof launch);
+    launch.seed = 1; launch_load_begin(); launch.frame = LAUNCH_LOAD_FRAMES;
+    launch_step();
+    while (launch.state != LAUNCH_SCRIPT) launch_step();
+    launch_mouse(0, 250, 190); launch_mouse(1, 250, 190);
+    while (!launch.script_done) { assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_SCRIPT); }
+    assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_LOAD);
+    test_intro_frames();
     /* The full SDL loop: no click, the timeout runs the intro with music. */
     char *arguments[] = {"populous", NULL};
     assert(SDL_Init(SDL_INIT_VIDEO) == 0); SDL_Quit();

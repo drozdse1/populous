@@ -7,13 +7,13 @@ TEST_TIMEOUT ?= 20s
 SANITIZER_FLAGS = -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 
 TARGET = populous_init_port
-SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c
+SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c
 CPPFLAGS += -DPOPULOUS_DEFAULT_ASSET_DIR='"$(abspath ../binaries/populous-extracted)"'
 OBJS = $(SRCS:.c=.o)
 HEADERS = $(wildcard *.h)
-RUNTIME_SOURCES = tests/test_runtime.c populous_init.c sdl_lowlevel.c graphics.c audio.c title_music.c $(HEADERS)
+RUNTIME_SOURCES = tests/test_runtime.c populous_init.c sdl_lowlevel.c graphics.c audio.c title_music.c intro_data.c $(HEADERS)
 # The launcher's asset, mixer and title replayer units; the test includes the rest.
-RUNTIME_LINK = graphics.c audio.c title_music.c
+RUNTIME_LINK = graphics.c audio.c title_music.c intro_data.c
 
 .PHONY: all clean run test-runtime test test-sanitize
 all: $(TARGET)
@@ -50,11 +50,11 @@ test-sanitize: tests/test_runtime_sanitize
 # Only activate game checks once the core step supplies real test sources.
 ifneq ($(wildcard tests/test_game.c),)
 .PHONY: test-game
-tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c $(HEADERS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c -o $@ $(LDLIBS)
+tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c -o $@ $(LDLIBS)
 
-tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c $(HEADERS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c -o $@ $(LDLIBS)
+tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c -o $@ $(LDLIBS)
 
 test-game: tests/test_game
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout $(TEST_TIMEOUT) ./tests/test_game

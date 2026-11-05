@@ -751,22 +751,36 @@ the title music and runs, one step per 50 Hz frame:
    land0 blocks of the 10x10 `LAB_640C` landscape (heights `<< 3`, `SUB_1BE8`)
    fall from 232..244 lines above and bounce into place (`SUB_1C12`
    asm:2200-2284 isometric positions, `SUB_19EE` clipping).
-2. `SUB_E40` (asm:1234-1427): 18 title letters fall, then rise to the top.
-3. `SUB_714`: the credits list `LAB_1DCE` (23 lines, `SUB_1D1A` 8x8 font.dat
-   rendering).
+2. `SUB_E40` (asm:1234-1427): the POPULOUS title falls and then rises. `SUB_1802`
+   (asm:1866-1940) masks eight 16x32 four-plane glyphs from `LAB_5A0C`
+   (asm:4270-4662, copied into `intro_data.c` with each listing address
+   checked) onto the frame. The glyphs are banner pieces 5/6/7 at x = $50..$e0
+   (drops 0..9) and the letters `$6e98` = P O P U L O U S at x = $60 + 16i
+   (drops 0..7). Top is $a8 - drop while falling and drop + 8 while rising
+   (drops start at $a0 and use speed 0..7).
+3. `SUB_714` (asm:586-1233): `SUB_536` first runs a 16-drop `SUB_110A` loop
+   (one frame per step, including the final one, and no click test). After
+   that the endless script loop starts. Two text strips (`LAB_1FA2`/`LAB_25E2`,
+   counters 75 and 50) take the next `LAB_1DCE` line through `SUB_1D1A` when
+   their counter is 50. Each line is centred with `(40 - length) >> 1`, plane 0
+   is preset to $ff, and font.dat bytes 0..4 go to planes 0..4. `SUB_5026`
+   (asm:3548-3590) draws the strip at row = counter. The fade step is the
+   counter, or 50 minus the counter above 25. The keep mask is plane 0 ORed
+   with the `LAB_1F62` words fade+1, fade+2, fade, cycled per word. Strip
+   planes 1..4 become screen planes 0..3. Counters fall to 0 and then reset to
+   50. Each slot shows a new line every 51 frames, the two slots are 25 frames
+   apart, and the 23 lines wrap at the $ff marker.
 
-After the credits `load.pic` returns (`SUB_41C` loops). A fresh left click in
-any phase ends the intro at once (asm:1553-1555 and the other loops); no key
-advances it in the original. With the default timer the phases take 59, 58+48
-and 23 x 50 frames.
+The intro only ends on a fresh left click (asm:1553-1555 and the other loops),
+which returns to `load.pic` (`SUB_41C` loops). With the default timer the
+phases take 59, 58+48 and 58 frames before the script.
 
-Deviations: the title letters (`SUB_1802`) come from `LAB_5A0C` inside the
-launcher executable, which is not extracted, so phase 2 keeps its timing but
-draws nothing; `SUB_714`'s script (byte code `LAB_1272`..`LAB_15F6`, the upper
-block layer, copper strip and scrolling) is not ported: each credit line is
-shown for 50 frames at the bottom of the screen and the intro ends after one
-pass instead of following the script; `SUB_1D1A`'s fifth plane is dropped on
-the 16-colour demo palette. Palette fades are not reproduced.
+Deviations: `SUB_714`'s block script is not ported. That covers the byte code
+`LAB_1272`..`LAB_15F6`, the upper block layer drawn by `SUB_50B2`/`SUB_1CBC`/
+`SUB_3F92`, and the falling blocks in `SUB_536`. The port shows the settled
+landscape under the credit strips instead. Palette fades are not reproduced.
+`SUB_5792`'s keyboard flag (`LAB_7158`), which also ends the original's loops,
+is not modelled.
 
 Title music: `SUB_2C36` (asm:2418-2471) reads `popsam` (one 0x1c01e-byte Read; the file has that size),
 `SUB_2F9C` (asm:2645-2698) starts song 0 and `LAB_3060` (asm:2706-2896) runs per
