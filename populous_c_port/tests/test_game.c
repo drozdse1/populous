@@ -5175,6 +5175,7 @@ static void test_query_and_shield(void)
     /* Query clicks neither sculpt nor spend mana; the table follows the blit. */
     memset(game_assets->background,1,sizeof game_assets->background);
     memset(game_assets->sprite_keep,1,sizeof game_assets->sprite_keep);
+    set_peep_word(0,12,0);   /* synthetic start +$C 255 hits the _debug exit */
     game_render();
     assert(no_sprites>0 && A4_WORD(0x9a22)==184 && A4_WORD(0x9a24)==88 && A4_WORD(0x9a28)==1);
     core_tool=2; SDL_SetWindowSize(prg_screen->window,640,512);
@@ -5260,23 +5261,26 @@ static void test_original_graphics_output(void)
     game_assets->land_indices[15*768+8*32+16]=2;
     game_assets->land_indices[42*768+8*32+16]=4;
     game_assets->sprite_indices[8*256]=8;
+    /* +$C 0 (the synthetic start's 255 is _move_sprite's _debug exit) and _toggle 0. */
+    set_peep_word(0,12,0); toggle=0; memcpy(before,prg_a4_area,sizeof before);
     game_render();
     assert(game_pixels[72*320+192]==3); /* first flat tile */
-    assert(game_pixels[88*320+184]==9); /* first walker at (8,8), no interpolation */
+    assert(game_pixels[88*320+184]==9); /* first walker at (8,8), counter 0: no offset */
     assert(a4_same(before));
+    set_peep_word(0,12,255);   /* restore the start state for the ticks below */
     for (int tick=0;tick<16;++tick) game_tick();
     int settlements=0;
     for (int cell=0;cell<4096;++cell) settlements+=map_bk2[cell]==42;
     assert(settlements>0);
     game_assets->sprite_indices[64*256]=8;
-    game_render();
+    toggle=0; game_render();
     assert(game_pixels[96*320+192]==5); /* town overlay, tile_top-8 */
     assert(game_pixels[88*320+192]==9); /* settled occupant uses frame 64 */
     /* _move_sprite compares flags to exactly 1: flags 9 is a town defending
      * a battle, not a peaceful occupant. Distinct frame pixels catch precedence. */
     assert(peep_word(0,8)==8*64+8 && map_who[8*64+8]==1);
     for (int owner=0;owner<2;++owner) for (int phase=0;phase<2;++phase) {
-        peeps[0]=9; peeps[1]=owner; game_turn=16+phase*4;
+        peeps[0]=9; peeps[1]=owner; game_turn=16+phase*4; toggle=phase;
         game_assets->sprite_indices[(64+phase+owner*2)*256]=8;
         game_assets->sprite_indices[(138+phase)*256]=2+phase*2;
         memcpy(before,prg_a4_area,sizeof before);
@@ -5327,7 +5331,7 @@ static void sprite_scene(void)
     memset(map_who,0,4096); memset(map_bk2,0,4096);
     memset(map_blk,15,4096); memset(map_alt,0,4096);
     memset(peeps,0,208*22); no_peeps=2;
-    xoff=16; yoff=16; mousex=-100; mousey=-100;
+    xoff=16; yoff=16; mousex=-100; mousey=-100; view_who=0;
     core_tendency(0)=core_tendency(1)=1;
 }
 static void sprite_case(int flags, int owner, int stored, uint32_t heading,
@@ -5341,7 +5345,8 @@ static void sprite_case(int flags, int owner, int stored, uint32_t heading,
     set_peep_word(0,10,delta); set_peep_word(0,12,stored);
     set_peep_word(1,4,100); set_peep_word(1,8,4000);
     memcpy(peeps+14,&heading,sizeof heading);
-    game_turn=turn; map_blk[cell]=block; map_alt[cell]=altitude;
+    /* _toggle (asm:606-612) drives walker/town phases; follow turn/4 here. */
+    game_turn=turn; toggle=((uint16_t)turn/4)&1; map_blk[cell]=block; map_alt[cell]=altitude;
     uint8_t expected[64000],before[sizeof prg_a4_area];
     memcpy(before,prg_a4_area,sizeof before);
     draw_original(16,16);
@@ -5387,11 +5392,11 @@ static void test_special_sprite_frames(void)
         for (int turn=0;turn<4;++turn) {
             sprite_case(0x80,owner,32767,headings[raw],phase*4+turn,1,15,0,0,0,remnant[turn],184,56);
             for (int block=0;block<2;++block) for (int direction=0;direction<8;++direction)
-                sprite_case(18,owner,7,headings[raw],phase*4+turn,directions[direction],block ? 0 : 15,0,0,0,
+                sprite_case(18,owner,0,headings[raw],phase*4+turn,directions[direction],block ? 0 : 15,0,0,0,
                     water[owner][headed][turn],184,block ? 60 : 56);
         }
         for (int direction=0;direction<8;++direction) for (int block=0;block<2;++block)
-            sprite_case(2,owner,7,headings[raw],phase*4,directions[direction],block ? 0 : 15,0,0,0,
+            sprite_case(2,owner,0,headings[raw],phase*4,directions[direction],block ? 0 : 15,0,0,0,
                 walkers[owner][headed][phase][direction],184,block ? 60 : 56);
     }
     sprite_case(5,1,42,1,0,1,15,0,0,0,78,192,56);
@@ -5408,29 +5413,39 @@ static void test_special_sprite_frames(void)
         for (int state=0;state<3;++state)
             sprite_case(wait_flags[state],owner,stored[sample],headed,0,1,15,0,0,0,wait_bounds[headed*2+owner][sample],192,56);
     }
-    /* Unsupported flags retain the old battle-before-water-before-walker cascade. */
-    const int fallback[][3]={{0,23,0},{4,23,0},{0x86,23,0},{0x88,139,1},
-        {0x16,100,0},{0x28,139,1},{0x62+1,23,0},{0x90,100,0},{0xff,139,1}};
-    for (unsigned sample=0;sample<sizeof fallback/sizeof fallback[0];++sample)
-        sprite_case(fallback[sample][0],1,32767,UINT32_MAX,7,1,0,0,0,0,
-            fallback[sample][1],fallback[sample][2] ? 192 : 184,fallback[sample][2] ? 56 : 60);
+    /* Mixed flags follow the _move_sprite dispatch (asm:15996-16016):
+     * ==2, ==1, bit 4, bits 5/6, bit 3, bit 7, then the +$C default. Stored
+     * 3 (counter 3 for the walking branches), delta 1 (dx 2, dy 1), owner 1,
+     * heading present, turn 7 (toggle 1), block 0 (+4 only when walking). */
+    const int mixed[][4]={
+        {0,3+32+4,192,56},{4,3+32+4,192,56},{0x0c,139,192,56},{0x86,105+3,184,56},
+        {0x88,139,192,56},{0x16,93+3+16+4,190,63},{0x18,93+3+16+4,190,63},
+        {0x28,3+24+2,192,56},{0x63,3+24+2,192,56},{0x90,93+3+16+4,190,63},
+        {0xff,93+3+16+4,190,63},{0xc4,3+24+2,192,56},{0x84,105+3,184,56},
+        {0x03,3+32+4,192,56},{0x0b,139,192,56}};
+    for (unsigned sample=0;sample<sizeof mixed/sizeof mixed[0];++sample)
+        sprite_case(mixed[sample][0],1,3,UINT32_MAX,7,1,0,0,0,0,
+            mixed[sample][1],mixed[sample][2],mixed[sample][3]);
     /* Current-cell coordinates, height lift, top clipping and far visible corners. */
     sprite_case(6,1,42,1,0,1,15,0,0,8,78,192,-8);
-    sprite_case(2,1,7,1,4,1,0,0,0,8,55,184,-4);
+    sprite_case(2,1,0,1,4,1,0,0,0,8,55,184,-4);
     sprite_case(0x80,0,0,0,3,1,15,7,0,0,108,296,112);
     sprite_case(5,0,85,0,0,1,15,7,7,0,85,192,168);
     sprite_case(0x22,0,101,0,0,1,15,3,2,3,101,208,72);
     sprite_case(5,1,42,1,0,1,0,0,0,0,78,192,56);
     sprite_case(0x80,1,0,1,3,1,0,0,0,0,108,184,56);
     sprite_case(0x62,1,102,1,4,1,0,0,0,0,128,192,56);
+    /* Walking counters >= 8 take the _debug exit (asm:16061-16069); a
+     * negative counter is multiplied as is (MULS). */
     for (int sample=0;sample<5;++sample) {
-        sprite_case(2,1,stored[sample],1,4,1,0,0,0,0,55,184,60);
-        sprite_case(18,1,stored[sample],1,7,1,0,0,0,0,116,184,60);
+        int counter=stored[sample], shown=counter<8;
+        sprite_case(2,1,counter,1,4,1,0,0,0,0,shown ? 55 : -1,184+2*counter,60+counter);
+        sprite_case(18,1,counter,1,7,1,0,0,0,0,shown ? 116 : -1,184+2*counter,60+counter);
     }
 }
 static void test_special_sprite_order_and_guards(void)
 {
-    sprite_scene(); game_turn=4;
+    sprite_scene(); game_turn=4; toggle=1;
     uint8_t expected[64000],before[sizeof prg_a4_area];
     draw_original(16,16); memcpy(expected,game_pixels,sizeof expected);
     /* Reverse slot order: the earlier cell's celebration overlaps the later
@@ -5439,7 +5454,7 @@ static void test_special_sprite_order_and_guards(void)
     for (int person=0;person<3;++person) {
         peeps[person*22]=person ? 5 : 2;
         set_peep_word(person,4,100); set_peep_word(person,8,16*64+16+(person==0));
-        set_peep_word(person,10,1); set_peep_word(person,12,person==2 ? 86 : 85);
+        set_peep_word(person,10,1); set_peep_word(person,12,person==2 ? 86 : person ? 85 : 0);
     }
     map_who[16*64+16]=2; map_who[16*64+17]=1;
     sprite_mask_oracle(expected,85,192,56);
@@ -6576,7 +6591,10 @@ static void test_quake_shake(void)
         memset(game_assets->sprite_indices,0,sizeof game_assets->sprite_indices);
         game_assets->land_indices[15*768+8*32+16]=2;
         game_assets->sprite_indices[8*256]=8;
-        game_render(); assert(game_pixels[72*320+192]==3 && game_pixels[88*320+184]==9);
+        /* The synthetic start leaves +$C at 255: _move_sprite's _debug exit
+         * (asm:16061-16069) would hide it until the first _set_frame. */
+        toggle=0; set_peep_word(0,12,0); game_render(); assert(game_pixels[72*320+192]==3 && game_pixels[88*320+184]==9);
+        set_peep_word(0,12,255);
         int sprites=no_sprites;
         GraphicsAssets *assets=game_assets;
         if (!run) game_assets=NULL;
@@ -9615,8 +9633,10 @@ static void test_knight_lifecycle(void)
             assert(peep_word(0,4)>0 && core_tool==1 && core_swamp_selected==1);
             assert_mailbox_empty(); assert_live_occupancy();
             if (!(tick%10)) {
+                /* Moving walkers are now drawn from their departure cell, so
+                 * the render-owned _sprite/_ok_to_build block may change. */
                 memcpy(expected,prg_a4_area,sizeof expected); game_render();
-                assert(!memcmp(expected,prg_a4_area,sizeof expected));
+                assert(a4_same(expected));
             }
         }
         printf("Knight controlled ticks: owner=%d moved=%d battle=%d remnant=%d celebration=%d resumed=%d expired=%d tick=%d\n",
@@ -10247,18 +10267,81 @@ static void test_battle_entry_town_reward(void)
     }
 }
 
+/* _move_sprite walking branch (asm:16061-16224) and SUB_49F72 (asm:16225-16254):
+ * a walker is drawn from the map_who (departure) cell, moved by +$C along
+ * +$A with the altitude difference, and hidden in the second half of moves
+ * leaving the 8x8 view. Literal per-direction table from the asm. */
+static void test_walker_interpolation(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    static const struct { int step,dx,dy,hide_u,hide_v,frame; } moves[]={
+        {-65,0,-2,0,0,0},{-64,2,-1,-1,0,2},{-63,4,0,7,0,4},{1,2,1,7,-1,6},
+        {65,0,2,7,7,8},{64,-2,1,-1,7,10},{63,-4,0,0,7,12},{-1,-2,-1,0,-1,14},{5,0,0,-1,-1,8}};
+    for (unsigned m=0;m<sizeof moves/sizeof *moves;++m)
+    for (int u=0;u<8;u+=7) for (int v=0;v<8;v+=7) for (int counter=0;counter<9;++counter)
+    for (int water=0;water<(counter%3==2 ? 2 : 1);++water) {   /* water: counters 2,5,8 */
+        int flat=(counter+u)&1, owner=(counter>>1)&1, headed=v>0, tog=counter&1, turn=counter+m;
+        sprite_scene(); toggle=tog; game_turn=turn; player=1;
+        int cell=(16+v)*64+16+u, next=cell+moves[m].step;
+        map_alt[cell]=3; if (next>=0 && next<4096) map_alt[next]=1;
+        if (!flat) map_blk[cell]=20;
+        uint8_t expected[64000],before[sizeof prg_a4_area];
+        draw_original(16,16); memcpy(expected,game_pixels,sizeof expected);
+        /* Departure-cell layout of core_move: +8 is the destination. */
+        peeps[0]=water ? 0x12 : 2; peeps[1]=owner; peeps[17]=headed ? 0x80 : 0;
+        set_peep_word(0,4,100); set_peep_word(0,8,next); set_peep_word(0,10,moves[m].step);
+        set_peep_word(0,12,counter); set_peep_word(0,18,water);
+        map_who[cell]=1;
+        int frame=water ? 93+(turn&3)+16*headed+4*owner : moves[m].frame+tog+16*owner+32*headed;
+        int sx=176+16*(u-v)+8+moves[m].dx*counter;
+        int sy=64+8*(u+v)-8*3-8+(flat ? 0 : 4)+2*counter+moves[m].dy*counter;
+        int hidden=counter>=8 || (counter>4 && (u==moves[m].hide_u || v==moves[m].hide_v));
+        if (!hidden) sprite_mask_oracle(expected,frame,sx,sy);
+        memcpy(before,prg_a4_area,sizeof before); draw_original(16,16);
+        assert(a4_same(before)); assert_sprite_pixels(expected);
+        /* asm:15965-15982, before the dispatch (so also when hidden): own
+         * peeps OR the whole flag byte (+1 for +$12), others flags&$F8. */
+        assert(ok_to_build==(owner==1 ? peeps[0]|water : peeps[0]&0xf8));
+        if (hidden) { assert(no_sprites==0); continue; }
+        assert(no_sprites==1 && A4_WORD(0x9a22)==sx && A4_WORD(0x9a24)==sy &&
+               A4_WORD(0x9a26)==frame && A4_WORD(0x9a28)==1);
+    }
+    /* A walker whose map_who cell is neither +8 nor +8-+$A is not drawn. */
+    sprite_scene(); peeps[0]=2; set_peep_word(0,4,100);
+    set_peep_word(0,8,16*64+18); set_peep_word(0,10,1); map_who[16*64+16]=1;
+    draw_original(16,16); assert(no_sprites==0);
+    /* The view_who marker: frame $44 at x+8, after the occupant. */
+    sprite_scene(); toggle=0; peeps[0]=2; set_peep_word(0,4,100);
+    set_peep_word(0,8,16*64+17); set_peep_word(0,10,1); set_peep_word(0,12,2);
+    map_who[16*64+16]=1; view_who=1;
+    uint8_t expected[64000];
+    map_who[16*64+16]=0; draw_original(16,16); memcpy(expected,game_pixels,sizeof expected);
+    map_who[16*64+16]=1;
+    sprite_mask_oracle(expected,6,188,58); sprite_mask_oracle(expected,0x44,196,58);
+    draw_original(16,16); assert_sprite_pixels(expected);
+    assert(no_sprites==2 && A4_WORD(0x9a2a)==196 && A4_WORD(0x9a2c)==58 &&
+           A4_WORD(0x9a2e)==0x44 && A4_WORD(0x9a30)==1);
+    view_who=0;
+    _closeall(); SDL_Quit();
+}
+
 static void test_battle_frame_render_and_entry(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
     const int frames[]={70,71,72,130,131,132,134,135,136,138,139,140};
     const int invalid[]={0,35,73,129,133,137,141,32767,-32768,-1};
     uint32_t headings[]={0,1,UINT32_MAX,0x80000000u,0x00008000u};
-    const int flags[]={8,9,0x18,0xff};
+    /* _move_sprite tests bit 4 before bit 3 (asm:16004-16012): 0x18/0xff
+     * take the walking branch, whose +$C >= 8 is the _debug exit. */
+    const int flags[]={8,9,0x0c,0x8b};
     for (int owner=0; owner<2; ++owner) for (int turn=0; turn<8; ++turn)
     for (unsigned raw=0; raw<sizeof headings/sizeof headings[0]; ++raw) {
-        for (unsigned frame=0; frame<sizeof frames/sizeof frames[0]; ++frame)
+        for (unsigned frame=0; frame<sizeof frames/sizeof frames[0]; ++frame) {
             sprite_case(flags[frame%4],owner,frames[frame],headings[raw],turn,1,15,0,0,0,
                         frames[frame],192,56);
+            sprite_case(frame%2 ? 0xff : 0x18,owner,frames[frame],headings[raw],turn,1,15,0,0,0,
+                        -1,192,56);
+        }
         for (unsigned frame=0; frame<sizeof invalid/sizeof invalid[0]; ++frame)
             sprite_case(8,owner,invalid[frame],headings[raw],turn,1,15,0,0,0,
                         turn<4 ? 138 : 139,192,56);
@@ -13989,7 +14072,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_query_and_shield();
     test_shield_icons();
     test_icon_flashes();
-    test_special_sprites(); test_battle_frame_render_and_entry();
+    test_special_sprites(); test_battle_frame_render_and_entry(); test_walker_interpolation();
     test_funny_objects();
     test_isometric_match();
     test_colocated_hostile_encounter();

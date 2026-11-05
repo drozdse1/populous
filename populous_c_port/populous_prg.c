@@ -4978,6 +4978,71 @@ static void core_draw_funny(int u, int v, int cell)
     if (view_who == who) core_queue_sprite(sx+8,sy,0x44,who);
     graphics_draw_s_32(game_pixels,sizeof game_pixels,graphics_big_sprites(game_assets),frame,sx-8,sy-16);
 }
+/* Ordinary occupant (map_who byte < $D1), _move_sprite asm:15951-16258.
+ * Dispatch (asm:15996-16016): ==2 walk, ==1 town, bit 4 walk (water frame),
+ * bits 5/6 wait, bit 3 battle, bit 7 remnant, otherwise the +$C default.
+ * The walking branch (asm:16061-16191) starts at the map_who cell - the
+ * departure cell the core claims - and moves by +$C (0..7) along +$A with
+ * the altitude difference, hiding the second half of moves that leave the
+ * 8x8 view; +$C >= 8 is the _debug exit. Frames: asm:16192-16224 (_toggle,
+ * heading, owner). Every entry is queued (SUB_49F72, asm:16225-16254) with
+ * the view_who marker (frame $44 at x+8) and drawn by the main loop with
+ * ___draw_sprite (asm:645-650). Host deviations: heading presence tests all
+ * four host reference bytes (the original TST.W/TST.L a pointer); dead,
+ * foreign-owner or out-of-pool slots and a map_who cell that is neither the
+ * peep's +8 nor (walking) its departure cell are skipped; frames outside the
+ * 143-frame sheet and invalid battle frames keep the render-only bounds. */
+static void core_emit_sprite(GraphicsSheet small, int x, int y, int frame, int who)
+{
+    int queued = no_sprites < 64;
+    core_queue_sprite(x,y,frame,who);
+    if (queued && frame >= 0 && frame < 143) graphics_blit(game_pixels,64000,320,200,small,frame,x,y);
+}
+static void core_draw_peep(GraphicsSheet small, int u, int v, int cell)
+{
+    int person=(int)map_who[cell]-1;
+    if (person<0 || person>=no_peeps || peep_word(person,4)<=0) return;
+    int left,top,owner=peep_owner(person),flags=peeps[person*22];
+    if (owner>1 || !graphics_tile(u,v,map_alt[cell],&left,&top)) return;
+    int walking = flags==2 || (flags!=1 && (flags&0x10));
+    int position=peep_word(person,8), step=peep_word(person,10);
+    if (position!=cell && (!walking || (int16_t)(position-step)!=cell)) return;
+    /* asm:15965-15982: build permission of every visible occupant. */
+    int build = flags&0xf8;
+    if (owner==(int16_t)player) { build=flags; if (peep_word(person,18)) build|=1; }
+    ok_to_build = (int16_t)(ok_to_build|build);
+    uint32_t raw_heading;
+    memcpy(&raw_heading,peeps+person*22+14,sizeof raw_heading);
+    int headed=raw_heading!=0, stored=peep_word(person,12), frame, sx=left+16, sy=top-8;
+    if (walking) {
+        int counter=stored;
+        if (counter>=8) return;   /* asm:16061-16069: _debug */
+        int next=cell+step, dx=0, dy=0;
+        sy += ((int8_t)map_alt[cell]-(next>=0 && next<4096 ? (int8_t)map_alt[next] : 0))*counter;
+        if (map_blk[cell]!=15) sy += 4;
+        for (size_t index=0; index<sizeof core_funny_moves/sizeof *core_funny_moves; ++index) {
+            if (core_funny_moves[index].step!=step) continue;
+            if (counter>4 && (u==core_funny_moves[index].hide_u || v==core_funny_moves[index].hide_v)) return;
+            dx=core_funny_moves[index].dx; dy=core_funny_moves[index].dy;
+            break;
+        }
+        if (flags&0x10) frame=0x5d+((uint16_t)game_turn&3)+0x10*headed+4*owner;
+        else frame=graphics_walker_frame(step,owner,toggle&1)+0x20*headed;
+        sx=left+8+dx*counter; sy+=dy*counter;
+    } else if (flags==1) frame=0x40+(toggle&1)+2*owner;
+    else if (flags&0x60) frame=stored+0x18*headed+2*owner;
+    else if (flags&8) {
+        sound_effect |= 8;
+        /* Preserve a render-only fallback for malformed or legacy frames. */
+        frame=((stored>=70 && stored<=72) || (stored>=130 && stored<=132) ||
+               (stored>=134 && stored<=136) || (stored>=138 && stored<=140)) ? stored : 138+(toggle&1);
+    } else if (flags&0x80) {
+        sound_effect |= 0x80;
+        frame=0x69+((uint16_t)game_turn&3); sx=left+8;
+    } else frame=stored+0x20*headed+4*owner;
+    core_emit_sprite(small,sx,sy,frame,person+1);
+    if (view_who==person+1) core_emit_sprite(small,sx+8,sy,0x44,person+1);
+}
 static void draw_original(int view_x, int view_y)
 {
     if (!game_assets || view_x<0 || view_x>56 || view_y<0 || view_y>56) return;
@@ -5010,59 +5075,13 @@ static void draw_original(int view_x, int view_y)
         for (int level=0; level<map_alt[(view_y+7)*64+view_x+u]; ++level)
             graphics_blit(game_pixels,64000,320,200,small,76,64+16*u,128+8*u-8*level+dy);
     /* Original queues occupants then draws them after terrain (asm:623-657).
-     * Core movement commits its destination immediately: no second interpolation.
      * A shaken screen_origin skips _move_sprite entirely (asm:15842-15849). */
-    if (!dy) no_sprites = 0;
+    if (!dy) { no_sprites = 0; ok_to_build = 0; }   /* asm:612-613 */
     sound_effect = 0;   /* asm:614, before _draw_it */
     for (int v=0; v<8 && !dy; ++v) for (int u=0; u<8; ++u) {
-        int cell=(view_y+v)*64+view_x+u, person=(int)map_who[cell]-1;
+        int cell=(view_y+v)*64+view_x+u;
         if (map_who[cell]>=0xd1) { core_draw_funny(u,v,cell); continue; }
-        if (person<0 || person>=no_peeps || peep_word(person,4)<=0 || peep_word(person,8)!=cell) continue;
-        int left,top,owner=peep_owner(person),flags=peeps[person*22];
-        if (owner>1 || !graphics_tile(u,v,map_alt[cell],&left,&top)) continue;
-        /* _move_sprite dispatch asm:15996-16016,16042: ==1, ==2 and bits
-         * 4..6 take other branches; then battle (bit 3) before bit 7. */
-        if (flags != 1 && flags != 2 && !(flags & 0x70))
-            sound_effect |= flags & 8 ? 8 : flags & 0x80;
-        int frame=graphics_walker_frame(peep_word(person,10),owner,phase);
-        int sx=left+8, sy=top-8+(map_blk[cell]==15 ? 0 : 4);
-        if (flags==5 || flags==6 || flags==0x80 || flags==0x22 ||
-            flags==0x42 || flags==0x62 || flags==2 || flags==18) {
-            /* Presence spans all four host reference bytes, including opaque
-             * values. Select only canonical states; mixed flags keep the fallback. */
-            uint32_t raw_heading;
-            memcpy(&raw_heading,peeps+person*22+14,sizeof raw_heading);
-            int headed=raw_heading!=0;
-            if (flags==5 || flags==6) {
-                frame=(int)peep_word(person,12)+32*headed+4*owner;
-                sx=left+16; sy=top-8;
-            } else if (flags==0x80) {
-                frame=105+((uint16_t)game_turn&3); sy=top-8;
-            } else if (flags==0x22 || flags==0x42 || flags==0x62) {
-                frame=(int)peep_word(person,12)+24*headed+2*owner;
-                sx=left+16; sy=top-8;
-            } else if (flags==2) frame+=32*headed;
-            else frame=93+((uint16_t)game_turn&3)+16*headed+4*owner;
-            /* Bound the selected frame, not the stored simulation frame. The
-             * source's extra Y lift is already top-8 (_draw_it, asm:15831). */
-            if (frame<0 || frame>=143) continue;
-        } else if (flags==1) { frame=64+phase+owner*2; sx=left+16; sy=top-8; }
-        else if (flags&8) {
-            int stored=peep_word(person,12);
-            /* Preserve a render-only fallback for malformed or legacy frames. */
-            frame=((stored>=70 && stored<=72) || (stored>=130 && stored<=132) ||
-                   (stored>=134 && stored<=136) || (stored>=138 && stored<=140)) ? stored : 138+phase;
-            sx=left+16; sy=top-8;
-        }
-        else if (flags&16) frame=93+((uint16_t)game_turn&3)+owner*4;
-        graphics_blit(game_pixels,64000,320,200,small,frame,sx,sy);
-        /* _sprite table A4 0x9a22 (+0 x, +2 y, +6 who), read by _interogate. */
-        if (no_sprites < 64) {
-            int entry = 0x9a22 + no_sprites*8;
-            A4_WORD(entry) = (int16_t)sx; A4_WORD(entry+2) = (int16_t)sy;
-            A4_WORD(entry+4) = 0; A4_WORD(entry+6) = (int16_t)(person+1);
-            ++no_sprites;
-        }
+        core_draw_peep(small,u,v,cell);
     }
     core_show_the_shield(small);
     /* Original overview projection (_a_putpixel, asm:16758-16777). */

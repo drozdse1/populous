@@ -34,8 +34,8 @@ ordinary `_where_do_i_go`/magnet navigation, settlement growth/mana/splitting,
 ordinary `_do_battle`/`_battle_over`, joining, water loss and vertex sculpting.
 Source labels and assembly ranges appear beside each implementation. The
 opponent uses the same settlement/exploration rules, not timer-created units.
-Original computer power/auto-level logic and exact Amiga movement
-interpolation remain unsupported. The eight positional scenarios remain flat
+Original computer power/auto-level logic remains unsupported; sub-cell
+movement interpolation follows `_move_sprite` (see the renderer section). The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
 Merge helpers cap population at 32000; general mana helpers clamp to -250..1999999.
 Raw terrain commands, battle casualties and single-winner completion, ordinary
@@ -72,9 +72,9 @@ in that update; ordinary town processing resumes on the following update.
 Single-winner victories produce these celebration states. The renderer uses
 the original celebration and remnant sprites, plus headed walker/wait/water
 variants for their canonical states. Heading presence reads all four host bytes,
-not the original pointer's high halfword. Sprite selection does not mutate A4
-or add interpolation; mixed-state and full movement parity remain separate
-work. `--special-sprites` compares literal frame/anchor cases
+not the original pointer's high halfword. Sprite selection writes only the render-owned `_sprite`/`_no_sprites`/
+`_ok_to_build`/`_sound_effect` block; walkers interpolate and mixed flags follow
+the original `_move_sprite` dispatch (see the renderer section). `--special-sprites` compares literal frame/anchor cases
 against an independent pixel-mask oracle, including clipping, hidden residents,
 non-flat terrain and an exact 143-frame sheet. Full normal/sanitized suites,
 original-data matches and all 495 starts passed with unchanged test time limits.
@@ -582,10 +582,32 @@ frames 77/76. Mouse picking uses the corresponding 9x9 vertex lattice,
 vertex (frontmost on ties). This is bounded geometric picking, not an exact
 translation of every original `_sculpt` screen-region heuristic.
 
-Walkers use direction frames 0,2,..14 plus owner and animation phase; settlements
-use 64+phase+owner*2. Frames animate from simulation ticks and stop when paused.
-The canonical core commits movement destinations immediately, so sprites use
-that authoritative cell without the original sub-cell movement interpolation.
+Occupants are drawn by a port of `_move_sprite` (asm:15951-16258) with its
+full flag dispatch (asm:15996-16016): exactly 2 walks, exactly 1 is a town
+(frame 64+`_toggle`+2*owner), bit 4 walks with the water frames
+(93+turn&3, +16 heading, +4 owner), bits 5/6 wait (+$C +24 heading +2 owner),
+bit 3 is battle (+$C; sound bit 3), bit 7 the remnant (105+turn&3; sound bit 7),
+anything else the +$C default (+32 heading +4 owner). Mixed flag bytes therefore
+take the first matching branch exactly as in the original (e.g. 0x18/0xff
+walk, 0x0c battles, 0x28 waits, 0x86 is a remnant). Walkers use direction frames
+0,2,..14 +16 owner +32 heading +`_toggle`.
+
+Sub-cell movement interpolation (asm:16061-16191): the core keeps the original
+layout (map_who names the departure cell, +8 is the destination, +$A the step,
++$C counts 0..7), and the walker is drawn from the map_who cell at left+8,
+top-8 (+4 off flat block 15), moved by the per-direction (dx,dy) and the
+altitude difference times +$C; the second half of moves leaving the 8x8 view
+is hidden and +$C >= 8 is the `_debug` exit (not drawn). Every entry is
+queued in `_sprite` with its frame (SUB_49F72, asm:16225-16254) plus the
+`view_who` marker (small frame `$44` at x+8), and `_ok_to_build` accumulates
+the original per-occupant bits (asm:15965-15982; cleared with `_no_sprites`).
+Host deviations: heading presence tests all four host reference bytes (the
+original TST.W/TST.L a pointer); dead, foreign or out-of-pool slots and a
+map_who cell that is neither +8 nor (walking) +8-+$A are skipped; frames past
+the 143-frame sheet are queued but not drawn; invalid battle frames keep the
+138/139 fallback. `_ok_to_build` is computed but `_sculpt` does not consume it
+yet. The synthetic start (`_place_first_people`) leaves +$C at 255, so new
+walkers appear after their first `_set_frame` tick.
 Battle updates now advance the original three-frame cycles: 70-72 for ordinary
 combat, 130-132 or 134-136 for one headed participant (by its owner), and 138-140
 for two. Both frame calls follow casualties and precede completion; exact-zero
@@ -834,9 +856,9 @@ unsigned counter exceeds 14 (nine waiting updates after blocked entry). A retry
 does not incur a second walking loss. Seeded `0x20`/`0x60` wait states share this
 consumer, but the original collision-handshake producer (setting another peep's
 `0x20`, frame 101 and counter 0) and delayed movement occupancy remain unported.
-This is bounded state support, not complete original movement timing. The C loop
+This is bounded state support, not complete original movement timing. The C simulation loop
 retains battle precedence over unsupported mixed battle/wait flags so a partner
-index cannot become a retry counter. Waiting artwork is not yet original-faithful.
+index cannot become a retry counter (the renderer follows the original dispatch). Waiting artwork is not yet original-faithful.
 Ordinary `_join_battle` adds the newcomer's population (capped at 32000), stronger
 weapon byte, leader/view references and nonzero four-byte metadata to its party,
 then consumes the newcomer. Battle frames and partner links are preserved; joining
