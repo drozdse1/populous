@@ -27,6 +27,7 @@
 #include "graphics.h"
 #include "audio.h"
 #include "title_music.h"
+#include "intro_data.h"
 #include "pop_log.h"
 #ifndef POPULOUS_DEFAULT_ASSET_DIR
 #define POPULOUS_DEFAULT_ASSET_DIR "binaries/populous-extracted"
@@ -275,16 +276,19 @@ static void sub_2e2(int16_t value)
 /* The game reads the choice's low word as _start_of_game (prg asm:94-96). */
 extern int g_start_of_game;
 
-enum { LAUNCH_LOAD, LAUNCH_BLOCKS, LAUNCH_TITLE, LAUNCH_RISE, LAUNCH_CREDITS };
+enum { LAUNCH_LOAD, LAUNCH_BLOCKS, LAUNCH_TITLE, LAUNCH_RISE, LAUNCH_SCRIPT, LAUNCH_CREDITS };
 enum { LAUNCH_RUN, LAUNCH_START, LAUNCH_QUIT };
 /* Port timing: SUB_456 busy-waits 0x55730 passes (asm:404-407), ~94 cycles
- * each on a 7.09 MHz 68000, i.e. about 5 s; credits advance per 50 frames. */
+ * each on a 7.09 MHz 68000, i.e. about 5 s. */
 #define LAUNCH_LOAD_FRAMES 250
-#define LAUNCH_LINE_FRAMES 50
 #define LAUNCH_DROPS 100
+#define LAUNCH_STRIP_TOP 50                /* SUB_714 slot counter $32 */
 
 typedef struct {
-    int state, frame, choice, credit, held;
+    int state, frame, choice, credit, held, script_done;
+    int16_t strip_count[2];               /* -31998,A4: rows 75 / 50 (SUB_536 asm:453-454) */
+    int16_t strip_y[2], strip_fade[2];    /* this frame's SUB_5026 row and fade step */
+    uint8_t strip[2][5][320];             /* LAB_1FA2 / LAB_25E2: 5 planes x 8 rows x 40 bytes */
     int16_t button, x, y;                 /* -32004 latch, -32000 X, -32002 Y */
     int16_t drop[LAUNCH_DROPS];           /* LAB_7090 (-31894,A4) */
     int16_t speed[LAUNCH_DROPS];          /* LAB_715A (-31692,A4) */
@@ -309,7 +313,7 @@ static int launch_frames;
 
 /* LAB_640C asm:4663-4682 after SUB_1BE8 (asm:2186-2198, heights << 3):
  * land0 frame and height of the 10x10 intro blocks, row-major. The upper
- * layer at +$64 is empty until the SUB_714 script, which is not ported. */
+ * layer at +$64 is empty until the SUB_714 block script, not ported. */
 static const uint8_t launch_block_type[LAUNCH_DROPS] = {
     0,22,6,15,15,15,15,15,9,25, 0,22,6,15,15,15,15,15,9,25, 28,30,6,15,15,15,15,15,9,25,
     12,12,14,15,15,15,15,15,9,25, 12,8,15,11,3,3,3,3,1,25, 15,9,15,9,15,15,15,27,19,17,
@@ -320,7 +324,7 @@ static const uint8_t launch_block_height[LAUNCH_DROPS] = {
     2,2,1,1,1,1,1,1,1,0, 2,2,1,1,0,0,0,0,0,0, 2,2,1,1,0,0,0,0,0,0, 2,2,1,1,0,0,0,0,0,0,
     1,1,1,1,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0};
 
-/* LAB_1DCE asm:2368-2392, the SUB_1D1A line list ($ff ends it). */
+/* LAB_1DCE asm:2368-2392, the SUB_1D1A line list ($ff wraps to the start). */
 static const char *const launch_credits[] = {
     "POPULOUS", "(C) 1989 BULLFROG PRODUCTIONS", "PUBLISHED BY ELECTRONIC ARTS",
     "PROGRAMMING AND DESIGN BY", "PETER MOLYNEUX", "AND GLENN CORPES", "TECHNICAL HELP FROM",
@@ -404,6 +408,26 @@ static void launch_intro_end(void)
     launch_load_begin();
 }
 
+/* SUB_1D1A asm:2288-2343: the next LAB_1F9E line, centred, into a strip:
+ * plane 0 preset to $ff, then font.dat (LAB_CE0C) bytes 0..4 per glyph
+ * row into planes 0..4; the pointer wraps at the $ff end marker. */
+static void launch_strip_text(int slot)
+{
+    uint8_t (*strip)[320] = launch.strip[slot];
+    const char *text = launch_credits[launch.credit];
+    int length = (int)strlen(text), left = (40 - length) >> 1;
+    memset(strip[0], 0xff, sizeof strip[0]);
+    memset(strip[1], 0, 4 * sizeof strip[0]);
+    for (int index = 0; index < length && launch_font_loaded; ++index) {
+        int glyph = ((unsigned char)text[index] - 0x20) * 40;
+        if (glyph < 0 || glyph + 40 > (int)sizeof launch_font || left + index >= 40) continue;
+        for (int row = 0; row < 8; ++row)
+            for (int plane = 0; plane < 5; ++plane)
+                strip[plane][row * 40 + left + index] = launch_font[glyph + row * 5 + plane];
+    }
+    if (++launch.credit >= LAUNCH_CREDIT_LINES) launch.credit = 0;
+}
+
 /* One vertical blank of SUB_41C's loop. */
 static int launch_step(void)
 {
@@ -430,12 +454,27 @@ static int launch_step(void)
         /* fall through */
     case LAUNCH_RISE:                              /* LAB_F9A asm:1343-1427 */
         if (sub_110a(18)) break;
-        launch.state = LAUNCH_CREDITS; launch.frame = 0;   /* SUB_E40 returns 0: SUB_714 */
-        break;
-    case LAUNCH_CREDITS:
-        if (launch.frame >= LAUNCH_LINE_FRAMES) {
-            launch.frame = 0;
-            if (++launch.credit >= LAUNCH_CREDIT_LINES) { launch_intro_end(); return LAUNCH_RUN; }
+        /* SUB_E40 returns 0 without a frame: SUB_714 calls SUB_536
+         * (asm:449-585), whose 16-drop loop shows one frame per SUB_110A
+         * including the last; its SUB_50B2 blocks are not drawn. */
+        launch.state = LAUNCH_SCRIPT; launch.frame = 0; launch.script_done = 0;
+        launch.strip_count[0] = 0x4b; launch.strip_count[1] = LAUNCH_STRIP_TOP;
+        memset(launch.strip, 0, sizeof launch.strip);
+        sub_10a2(16);
+        /* fall through */
+    case LAUNCH_SCRIPT:
+        if (!launch.script_done) { launch.script_done = !sub_110a(16); return LAUNCH_RUN; }   /* no latch test */
+        launch.state = LAUNCH_CREDITS; launch.frame = 0;
+        /* fall through */
+    case LAUNCH_CREDITS:                           /* SUB_714 LAB_730 asm:590-648, endless */
+        for (int slot = 0; slot < 2; ++slot) {
+            int16_t count = launch.strip_count[slot], fade = count;
+            if (count == LAUNCH_STRIP_TOP) launch_strip_text(slot);
+            if (fade > 25) fade = (int16_t)(LAUNCH_STRIP_TOP - fade);
+            if (fade < 0) fade = 0;
+            launch.strip_y[slot] = count; launch.strip_fade[slot] = fade;
+            if (--count < 0) count = LAUNCH_STRIP_TOP;
+            launch.strip_count[slot] = count;
         }
         break;
     }
@@ -443,28 +482,6 @@ static int launch_step(void)
      * 1313-1315, 1418-1420, 605-607); the click only ends the intro. */
     if (launch.state != LAUNCH_LOAD && !launch.button) launch_intro_end();
     return LAUNCH_RUN;
-}
-
-/* SUB_1D1A asm:2286-2339: one centred 8x8 line, plane 0 preset to $ff,
- * glyph bytes 0..4 into planes 0..4. Port: plane 4 is dropped on the
- * 4-plane demo palette and the line sits at the bottom of the screen. */
-static void launch_credit_line(uint8_t *pixels, const char *text, int top)
-{
-    int length = (int)strlen(text), left = (40 - length) / 2;
-    for (int row = 0; row < 8; ++row)
-        for (int x = 0; x < 320; ++x) pixels[(top + row) * 320 + x] = 1;
-    if (!launch_font_loaded) return;
-    for (int index = 0; index < length && left + index < 40; ++index) {
-        unsigned c = (unsigned char)text[index];
-        if (c < 0x20 || (c - 0x20) * 40 + 40 > sizeof launch_font) continue;
-        const uint8_t *glyph = launch_font + (c - 0x20) * 40;
-        for (int row = 0; row < 8; ++row, glyph += 5)
-            for (int bit = 0; bit < 8; ++bit) {
-                int colour = 0;
-                for (int plane = 0; plane < 4; ++plane) colour |= ((glyph[plane] >> (7 - bit)) & 1) << plane;
-                pixels[(top + row) * 320 + (left + index) * 8 + bit] = (uint8_t)colour;
-            }
-    }
 }
 
 /* SUB_1C12 asm:2200-2284 with LAB_7226 = $80 (scale 1, asm:1534): row r,
@@ -482,21 +499,75 @@ static void launch_blocks(uint8_t *pixels, const int16_t *drop)
         }
 }
 
+/* SUB_1802 asm:1866-1940: glyph g at (x, y), 32 rows (200 - y + 1 below
+ * $a8); a set mask bit keeps the background, the planes are ORed in. */
+static void launch_glyph(uint8_t *pixels, int x, int y, int g)
+{
+    if (y < 0) return;
+    int rows = y > 0xa8 ? 0xc8 - y + 1 : 32;
+    if (y > 0xa8 && 0xc8 - y <= 0) return;
+    for (int row = 0; row < rows && row < 32 && y + row < 200; ++row) {
+        const uint16_t *words = intro_title_glyphs[g][row];
+        for (int bit = 0; bit < 16 && x + bit < 320; ++bit) {
+            int shift = 15 - bit, colour = 0;
+            for (int plane = 0; plane < 4; ++plane) colour |= ((words[plane + 1] >> shift) & 1) << plane;
+            uint8_t *pixel = &pixels[(y + row) * 320 + x + bit];
+            *pixel = (uint8_t)(((words[0] >> shift) & 1 ? *pixel : 0) | colour);
+        }
+    }
+}
+
+/* SUB_E40 asm:1245-1305 (falling, top = $a8 - drop) and asm:1350-1410
+ * (rising, top = drop + 8): banner 5/6x8/7 at $50..$e0 over drops 0..9,
+ * then the letters of $6e98 at $60 + 16i over drops 0..7. */
+static void launch_title(uint8_t *pixels, int rising)
+{
+    for (int i = 0; i < 10; ++i)
+        launch_glyph(pixels, 0x50 + 16 * i, rising ? launch.drop[i] + 8 : 0xa8 - launch.drop[i],
+                     i == 0 ? 5 : i == 9 ? 7 : 6);
+    for (int i = 0; i < 8; ++i)
+        launch_glyph(pixels, 0x60 + 16 * i, rising ? launch.drop[i] + 8 : 0xa8 - launch.drop[i],
+                     intro_title_word[i]);
+}
+
+/* SUB_5026 asm:3548-3590: a strip's 160 words onto rows y..y+7; the keep
+ * mask is plane 0 ORed with LAB_1F62 words fade+1, fade+2, fade cycling. */
+static void launch_strip(uint8_t *pixels, int slot)
+{
+    const uint8_t (*strip)[320] = launch.strip[slot];
+    int y = launch.strip_y[slot], fade = launch.strip_fade[slot];
+    for (int word = 0; word < 160; ++word) {
+        int row = word / 20, column = word % 20;
+        if (y + row >= 200) break;
+        uint16_t keep = intro_fade_mask[fade + (word % 3 == 2 ? 0 : word % 3 + 1)];
+        keep |= (uint16_t)(strip[0][word * 2] << 8 | strip[0][word * 2 + 1]);
+        for (int bit = 0; bit < 16; ++bit) {
+            if ((keep >> (15 - bit)) & 1) continue;
+            int byte = word * 2 + bit / 8, shift = 7 - bit % 8, colour = 0;
+            for (int plane = 0; plane < 4; ++plane) colour |= ((strip[plane + 1][byte] >> shift) & 1) << plane;
+            pixels[(y + row) * 320 + column * 16 + bit] = (uint8_t)colour;
+        }
+    }
+}
+
+/* One composed frame: the SUB_58CA background copy plus this frame's drawing. */
+static void launch_compose(uint8_t *pixels)
+{
+    if (launch.state == LAUNCH_LOAD) { memcpy(pixels, launch_load_pixels, sizeof launch_load_pixels); return; }
+    memcpy(pixels, launch_demo_pixels, sizeof launch_demo_pixels);
+    launch_blocks(pixels, launch.state == LAUNCH_BLOCKS ? launch.drop : launch.settled);
+    if (launch.state == LAUNCH_TITLE || launch.state == LAUNCH_RISE) launch_title(pixels, launch.state == LAUNCH_RISE);
+    if (launch.state == LAUNCH_CREDITS)
+        for (int slot = 0; slot < 2; ++slot) launch_strip(pixels, slot);
+}
+
 static void launch_render(void)
 {
     static uint8_t pixels[320 * 200];
     const uint16_t *palette = graphics_palette;
     int colours = 16;
-    if (launch.state == LAUNCH_LOAD) {
-        memcpy(pixels, launch_load_pixels, sizeof pixels);
-        palette = launch_load_palette; colours = 32;
-    } else {
-        memcpy(pixels, launch_demo_pixels, sizeof pixels);
-        launch_blocks(pixels, launch.state == LAUNCH_BLOCKS ? launch.drop : launch.settled);
-        /* SUB_1802 title letters come from LAB_5A0C inside the launcher
-         * binary (asm:1866-1910), which is not extracted: not drawn. */
-        if (launch.state == LAUNCH_CREDITS) launch_credit_line(pixels, launch_credits[launch.credit], 192);
-    }
+    if (launch.state == LAUNCH_LOAD) { palette = launch_load_palette; colours = 32; }
+    launch_compose(pixels);
     for (int i = 0; i < colours; ++i) amiga_set_color(screen, i, palette[i]);
     for (int y = 0; y < screen->height; ++y)
         for (int x = 0; x < screen->width; ++x)

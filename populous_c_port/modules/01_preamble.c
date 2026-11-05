@@ -209,6 +209,12 @@ static void core_draw_requester(void);
 /* _show_world state, see core_world_open. */
 enum { CORE_WORLD_START, CORE_WORLD_OPTIONS, CORE_WORLD_WON };
 static struct { int origin, shown, entry, error, level, length, blink; } core_world;
+/* An open _do_message(strInsertDisk) over the world or file requester. */
+enum { CORE_DISK_NONE, CORE_DISK_WORLD, CORE_DISK_SAVE };
+static int core_disk_message;
+static FILE *core_level_dat_open(void);
+static void core_disk_click(void);
+static void core_draw_disk_message(void);
 static uint8_t core_world_ok[46], core_world_cancel[46];
 /* _save_load's file requester (CORE_REQ_FILE), see core_file_open. The
  * _get_a_dir listing (32-byte names) was at _w_screen; 256 here. */
@@ -223,6 +229,7 @@ static void core_world_open(int origin);
 static void core_world_key(int key);
 static void core_world_layout(int draw);
 static void core_world_click(void);
+static void core_world_evaluate(void);
 static void core_draw_world(void);
 static void core_end_button_layout(int draw);
 static int core_lord_open(int old_level, int level, int finished);
@@ -253,6 +260,10 @@ static void _do_flood(void);
 static void _do_war(void);
 static void _do_funny(void);
 static void _do_place_funny(int16_t a);
+static void core_place_funny(int type, int edge);
+static void core_do_funny(void);
+static void core_zero_funny(int slot);
+static void core_flash_icon(int base, int a, int b);
 static void _make_woods_rocks(void);
 static void _devil_effect(void);
 static void _do_computer_effect(void);

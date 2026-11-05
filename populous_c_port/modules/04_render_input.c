@@ -293,11 +293,14 @@ static int core_toolbar(int sx, int sy, int left, int post)
     int c = sx/2 + sy - 32, r = sy - sx/2 + 32;
     if (sy >= 200) return 0;
     int owner_ok = player >= 0 && player <= 1;
-    uint8_t *mailbox = owner_ok ? stats_bytes(player) : NULL;
+    uint8_t *mailbox = owner_ok ? A4_DISP(0x82b6 + player*46) : NULL;
     post = post && owner_ok;
     if (c > 0x112) {
         /* System icons asm:1700-1829: options, game options, pause, sound. */
         int icon = (c-0x110)/16, line = (r-0x20)/16;
+        /* d_screen flashes asm:1717-1727,1783-1793,1810-1818; sound icons
+         * toggle _back_scr instead (asm:1733-1781), pause none. */
+        if ((icon == 0 && line == 0) || (icon == 1 && line == 1) || (icon == 2 && line == 2)) core_flash_icon(0x17e4,icon,line);
         if (icon == 0 && line == 0) { if (post) { mailbox[0] = 14; mailbox[1] = (uint8_t)left; mailbox[2] = 7; } }
         /* asm:1744-1781: switching on also stops all four channels. */
         else if (icon == 0 && line == 3) { if ((music_off = !music_off)) core_kill_effect(0,4); }
@@ -305,7 +308,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else if (icon == 1 && line == 1) { if (post) { mailbox[0] = 14; mailbox[2] = 8; } }
         /* _do_action y=6 asm:18591-18608. The port's pause also stops the
          * mailbox consumer, so this icon toggles directly rather than posting. */
-        else if (icon == 1 && line == 3) { pause = !pause; toggle = 0; }
+        else if (icon == 1 && line == 3) { pause = !pause; A4_WORD(0x9a1a) = 0; }
         else if (icon == 2 && line == 2) { if (post) { mailbox[0] = 14; mailbox[2] = 2; } }
         else return 0;
         return 1;
@@ -314,7 +317,9 @@ static int core_toolbar(int sx, int sy, int left, int post)
     int icon = (c-0x60)/16, line = (r-0x90)/16;
     if (icon < 0 || icon > 8) return 0;
     if (icon >= 3 && icon <= 5 && line <= 2) {
-        /* Scroll pad asm:1838-1902; its centre recentres on view_who. */
+        /* Scroll pad asm:1838-1902; its centre recentres on view_who. All
+         * nine cells flash first (asm:1842-1851). */
+        core_flash_icon(0x12c0,icon,line);
         if (icon == 4 && line == 1) {
             if (view_who > 0 && view_who <= no_peeps) core_view_cell(peep_word(view_who-1,8));
         } else {
@@ -323,6 +328,9 @@ static int core_toolbar(int sx, int sy, int left, int post)
         }
     } else if (icon <= 2) {
         if (line > 2) return 0;
+        /* Flashes asm:1930-1940,1952-1975,1984-2017: all but icon 0 lines
+         * 1,2 and the papal icon under _paint_map; swamp flashes even unarmed. */
+        if (!(icon == 0 && line) && !(icon == 1 && line == 2) && !(icon == 1 && line == 0 && paint_map)) core_flash_icon(0x12c0,icon,line);
         if (!post) return 1;
         if (icon == 0 && line == 0) { mailbox[0] = 14; mailbox[2] = 4; }
         else if (icon == 1 && line == 0) { if (!paint_map) { mailbox[0] = 14; mailbox[2] = 3; } }
@@ -330,7 +338,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else if (icon == 2 && line == 0) { mailbox[0] = 3; mailbox[1] = (uint8_t)xoff; mailbox[2] = (uint8_t)yoff; }
         else if (icon == 2 && line == 1) { mailbox[0] = 14; mailbox[2] = 5; }
         else if (icon == 2 && line == 2) {
-            if ((core_mana(player) > (int32_t)mana_swamp_cost && (stats_power_mask(player)&0x10)) || paint_map)
+            if ((core_mana(player) > (int32_t)A4_LONG(0x8496) && (A4_WORD(0x82c4+player*46)&0x10)) || paint_map)
                 { core_swamp_selected = 1; core_set_pointer(); }
         }
     } else if (icon <= 5) {
@@ -345,6 +353,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
         core_tool = line == 0 ? 2 : line == 2; core_swamp_selected = 0; core_set_pointer();
     } else if (icon == 7) {
         /* asm:2134-2228: left views the leader (else the magnet), right the magnet. */
+        if (line <= 1) core_flash_icon(0x12c0,icon,line);   /* asm:2134-2142,2226-2235 */
         if (line == 0) {
             if (!owner_ok) return 1;
             int16_t leader = core_leader(player);
@@ -356,6 +365,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else return 0;
     } else {
         if (line != 0) return 0;
+        core_flash_icon(0x12c0,icon,line);   /* asm:2296-2305 */
         core_next_person(left);
     }
     /* Common tail asm:2425-2440. */
@@ -365,7 +375,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
     if (yoff > 56) yoff = 56;
     return 1;
 }
-static void _do_place_funny(int16_t a) { (void)a; }   /* matches the chunk call */
+static void _do_place_funny(int16_t a) { core_place_funny(a,0); }
 
 /* ___ shims (SDL / stdlib backed) */
 static void *amiga_alloc_mem(uint32_t s,uint32_t a){(void)a;return calloc(1,s);}
@@ -426,6 +436,7 @@ static void game_handle_event(const SDL_Event *event)
     if (event->type == SDL_KEYDOWN) {
         SDL_Keycode key = event->key.keysym.sym;
         if (key == SDLK_ESCAPE) { prg_quit = 1; return; }
+        if (core_req.kind && core_disk_message) return;   /* _do_message reads only the mouse */
         /* _show_world's _get_name reads ___keyboard (_asckey). */
         if (core_req.kind == CORE_REQ_WORLD) {
             if (key == SDLK_RETURN || key == SDLK_KP_ENTER) core_world_key(13);
@@ -503,6 +514,7 @@ static void game_handle_event(const SDL_Event *event)
             if (event->button.button != SDL_BUTTON_LEFT) return;
             mousex = (int16_t)sx; mousey = (int16_t)sy;
             if (core_lord.shown) core_lord_leave();   /* _left_button cleared, asm:14503 loop */
+            else if (core_req.kind && core_disk_message) core_disk_click();
             else if (core_req.kind) core_requester_click();
             else { core_end_button_layout(0); if (core_check_cancel(core_end_button,NULL)) core_leave_end(); }
             return;

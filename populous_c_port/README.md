@@ -56,8 +56,8 @@ ordinary `_where_do_i_go`/magnet navigation, settlement growth/mana/splitting,
 ordinary `_do_battle`/`_battle_over`, joining, water loss and vertex sculpting.
 Source labels and assembly ranges appear beside each implementation. The
 opponent uses the same settlement/exploration rules, not timer-created units.
-Original computer power/auto-level logic and exact Amiga movement
-interpolation remain unsupported. The eight positional scenarios remain flat
+Original computer power/auto-level logic remains unsupported; sub-cell
+movement interpolation follows `_move_sprite` (see the renderer section). The eight positional scenarios remain flat
 synthetic plots; `--level` instead uses the assembly-derived original generator.
 Merge helpers cap population at 32000; general mana helpers clamp to -250..1999999.
 Raw terrain commands, battle casualties and single-winner completion, ordinary
@@ -94,9 +94,9 @@ in that update; ordinary town processing resumes on the following update.
 Single-winner victories produce these celebration states. The renderer uses
 the original celebration and remnant sprites, plus headed walker/wait/water
 variants for their canonical states. Heading presence reads all four host bytes,
-not the original pointer's high halfword. Sprite selection does not mutate A4
-or add interpolation; mixed-state and full movement parity remain separate
-work. `--special-sprites` compares literal frame/anchor cases
+not the original pointer's high halfword. Sprite selection writes only the render-owned `_sprite`/`_no_sprites`/
+`_ok_to_build`/`_sound_effect` block; walkers interpolate and mixed flags follow
+the original `_move_sprite` dispatch (see the renderer section). `--special-sprites` compares literal frame/anchor cases
 against an independent pixel-mask oracle, including clipping, hidden residents,
 non-flat terrain and an exact 143-frame sheet. Full normal/sanitized suites,
 original-data matches and all 495 starts passed with unchanged test time limits.
@@ -437,9 +437,20 @@ Original sound effects, the heartbeat and the in-game `gmusic1` music play
 partially ported (see "Game end, score and conquest"). The original toolbar
 is clickable (see Controls); its options and game-options icons open the
 original requesters (see "Requesters and options"); the message requester is
-not ported. Selected tendency, mode, music, FX
-and pause icons are highlighted with the original `_toggle_icon` diamond XOR;
-the short press flashes on the power and view icons are not reproduced.
+serial-only in the original and therefore inert (see Controls). Selected
+tendency, mode, music, FX and pause icons are highlighted with the original
+`_toggle_icon` diamond XOR. The short press flashes are reproduced too:
+`_zoom_map` XORs the clicked icon into `_d_screen`, the frame already shown
+(after `___swap_screens`, asm:762), and the next `_clr_wsc` (asm:611) rebuilds
+it from `_back_scr`, so a flash lasts exactly one frame. The port queues it on
+the click and XORs it into the next frame only. Flashing icons: scroll pad (all
+nine, asm:1842-1851), flood (icon 0 line 0), armageddon (icon 1 line 0,
+unless `_paint_map`) and volcano (icon 1 line 1), quake, knight and swamp
+(icon 2 lines 0..2, swamp also when not armed), ankh and crossed swords
+(asm:2134-2235), walker (asm:2296-2305) and the options, game-options and
+message system icons (asm:1717-1818). Tendency, mode, music, FX and pause have
+no flash (state icons). The original repeats `_zoom_map` every frame while the
+button is held; the port acts once per press.
 
 ## Local original data (required to play)
 
@@ -565,6 +576,12 @@ non-symlink files, exact lengths (143..147 complete small-sprite frames), indice
 with a diagnostic rather than silently falling back to placeholder art. LAND
 rules continue to come from `POPULOUS_DATA_DIR` through the existing parser.
 
+The matching 32x32 sheet `pixels/spr_32N.dat.indices.u8`/`.keep.u8` (13 frames,
+the `$2080`-byte Read of `_read_sprites`, asm:16426-16449) is optional, as the
+original's `Open` failure simply skips the Read. When present it must be 1..13
+complete frames with a keep mask of equal length, otherwise loading fails. The
+supplied disk has only `spr_320.dat`.
+
 `POPULOUS_ASSET_DIR` names the export root, not `pixels/` or `graphics/`. If unset,
 make embeds the absolute local `binaries/populous-extracted` path; the executable
 can therefore start from the repo root or port directory. If `POPULOUS_DATA_DIR`
@@ -587,10 +604,32 @@ frames 77/76. Mouse picking uses the corresponding 9x9 vertex lattice,
 vertex (frontmost on ties). This is bounded geometric picking, not an exact
 translation of every original `_sculpt` screen-region heuristic.
 
-Walkers use direction frames 0,2,..14 plus owner and animation phase; settlements
-use 64+phase+owner*2. Frames animate from simulation ticks and stop when paused.
-The canonical core commits movement destinations immediately, so sprites use
-that authoritative cell without the original sub-cell movement interpolation.
+Occupants are drawn by a port of `_move_sprite` (asm:15951-16258) with its
+full flag dispatch (asm:15996-16016): exactly 2 walks, exactly 1 is a town
+(frame 64+`_toggle`+2*owner), bit 4 walks with the water frames
+(93+turn&3, +16 heading, +4 owner), bits 5/6 wait (+$C +24 heading +2 owner),
+bit 3 is battle (+$C; sound bit 3), bit 7 the remnant (105+turn&3; sound bit 7),
+anything else the +$C default (+32 heading +4 owner). Mixed flag bytes therefore
+take the first matching branch exactly as in the original (e.g. 0x18/0xff
+walk, 0x0c battles, 0x28 waits, 0x86 is a remnant). Walkers use direction frames
+0,2,..14 +16 owner +32 heading +`_toggle`.
+
+Sub-cell movement interpolation (asm:16061-16191): the core keeps the original
+layout (map_who names the departure cell, +8 is the destination, +$A the step,
++$C counts 0..7), and the walker is drawn from the map_who cell at left+8,
+top-8 (+4 off flat block 15), moved by the per-direction (dx,dy) and the
+altitude difference times +$C; the second half of moves leaving the 8x8 view
+is hidden and +$C >= 8 is the `_debug` exit (not drawn). Every entry is
+queued in `_sprite` with its frame (SUB_49F72, asm:16225-16254) plus the
+`view_who` marker (small frame `$44` at x+8), and `_ok_to_build` accumulates
+the original per-occupant bits (asm:15965-15982; cleared with `_no_sprites`).
+Host deviations: heading presence tests all four host reference bytes (the
+original TST.W/TST.L a pointer); dead, foreign or out-of-pool slots and a
+map_who cell that is neither +8 nor (walking) +8-+$A are skipped; frames past
+the 143-frame sheet are queued but not drawn; invalid battle frames keep the
+138/139 fallback. `_ok_to_build` is computed but `_sculpt` does not consume it
+yet. The synthetic start (`_place_first_people`) leaves +$C at 255, so new
+walkers appear after their first `_set_frame` tick.
 Battle updates now advance the original three-frame cycles: 70-72 for ordinary
 combat, 130-132 or 134-136 for one headed participant (by its owner), and 138-140
 for two. Both frame calls follow casualties and precede completion; exact-zero
@@ -787,22 +826,36 @@ the title music and runs, one step per 50 Hz frame:
    land0 blocks of the 10x10 `LAB_640C` landscape (heights `<< 3`, `SUB_1BE8`)
    fall from 232..244 lines above and bounce into place (`SUB_1C12`
    asm:2200-2284 isometric positions, `SUB_19EE` clipping).
-2. `SUB_E40` (asm:1234-1427): 18 title letters fall, then rise to the top.
-3. `SUB_714`: the credits list `LAB_1DCE` (23 lines, `SUB_1D1A` 8x8 font.dat
-   rendering).
+2. `SUB_E40` (asm:1234-1427): the POPULOUS title falls and then rises. `SUB_1802`
+   (asm:1866-1940) masks eight 16x32 four-plane glyphs from `LAB_5A0C`
+   (asm:4270-4662, copied into `intro_data.c` with each listing address
+   checked) onto the frame. The glyphs are banner pieces 5/6/7 at x = $50..$e0
+   (drops 0..9) and the letters `$6e98` = P O P U L O U S at x = $60 + 16i
+   (drops 0..7). Top is $a8 - drop while falling and drop + 8 while rising
+   (drops start at $a0 and use speed 0..7).
+3. `SUB_714` (asm:586-1233): `SUB_536` first runs a 16-drop `SUB_110A` loop
+   (one frame per step, including the final one, and no click test). After
+   that the endless script loop starts. Two text strips (`LAB_1FA2`/`LAB_25E2`,
+   counters 75 and 50) take the next `LAB_1DCE` line through `SUB_1D1A` when
+   their counter is 50. Each line is centred with `(40 - length) >> 1`, plane 0
+   is preset to $ff, and font.dat bytes 0..4 go to planes 0..4. `SUB_5026`
+   (asm:3548-3590) draws the strip at row = counter. The fade step is the
+   counter, or 50 minus the counter above 25. The keep mask is plane 0 ORed
+   with the `LAB_1F62` words fade+1, fade+2, fade, cycled per word. Strip
+   planes 1..4 become screen planes 0..3. Counters fall to 0 and then reset to
+   50. Each slot shows a new line every 51 frames, the two slots are 25 frames
+   apart, and the 23 lines wrap at the $ff marker.
 
-After the credits `load.pic` returns (`SUB_41C` loops). A fresh left click in
-any phase ends the intro at once (asm:1553-1555 and the other loops); no key
-advances it in the original. With the default timer the phases take 59, 58+48
-and 23 x 50 frames.
+The intro only ends on a fresh left click (asm:1553-1555 and the other loops),
+which returns to `load.pic` (`SUB_41C` loops). With the default timer the
+phases take 59, 58+48 and 58 frames before the script.
 
-Deviations: the title letters (`SUB_1802`) come from `LAB_5A0C` inside the
-launcher executable, which is not extracted, so phase 2 keeps its timing but
-draws nothing; `SUB_714`'s script (byte code `LAB_1272`..`LAB_15F6`, the upper
-block layer, copper strip and scrolling) is not ported: each credit line is
-shown for 50 frames at the bottom of the screen and the intro ends after one
-pass instead of following the script; `SUB_1D1A`'s fifth plane is dropped on
-the 16-colour demo palette. Palette fades are not reproduced.
+Deviations: `SUB_714`'s block script is not ported. That covers the byte code
+`LAB_1272`..`LAB_15F6`, the upper block layer drawn by `SUB_50B2`/`SUB_1CBC`/
+`SUB_3F92`, and the falling blocks in `SUB_536`. The port shows the settled
+landscape under the credit strips instead. Palette fades are not reproduced.
+`SUB_5792`'s keyboard flag (`LAB_7158`), which also ends the original's loops,
+is not modelled.
 
 Title music: `SUB_2C36` (asm:2418-2471) reads `popsam` (one 0x1c01e-byte Read; the file has that size),
 `SUB_2F9C` (asm:2645-2698) starts song 0 and `LAB_3060` (asm:2706-2896) runs per
@@ -845,9 +898,9 @@ unsigned counter exceeds 14 (nine waiting updates after blocked entry). A retry
 does not incur a second walking loss. Seeded `0x20`/`0x60` wait states share this
 consumer, but the original collision-handshake producer (setting another peep's
 `0x20`, frame 101 and counter 0) and delayed movement occupancy remain unported.
-This is bounded state support, not complete original movement timing. The C loop
+This is bounded state support, not complete original movement timing. The C simulation loop
 retains battle precedence over unsupported mixed battle/wait flags so a partner
-index cannot become a retry counter. Waiting artwork is not yet original-faithful.
+index cannot become a retry counter (the renderer follows the original dispatch). Waiting artwork is not yet original-faithful.
 Ordinary `_join_battle` adds the newcomer's population (capped at 32000), stronger
 weapon byte, leader/view references and nonzero four-byte metadata to its party,
 then consumes the newcomer. Battle frames and partner links are preserved; joining
@@ -893,6 +946,42 @@ war, pause and permission gates and costs nothing (asm:8297); the 50 score is
 still awarded. The toolbar icon and `s` arm targeting in editor mode
 regardless of mana and permission (asm:2031). Computer swamp selection remains
 a TODO.
+
+## Funny objects and 32x32 sprites
+
+The 32x32 sheet has exactly one user in `populous.prg`: `_draw_s_32`
+(asm:19365-19504), called only from the main-loop sprite list (asm:630-641) for
+entries whose word +6 (the `_map_who` byte) is at least `$D1`, at (x-8, y-16)
+with frame +4. Such bytes come only from the two "funny" records, `_peeps`
+slots `$D1`/`$D2` (A4 0xae1c). No other screen (lord, world, requesters,
+closeups, knight, flags) uses the sheet; the knight and shield use 16x16 frames.
+
+- `_do_place_funny(type)` (asm:8862-9013) fills the first free funny slot from
+  `_funny` (asm:24161-24171): type 0 steps -64 with frames 0..4, type 1 steps
+  -65 with frames 5..8, type 2 steps +65 with frames 9..12; type 3 places
+  nothing. It is called at game turn 4096 with `_start_seed&3` (asm:752-760)
+  and once per game (`_funny_done`, asm:3996-4006, cleared at asm:1057) as
+  type 1 when a growing town finds all 208 ordinary slots in use.
+- `_do_funny` (asm:8630-8858) runs before `_move_peeps`: the frame bounces each
+  turn; every 8th turn the object steps and marks its cell and two side cells:
+  type 0 sets bk2 50/51/52 on land, type 1 turns blocks 15/31/32/66 into 53,
+  type 2 sets blocks 47/48/49 on land. Any occupant there is removed with the
+  `_zero_population` rules; leaving the map ends the object.
+- `_move_sprite` (asm:16061-16197) positions it like a walker (left+8,
+  top-8, +4 off flat ground) and interpolates by the step counter: altitude
+  difference and per-direction (dx,dy) times the counter, hiding the second
+  half of moves that leave the 8x8 view. The `_sprite` entry is queued as in
+  the original, including the `view_who` marker with frame `$44`.
+
+Deviations, all documented in the code: `_do_place_funny` reads a second,
+unpushed argument at `($A,A5)` that selects the start edge (main loop: the
+saved D4 high word; `_move_peeps`: an unused local), so the port passes 0
+(bottom row, random column). Edge-1 cells past the map, which the original
+writes outside `_map_who`, are not written. Frame `$44` lies beyond the
+13-frame sheet (the original would read past `_sprite_data_32`) and is not
+drawn. Without a loaded sheet the objects still act and are queued, but nothing
+is drawn. The asm checks turn 4096 every frame, also while paused; the port
+checks once per simulation tick.
 
 ## Editor mode (`_paint_map`)
 
@@ -1109,7 +1198,11 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
   - Shield (top right, `_show_the_shield` asm:2769-3147): for the viewed figure
     the walker/town/battle sprite with its population, capacity or strength bars,
     plus the good/bad population bars. A dead figure clears the view. The owner
-    flag and weapon icons are not drawn: the asset export has no `_icon_data`.
+    flag (`_icon_data` icon = owner byte, at word 0x11, line 4) and the weapon
+    icon (first d in 1..10 with `_weapons_order[d]` == record byte +3 gives icon
+    d+1 at word 0x12; none if no slot matches) are drawn as in asm:2790-2826.
+    Icons 0..11 are transcribed from the `_icon_data` DC.L block
+    (asm:21656-21762), which the asset export does not contain.
   - Ankh: left views the leader (else the magnet), right the magnet.
   - Crossed swords: cycle through battles. Walker icon: cycle own walkers;
     right picks ordinary walkers, left walkers with a heading. The original
@@ -1120,7 +1213,11 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
   switching on stops all channels, asm:1744-1781). Options, game
   options and the message icon post their original `_do_action` codes 7/8/2;
   the consumer opens `_options` (7) and `_game_options` (8) at the next tick,
-  the message requester (2) stays inert. While a requester is open the game
+  the message requester (2) does nothing: `_do_action` y=2 starts with
+  `TST _serial_off` (asm:18405) and returns in single play, which is the only
+  mode the port has (`_serial_off` stays 1). `_get_a_message` (asm:11143-11183),
+  the "waiting for" requester and the serial exchange (asm:18418-18535) are
+  two-player only and not ported. While a requester is open the game
   is paused, keys other than Escape are ignored and left clicks go to it.
 - Left/right mouse: raise/lower the selected vertex. Neighbouring vertices follow
   the original maximum slope of one, height 0..8. Cost is 10 plus 4 per changed
@@ -1190,7 +1287,10 @@ Continuing (see Controls):
 Each start re-derives `_level_number`/`_in_conquest` from the selected world and
 clears `_score`. The box is the original `_requester(d_screen,16,16,0x120,
 0xa6,button)` frame with its single button (asm:14340-14385), with only the
-original rows. Not ported: the end screen in the diagnostic view.
+original rows. In the diagnostic view the same box, rows and button are drawn
+over the top-down map (only the box's own pixels of the 200-line `d_screen`;
+the diagnostic bars below stay), followed by the drawn pointer; the button
+and keys continue exactly as in the original view.
 
 ### Lord screen
 
@@ -1259,9 +1359,22 @@ Opened from `--conquest`, game options CONQUEST (asm:13221-13239, also sets
 input needed); Escape has no meaning in `_get_name` and keeps the port's quit.
 Port deviations: the cursor (0x83) blinks every 10 frame ticks instead of 36
 loop passes, and Backspace clears the deleted cell at once instead of at the
-next blink; a missing `level.dat` stays in the entry instead of the "insert
-disk" message; worlds above 2470 (no record) cannot be started; START/conquest
+next blink; worlds above 2470 (no record) cannot be started; START/conquest
 screens clear the screen, the game-options one draws over the setup screen.
+
+### Missing `level.dat`: "insert disk"
+
+When `_show_world` cannot open `level.dat` (diskerr_47222, asm:12369-12375) it
+calls `_do_message(strInsertDisk,0)` (asm:11098-11141): `_requester(d_screen,
+0x28,0x3c,0x100,0x30,_end_ok,NULL)` with `INSERT THE ORIGINAL` /
+`POPULOUS DISK IN DF0:` (strInsertDisk asm:21250-21256) at 0x38,0x48, and
+waits for its single OK (`_check_cancel(_end_ok,NULL)`; there is no CANCEL,
+keys are ignored, Escape still quits the port). OK returns to LAB_47064
+without `_get_name`, so the name is evaluated again: the world lines appear
+once the file is there, otherwise the message repeats. The same message and
+retry loop follow a save (see "Save and load"). The port looks for
+`level.dat` in `POPULOUS_DATA_DIR`, else `<assets>/raw` (the original opens
+it in the current directory, i.e. the disk).
 
 ## Requesters and options
 
@@ -1274,7 +1387,7 @@ the original and labelled with the original font; `_check_cancel`
 requester as a blocking loop inside `_do_action`; the port keeps the requester
 state, stops `game_tick` while one is open, routes left presses to it at the
 pointer (`_mousex`/`_mousey`) and draws it over every frame (original view
-only; in the diagnostic view it is open but not drawn). `_tempo` is cleared
+and, over the top-down map, the diagnostic view). `_tempo` is cleared
 when a requester opens rather than on every draw.
 
 - `_options` (`_do_action` y=7, asm:13617-13873; left button: your side, right:
@@ -1370,7 +1483,9 @@ state at once (a failed load still closes the setup, as `_save_load` returns 1).
 Saves go to a temporary file renamed into place, so a failed save leaves no
 partial file. A pointer that is not a `_peeps` record address (for example from
 another load address) is read as the peep itself, so `_get_heading` recomputes
-it, or 0 in `_stats`. The `level.dat` disk check after a save is dropped. The
+it, or 0 in `_stats`. After a successful save (`_saved` 1) `level.dat` is reopened until it
+exists (asm:10931-10944), showing the "insert disk" message (see below) after
+each failure; only then does the setup close. The
 port's own tool state is reset to the terrain tool; a synthetic demo start
 keeps its restart target. The listing holds at most 256 names.
 

@@ -118,6 +118,7 @@ typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
 
 /* --- View / input / turn --- */
 #define view_timer       A4_WORD(0xae60)
+#define funny_done       A4_WORD(0xae70)  /* once-per-game funny place flag */
 #define left_button      A4_WORD(0xae62)
 #define right_button     A4_WORD(0xae64)
 #define old_view_who     A4_WORD(0xae66)

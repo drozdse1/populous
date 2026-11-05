@@ -72,6 +72,33 @@ static void amiga_text(uint8_t *pixels, int x, int y, const char *text)
 
 /* _icon_data icons 12..23 (asm:21763-21927), the _requester tiles: per row
  * the plane 0..3 words, 16 rows. Other icons are not exported. */
+static const uint16_t core_shield_icons[12][64] = {
+    {0xffbe,0xff7f,0x0080,0x0000,0xff7e,0xfebf,0x0140,0x0000,0xfefe,0xfdbf,0x0240,0x0000,0xfebe,0xfd67,0x0298,0x0000,0xfd66,0xfe9f,0x0160,0x0000,0xff9e,0xfe7f,0x0180,0x0000,0xfe7e,0xf9ff,0x0600,0x0000,0xf97e,0xe6ff,0x1900,0x0000,
+     0xe77e,0xfeff,0x0100,0x0000,0xff7e,0xfeff,0x0100,0x0000,0xff7e,0xfeff,0x0100,0x0000,0xff7e,0xfeff,0x0100,0x0000,0xff7e,0xfeff,0x0100,0x0000,0xff7e,0xfeff,0x0100,0x0000,0xfffe,0xffff,0x0000,0x0000,0x0000,0xffff,0x0000,0x0000},
+    {0xfffe,0xffff,0x0000,0x0000,0xfffe,0xffff,0x0000,0x0000,0xfffe,0xffff,0x0000,0x0000,0xffff,0xffff,0x8001,0x0000,0xfffe,0xce73,0x4db2,0x300c,0xfffe,0xf00f,0x17e8,0x0810,0xdf3a,0xe007,0x1ff8,0x0000,0xbef8,0xc003,0x3ffc,0x0000,
+     0xb7e8,0xca53,0x318c,0x0000,0xdbd2,0xe007,0x1188,0x0420,0xe5a6,0xf19f,0x0a40,0x0000,0xe3e6,0xf40f,0x0bd0,0x0000,0xf42e,0xfbdf,0x0420,0x0000,0xfa1e,0xfdbf,0x0240,0x0000,0xfdbe,0xffff,0x0000,0x0000,0x0000,0xffff,0x0000,0x0000},
+    {0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,
+     0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x0000,0x7fff,0x7fff,0x8000},
+    {0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8180,0x0000,0x0000,0xffff,0x83e0,0x0200,0x0200,0xfdff,0x9ff8,0x00c0,0x00c0,0xff3f,0xbf9f,0x0de0,0x0de0,0xf21f,0xbdbf,0x02e0,0x02e0,0xfd1f,0x9f3f,0x0e7f,0x0e7f,0xf100,
+     0x9e1f,0x017f,0x017f,0xfe00,0x8f00,0x06bf,0x06bf,0xf900,0x8e00,0x01df,0x01df,0xfe00,0x87c0,0x0340,0x0340,0xfc80,0x8700,0x0000,0x0000,0xff3f,0x8000,0x0000,0x0000,0xfcff,0x8000,0x0000,0x0000,0xffff,0x0000,0x7fff,0x7fff,0x8000},
+    {0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x82c0,0x03a0,0x0020,0xfc1f,0x8540,0x0590,0x0210,0xf80f,0x8240,0x0b90,0x0410,0xf00f,0x8b60,0x0a90,0x0410,0xf00f,
+     0x8d60,0x0e90,0x0000,0xf00f,0x82c0,0x0d30,0x0810,0xf00f,0x8000,0x06e0,0x06a0,0xf81f,0x8000,0x0180,0x0180,0xfe7f,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x0000,0x7fff,0x7fff,0x8000},
+    {0x8010,0x0008,0x0008,0xfff7,0x8038,0x0004,0x0004,0xfffb,0x807c,0x0012,0x0012,0xffec,0x807c,0x000e,0x000e,0xfff0,0x80f0,0x003e,0x003e,0xffc0,0x81e8,0x00be,0x00be,0xff40,0x81f0,0x007c,0x007c,0xff81,0x81a0,0x00f8,0x00f8,0xff03,
+     0x8340,0x01e0,0x01e0,0xfe07,0x8780,0x01c0,0x01c0,0xfe0f,0x8700,0x0300,0x0300,0xfc3f,0x8e00,0x0600,0x0600,0xf8ff,0x8800,0x0400,0x0400,0xf9ff,0x9000,0x0800,0x0800,0xf3ff,0x8000,0x0000,0x0000,0xffff,0x0000,0x7fff,0x7fff,0x8000},
+    {0x8003,0x0001,0x0001,0xfffe,0x8006,0x0003,0x0003,0xfffc,0x800c,0x0006,0x0006,0xfff8,0x8018,0x000c,0x000c,0xfff1,0x8030,0x0018,0x0018,0xffe3,0x8060,0x0030,0x0030,0xffc7,0x80c0,0x0060,0x0060,0xff8f,0x8180,0x00c0,0x00c0,0xff1f,
+     0x8300,0x0180,0x0180,0xfe3f,0x8600,0x0300,0x0300,0xfc7f,0x8c00,0x0600,0x0600,0xf8ff,0x9800,0x0c00,0x0c00,0xf1ff,0xb000,0x3800,0x5800,0x83ff,0x5000,0x6000,0x8000,0x07ff,0x2000,0x4000,0x8000,0x0fff,0xc000,0x9fff,0x1fff,0x0000},
+    {0x9100,0x0080,0x1c80,0xe37f,0x9660,0x07e0,0x1800,0xe01f,0x9598,0x0678,0x1800,0xe007,0x9180,0x0640,0x1800,0xe003,0x9100,0x0080,0x1c80,0xe13f,0x9100,0x0080,0x1080,0xe13f,0x8100,0x0080,0x0080,0xf73f,0x8100,0x0080,0x0080,0xff3f,
+     0x8100,0x0080,0x0080,0xff3f,0x8100,0x0080,0x0080,0xff3f,0x8100,0x0080,0x0080,0xff3f,0x8100,0x0080,0x0080,0xff3f,0x8100,0x0080,0x0080,0xff3f,0x8100,0x0080,0x0080,0xff3f,0x8100,0x0080,0x0080,0xff3f,0x0000,0x7f3f,0x7f3f,0x8000},
+    {0x0007,0x6000,0x8000,0x1fff,0x4039,0x4007,0x8006,0x1ff8,0x40c1,0x603b,0xe03a,0x0fc4,0xa302,0x30c2,0x30c0,0xc73d,0x9002,0x1b02,0x1b00,0xe0fd,0x8804,0x0c04,0x0c00,0xf1fb,0x9404,0x0e04,0x0e00,0xf0fb,0x9204,0x0b04,0x0b00,0xf47b,
+     0xa168,0x1188,0x11e0,0xee77,0xa038,0x1048,0x10f0,0xefb7,0x8010,0x6030,0x20e0,0xdfcf,0x8030,0x6030,0x2040,0xdfcf,0x80c0,0x60c0,0x2000,0xdf3f,0x0700,0xc700,0x4000,0xb8ff,0x1800,0xf800,0x6000,0x87ff,0x6000,0xdfff,0x1fff,0x8000},
+    {0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x8000,0x0000,0x0000,0xffff,0x81c0,0x0030,0x0000,0xfe0f,0x8220,0x0118,0x0100,0xfc07,0x8410,0x020c,0x0200,0xf9c3,0x8808,0x0406,0x0400,0xf3e1,0x8804,0x0403,0x0400,0xf3f0,
+     0x8401,0x0000,0x0000,0xfbf8,0x8200,0x0000,0x0000,0xfdfc,0x8200,0x0100,0x0100,0xfcff,0x9400,0x4200,0x0200,0xa9ff,0x3800,0xc400,0x0400,0x03ff,0xe000,0x0800,0x0800,0x87ff,0xc000,0x0000,0x0000,0x07ff,0x4000,0x2fff,0x2fff,0x8000},
+    {0x8000,0x0000,0x0000,0xffff,0x8200,0x0200,0x0000,0xfdff,0x8400,0x0500,0x0100,0xfaff,0x9400,0x0480,0x0080,0xfb7f,0xb800,0x1840,0x1040,0xe7bf,0x9800,0x0820,0x0020,0xf7df,0x9808,0x0818,0x0018,0xf7e7,0x9ff4,0x105c,0x401c,0xafe3,
+     0x00a0,0x403f,0x80ff,0x00c0,0xd040,0x1fb4,0x0ff4,0xa043,0x9800,0x1818,0x1018,0xe7e7,0x9800,0x1820,0x1020,0xe7df,0xa800,0x3840,0x3040,0xc7bf,0x9400,0x1480,0x1080,0xeb7f,0x8400,0x0500,0x0100,0xfaff,0x0200,0x7fff,0x7dff,0x8000},
+    {0x8001,0x0001,0x0002,0xfffc,0x8002,0x0002,0x0004,0xfff8,0x8006,0x0005,0x0009,0xfff0,0x8008,0x000c,0x0010,0xffe1,0x8010,0x0018,0x0020,0xffc3,0x8020,0x0030,0x0040,0xff87,0x8040,0x0060,0x0080,0xff0f,0x9080,0x00c0,0x0100,0xee1f,
+     0xa100,0x0180,0x0200,0xcc3f,0xaa00,0x0300,0x0400,0xc07f,0x9400,0x0600,0x0000,0xe0ff,0x9a00,0x0000,0x0000,0xe1ff,0xa100,0x0000,0x0000,0xc07f,0xc000,0x0000,0x0000,0x84ff,0x8000,0x0000,0x0000,0x0fff,0x0000,0x1fff,0x1fff,0x0000},
+};
+
 static const uint16_t core_requester_icons[12][64] = {
     {0xffff,0x0000,0xffff,0x0000,0xc000,0x0000,0xffff,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xdc2b,0x1000,0xefff,0x0000,0xdfff,0x17ff,0xe800,0x0000,0xdfd4,0x102b,0xe800,0x0000,0xdfff,0x13ff,0xe800,0x0000,0xde00,0x13ff,0xe800,0x0000,
      0xde00,0x13ff,0xe8ff,0x0000,0xde00,0x13ff,0xe8ff,0x0000,0xd200,0x17ff,0xe8ff,0x0000,0xde00,0x13ff,0xe8ff,0x0000,0xd200,0x17ff,0xe8ff,0x0000,0xde00,0x13ff,0xe8ff,0x0000,0xd200,0x17ff,0xe8ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000},
@@ -103,8 +130,8 @@ static const uint16_t core_requester_icons[12][64] = {
  * words replace the screen words. */
 static void core_draw_icon(int x, int y, int icon)
 {
-    if (icon < 12 || icon > 23) return;
-    const uint16_t *data = core_requester_icons[icon-12];
+    if (icon < 0 || icon > 23) return;
+    const uint16_t *data = icon < 12 ? core_shield_icons[icon] : core_requester_icons[icon-12];
     for (int row = 0; row < 16; ++row) for (int bit = 0; bit < 16; ++bit) {
         int px = x*16 + bit, py = y + row, colour = 0;
         for (int plane = 0; plane < 4; ++plane) colour |= ((data[row*4+plane] >> (15-bit)) & 1) << plane;
@@ -833,8 +860,13 @@ static void core_file_click(void)
     snprintf(name + strlen(name), sizeof name - strlen(name), "%.19s", core_filename);
     if (core_file.save) {
         if (!core_save_game(name)) { core_file.error = 1; return; }   /* "ERROR IN SAVING" */
-        saved_flag = 1;   /* level.dat disk check is not needed here */
-    } else if (!core_load_game(name)) POP_LOG_ERROR("Load game: %s could not be loaded.", name);
+        saved_flag = 1;   /* _saved */
+        /* LAB_46110..LAB_46144 (asm:10931-10944): reopen level.dat until it
+         * exists, _do_message(strInsertDisk,0) after each failure. */
+        FILE *check = core_level_dat_open();
+        if (!check) { core_disk_message = CORE_DISK_SAVE; return; }
+        fclose(check);
+    } else if (!core_load_game(name)) fprintf(stderr, "Load game: %s could not be loaded.\n", name);
     core_game_options_close();   /* _save_load returns 1 either way */
 }
 static void core_draw_game_options(void);
@@ -874,6 +906,36 @@ static void core_requester_click(void)
     else if (core_req.kind == CORE_REQ_FILE) core_file_click();
 }
 
+static FILE *core_level_dat_open(void)
+{
+    char fallback[4096], path[4200];
+    const char *directory = getenv("POPULOUS_DATA_DIR"), *assets = getenv("POPULOUS_ASSET_DIR");
+    if (!assets) assets = POPULOUS_DEFAULT_ASSET_DIR;
+    snprintf(fallback, sizeof fallback, "%s/raw", assets);
+    if (!directory) directory = fallback;
+    snprintf(path, sizeof path, "%s/level.dat", directory);
+    return fopen(path, "rb");
+}
+/* _do_message(strInsertDisk,0) asm:11098-11141. */
+static void core_disk_layout(int draw) { core_buttons_install(); core_requester(0x28,0x3c,0x100,0x30,core_end_ok,NULL,draw); }
+static void core_draw_disk_message(void)
+{
+    core_disk_layout(1);
+    amiga_text(game_pixels, 0x38, 0x48, "INSERT THE ORIGINAL\nPOPULOUS DISK IN DF0:");
+}
+static void core_disk_click(void)
+{
+    core_disk_layout(0);
+    if (!core_check_cancel(core_end_ok, NULL)) return;
+    int retry = core_disk_message;
+    core_disk_message = CORE_DISK_NONE; left_button = 2;
+    if (retry == CORE_DISK_WORLD) { core_requester_layout(); core_world_evaluate(); return; }
+    FILE *check = core_level_dat_open();
+    if (!check) { core_disk_message = CORE_DISK_SAVE; return; }
+    fclose(check);
+    core_game_options_close();
+}
+
 static void core_draw_game_options(void)
 {
     core_requester(0x10,0x10,0x120,0xb0,core_end_ok,core_end_cancel,1);
@@ -899,6 +961,7 @@ static void core_draw_requester(void)
     } else if (core_req.kind == CORE_REQ_GAME) core_draw_game_options();
     else if (core_req.kind == CORE_REQ_WORLD) core_draw_world();
     else if (core_req.kind == CORE_REQ_FILE) core_draw_file();
+    if (core_req.kind && core_disk_message) core_draw_disk_message();
     else if (core_req.kind == CORE_REQ_SET) {
         /* _set_options draws over the game options screen. */
         core_draw_game_options();
@@ -933,7 +996,7 @@ static void core_draw_end_screen(void)
 {
     core_end_button_layout(1);
     for (int r = 0; r < 7; ++r)
-        amiga_text(game_pixels, end_row_x(r) + 16, end_row_y(r) + 16, end_row_text(r));
+        amiga_text(game_pixels, A4_WORD(0x8e7e + r*46) + 16, A4_WORD(0x8e80 + r*46) + 16, core_end_row(r));
 }
 
 /* _end_words asm:24783-24785, _words asm:24786-24788 (two per rank, -1 none). */
@@ -1145,18 +1208,12 @@ static void core_world_line(int i, char *line, char you[8], char him[8])
 /* level.dat record level/25 into _conquest 0x84bc..0x84c5 (asm:12315-12368). */
 static int core_world_read(int record)
 {
-    char fallback[4096], path[4200];
-    const char *directory = getenv("POPULOUS_DATA_DIR"), *assets = getenv("POPULOUS_ASSET_DIR");
-    if (!assets) assets = POPULOUS_DEFAULT_ASSET_DIR;
-    snprintf(fallback, sizeof fallback, "%s/raw", assets);
-    if (!directory) directory = fallback;
-    snprintf(path, sizeof path, "%s/level.dat", directory);
-    FILE *file = fopen(path, "rb");
+    FILE *file = core_level_dat_open();
     if (!file) return 0;
     uint8_t bytes[10];
     /* ___Seek/___Read: a short read past the end keeps the old bytes. */
     if (!fseek(file, (long)record * 10, SEEK_SET) && fread(bytes, 1, 10, file) == 10) {
-        memcpy((uint8_t *)&conquest, bytes, 8);  /* conquest..conq_05 contiguous */
+        memcpy(A4_DISP(0x84bc), bytes, 8);
         conq_08_seed = (int16_t)(bytes[8] << 8 | bytes[9]);
     }
     fclose(file);
@@ -1208,11 +1265,9 @@ static void core_world_evaluate(void)
         if (core_world.level < 0) core_world.error = 1;   /* "NO SUCH WORLD" */
     }
     if (core_world.level < 0) { core_world_entry(); return; }
-    /* Port: a missing level.dat stays in the entry ("insert disk" loops). */
-    if (!core_world_read(core_world.level / 25)) {
-        POP_LOG_ERROR("World selection: level.dat not found.");
-        core_world_entry(); return;
-    }
+    /* diskerr_47222 (asm:12369-12375): _do_message(strInsertDisk,0); its
+     * OK returns to LAB_47064 without _get_name, i.e. this evaluation. */
+    if (!core_world_read(core_world.level / 25)) { core_disk_message = CORE_DISK_WORLD; left_button = 2; return; }
     core_world.shown = 1; core_world.entry = 0; left_button = 2;
 }
 static void core_world_open(int origin)
@@ -1329,8 +1384,16 @@ static void core_xor_icon(int base, int a, int b)
  * magnet bit before swamp bit before _mode), sound (initial toggles
  * asm:513-536) and pause (_do_action y=6 asm:18591). The short press
  * flashes on the power and view icons are not reproduced. */
+static struct { int16_t base, a, b; } core_flash[4];
+static int core_flashes;
+static void core_flash_icon(int base, int a, int b)
+{
+    if (core_flashes < 4) { core_flash[core_flashes].base = (int16_t)base; core_flash[core_flashes].a = (int16_t)a; core_flash[core_flashes].b = (int16_t)b; ++core_flashes; }
+}
 static void core_draw_icons(void)
 {
+    for (int index = 0; index < core_flashes; ++index) core_xor_icon(core_flash[index].base,core_flash[index].a,core_flash[index].b);
+    core_flashes = 0;
     if (player < 0 || player > 1 || diagnostic_view) return;
     static const int8_t tend[4][2] = {{3,3},{4,3},{5,3},{4,4}};
     int t = core_tendency(player);
@@ -1375,6 +1438,10 @@ static void core_show_the_shield(GraphicsSheet small)
         int person = view_who-1, flags = peeps[person*22], owner = peeps[person*22+1]&1;
         int16_t pop = peep_word(person,4);
         uint32_t heading; memcpy(&heading,peeps+person*22+14,sizeof heading);
+        core_draw_icon(0x11,4,peeps[person*22+1]);
+        int weapon = 1;
+        while (weapon < 11 && (uint16_t)A4_WORD(0x2f96+2*weapon) != peeps[person*22+3]) ++weapon;
+        if (weapon < 11) core_draw_icon(0x12,4,weapon+1);
         if (flags & 8) {
             /* Battle: sprite +0xC and strength bars, blue left (asm:2840-2895). */
             int other = peep_word(person,6);
@@ -1417,6 +1484,115 @@ static void core_show_the_shield(GraphicsSheet small)
     core_draw_bar(0x27,0x1f,0x20,bad ? (int)(31*bad/50000+1) : 0,8);
 }
 
+/* Funny occupant (map_who byte >= $D1), _move_sprite asm:15951-16258: the
+ * walking (flags 2 / bit 4) branch at asm:16061-16191 interpolates by +$C
+ * along +$A and hides the second half of moves leaving the 8x8 view; then
+ * asm:16192-16197 take frame +6. The main loop (asm:630-641) draws entries
+ * whose +6 is >= $D1 with _draw_s_32 at (x-8,y-16). The extra view_who
+ * entry (frame $44, asm:16245-16254) is queued like the original, but $44 is
+ * past the 13-frame sheet, so _draw_s_32 would read beyond _sprite_data_32;
+ * the port draws nothing for it. A shaken screen never gets here. */
+static const struct { int16_t step, hide_u, hide_v, dx, dy; } core_funny_moves[] = {
+    {-65, 0, 0, 0,-2}, {-64,-1, 0, 2,-1}, {-63, 7, 0, 4, 0}, {  1, 7,-1, 2, 1},
+    { 65, 7, 7, 0, 2}, { 64,-1, 7,-2, 1}, { 63, 0, 7,-4, 0}, { -1, 0,-1,-2,-1},
+};
+static void core_queue_sprite(int x, int y, int frame, int who)
+{
+    if (no_sprites >= 64) return;
+    int entry = 0x9a22 + no_sprites*8;
+    A4_WORD(entry) = (int16_t)x; A4_WORD(entry+2) = (int16_t)y;
+    A4_WORD(entry+4) = (int16_t)frame; A4_WORD(entry+6) = (int16_t)who;
+    ++no_sprites;
+}
+static void core_draw_funny(int u, int v, int cell)
+{
+    int who = map_who[cell], slot = who-1, flags = peeps[slot*22];
+    if (who > CORE_FUNNY_END) return;   /* past the 211-record _peeps */
+    if (flags != 2 && (flags == 1 || !(flags & 16))) return;   /* other branches never see funnies */
+    int counter = peep_word(slot,12), step = peep_word(slot,10), left, top;
+    if (counter >= 8 || !graphics_tile(u,v,map_alt[cell],&left,&top)) return;   /* asm:16063: _debug */
+    int next = cell+step, sx = left+8, sy = top-8;
+    sy += ((int8_t)map_alt[cell] - (next >= 0 && next < 4096 ? (int8_t)map_alt[next] : 0)) * counter;
+    if (map_blk[cell] != 15) sy += 4;
+    int dx = 0, dy = 0;
+    for (size_t index = 0; index < sizeof core_funny_moves/sizeof *core_funny_moves; ++index) {
+        if (core_funny_moves[index].step != step) continue;
+        if (counter > 4 && (u == core_funny_moves[index].hide_u || v == core_funny_moves[index].hide_v)) return;
+        dx = core_funny_moves[index].dx; dy = core_funny_moves[index].dy;
+        break;
+    }
+    sx += dx*counter; sy += dy*counter;
+    int frame = peep_word(slot,6);
+    core_queue_sprite(sx,sy,frame,who);
+    if (view_who == who) core_queue_sprite(sx+8,sy,0x44,who);
+    graphics_draw_s_32(game_pixels,sizeof game_pixels,graphics_big_sprites(game_assets),frame,sx-8,sy-16);
+}
+/* Ordinary occupant (map_who byte < $D1), _move_sprite asm:15951-16258.
+ * Dispatch (asm:15996-16016): ==2 walk, ==1 town, bit 4 walk (water frame),
+ * bits 5/6 wait, bit 3 battle, bit 7 remnant, otherwise the +$C default.
+ * The walking branch (asm:16061-16191) starts at the map_who cell - the
+ * departure cell the core claims - and moves by +$C (0..7) along +$A with
+ * the altitude difference, hiding the second half of moves that leave the
+ * 8x8 view; +$C >= 8 is the _debug exit. Frames: asm:16192-16224 (_toggle,
+ * heading, owner). Every entry is queued (SUB_49F72, asm:16225-16254) with
+ * the view_who marker (frame $44 at x+8) and drawn by the main loop with
+ * ___draw_sprite (asm:645-650). Host deviations: heading presence tests all
+ * four host reference bytes (the original TST.W/TST.L a pointer); dead,
+ * foreign-owner or out-of-pool slots and a map_who cell that is neither the
+ * peep's +8 nor (walking) its departure cell are skipped; frames outside the
+ * 143-frame sheet and invalid battle frames keep the render-only bounds. */
+static void core_emit_sprite(GraphicsSheet small, int x, int y, int frame, int who)
+{
+    int queued = no_sprites < 64;
+    core_queue_sprite(x,y,frame,who);
+    if (queued && frame >= 0 && frame < 143) graphics_blit(game_pixels,64000,320,200,small,frame,x,y);
+}
+static void core_draw_peep(GraphicsSheet small, int u, int v, int cell)
+{
+    int person=(int)map_who[cell]-1;
+    if (person<0 || person>=no_peeps || peep_word(person,4)<=0) return;
+    int left,top,owner=peep_owner(person),flags=peeps[person*22];
+    if (owner>1 || !graphics_tile(u,v,map_alt[cell],&left,&top)) return;
+    int walking = flags==2 || (flags!=1 && (flags&0x10));
+    int position=peep_word(person,8), step=peep_word(person,10);
+    if (position!=cell && (!walking || (int16_t)(position-step)!=cell)) return;
+    /* asm:15965-15982: build permission of every visible occupant. */
+    int build = flags&0xf8;
+    if (owner==(int16_t)player) { build=flags; if (peep_word(person,18)) build|=1; }
+    ok_to_build = (int16_t)(ok_to_build|build);
+    uint32_t raw_heading;
+    memcpy(&raw_heading,peeps+person*22+14,sizeof raw_heading);
+    int headed=raw_heading!=0, stored=peep_word(person,12), frame, sx=left+16, sy=top-8;
+    if (walking) {
+        int counter=stored;
+        if (counter>=8) return;   /* asm:16061-16069: _debug */
+        int next=cell+step, dx=0, dy=0;
+        sy += ((int8_t)map_alt[cell]-(next>=0 && next<4096 ? (int8_t)map_alt[next] : 0))*counter;
+        if (map_blk[cell]!=15) sy += 4;
+        for (size_t index=0; index<sizeof core_funny_moves/sizeof *core_funny_moves; ++index) {
+            if (core_funny_moves[index].step!=step) continue;
+            if (counter>4 && (u==core_funny_moves[index].hide_u || v==core_funny_moves[index].hide_v)) return;
+            dx=core_funny_moves[index].dx; dy=core_funny_moves[index].dy;
+            break;
+        }
+        if (flags&0x10) frame=0x5d+((uint16_t)game_turn&3)+0x10*headed+4*owner;
+        else frame=graphics_walker_frame(step,owner,toggle&1)+0x20*headed;
+        sx=left+8+dx*counter; sy+=dy*counter;
+    } else if (flags==1) frame=0x40+(toggle&1)+2*owner;
+    else if (flags&0x60) frame=stored+0x18*headed+2*owner;
+    else if (flags&8) {
+        sound_effect |= 8;
+        /* Preserve a render-only fallback for malformed or legacy frames. */
+        frame=((stored>=70 && stored<=72) || (stored>=130 && stored<=132) ||
+               (stored>=134 && stored<=136) || (stored>=138 && stored<=140)) ? stored : 138+(toggle&1);
+    } else if (flags&0x80) {
+        sound_effect |= 0x80;
+        frame=0x69+((uint16_t)game_turn&3); sx=left+8;
+    } else frame=stored+0x20*headed+4*owner;
+    core_emit_sprite(small,sx,sy,frame,person+1);
+    if (view_who==person+1) core_emit_sprite(small,sx+8,sy,0x44,person+1);
+}
+
 static void draw_original(int view_x, int view_y)
 {
     if (!game_assets || view_x<0 || view_x>56 || view_y<0 || view_y>56) return;
@@ -1449,58 +1625,13 @@ static void draw_original(int view_x, int view_y)
         for (int level=0; level<map_alt[(view_y+7)*64+view_x+u]; ++level)
             graphics_blit(game_pixels,64000,320,200,small,76,64+16*u,128+8*u-8*level+dy);
     /* Original queues occupants then draws them after terrain (asm:623-657).
-     * Core movement commits its destination immediately: no second interpolation.
      * A shaken screen_origin skips _move_sprite entirely (asm:15842-15849). */
-    if (!dy) no_sprites = 0;
+    if (!dy) { no_sprites = 0; ok_to_build = 0; }   /* asm:612-613 */
     sound_effect = 0;   /* asm:614, before _draw_it */
     for (int v=0; v<8 && !dy; ++v) for (int u=0; u<8; ++u) {
-        int cell=(view_y+v)*64+view_x+u, person=(int)map_who[cell]-1;
-        if (person<0 || person>=no_peeps || peep_word(person,4)<=0 || peep_word(person,8)!=cell) continue;
-        int left,top,owner=peep_owner(person),flags=peeps[person*22];
-        if (owner>1 || !graphics_tile(u,v,map_alt[cell],&left,&top)) continue;
-        /* _move_sprite dispatch asm:15996-16016,16042: ==1, ==2 and bits
-         * 4..6 take other branches; then battle (bit 3) before bit 7. */
-        if (flags != 1 && flags != 2 && !(flags & 0x70))
-            sound_effect |= flags & 8 ? 8 : flags & 0x80;
-        int frame=graphics_walker_frame(peep_word(person,10),owner,phase);
-        int sx=left+8, sy=top-8+(map_blk[cell]==15 ? 0 : 4);
-        if (flags==5 || flags==6 || flags==0x80 || flags==0x22 ||
-            flags==0x42 || flags==0x62 || flags==2 || flags==18) {
-            /* Presence spans all four host reference bytes, including opaque
-             * values. Select only canonical states; mixed flags keep the fallback. */
-            uint32_t raw_heading;
-            memcpy(&raw_heading,peeps+person*22+14,sizeof raw_heading);
-            int headed=raw_heading!=0;
-            if (flags==5 || flags==6) {
-                frame=(int)peep_word(person,12)+32*headed+4*owner;
-                sx=left+16; sy=top-8;
-            } else if (flags==0x80) {
-                frame=105+((uint16_t)game_turn&3); sy=top-8;
-            } else if (flags==0x22 || flags==0x42 || flags==0x62) {
-                frame=(int)peep_word(person,12)+24*headed+2*owner;
-                sx=left+16; sy=top-8;
-            } else if (flags==2) frame+=32*headed;
-            else frame=93+((uint16_t)game_turn&3)+16*headed+4*owner;
-            /* Bound the selected frame, not the stored simulation frame. The
-             * source's extra Y lift is already top-8 (_draw_it, asm:15831). */
-            if (frame<0 || frame>=143) continue;
-        } else if (flags==1) { frame=64+phase+owner*2; sx=left+16; sy=top-8; }
-        else if (flags&8) {
-            int stored=peep_word(person,12);
-            /* Preserve a render-only fallback for malformed or legacy frames. */
-            frame=((stored>=70 && stored<=72) || (stored>=130 && stored<=132) ||
-                   (stored>=134 && stored<=136) || (stored>=138 && stored<=140)) ? stored : 138+phase;
-            sx=left+16; sy=top-8;
-        }
-        else if (flags&16) frame=93+((uint16_t)game_turn&3)+owner*4;
-        graphics_blit(game_pixels,64000,320,200,small,frame,sx,sy);
-        /* _sprite table A4 0x9a22 (+0 x, +2 y, +6 who), read by _interogate. */
-        if (no_sprites < 64) {
-            int entry = 0x9a22 + no_sprites*8;
-            A4_WORD(entry) = (int16_t)sx; A4_WORD(entry+2) = (int16_t)sy;
-            A4_WORD(entry+4) = 0; A4_WORD(entry+6) = (int16_t)(person+1);
-            ++no_sprites;
-        }
+        int cell=(view_y+v)*64+view_x+u;
+        if (map_who[cell]>=0xd1) { core_draw_funny(u,v,cell); continue; }
+        core_draw_peep(small,u,v,cell);
     }
     core_show_the_shield(small);
     /* Original overview projection (_a_putpixel, asm:16758-16777). */
@@ -1521,8 +1652,8 @@ static void draw_original(int view_x, int view_y)
      * 40 columns in the original font (amiga_text) on y 200..255. */
     static uint8_t hud[320*200];
     char lines[7][48]={{0}};
-    snprintf(lines[0],48,"%s BLUE %d RED %d MANA %d",core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : pause ? "PAUSED" : war_flag ? "WAR" : "PLAY",core_population(0),core_population(1),core_mana(0));
-    snprintf(lines[1],48,"%s",core_end_shown && core_result ? "GAME OVER: CLICK/KEY CONTINUE, ESC QUIT" : war_flag ?
+    snprintf(lines[0],48,"%s BLUE %d RED %d MANA %d",core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : pause ? "PAUSED" : A4_WORD(0xae80) ? "WAR" : "PLAY",core_population(0),core_population(1),core_mana(0));
+    snprintf(lines[1],48,"%s",core_end_shown && core_result ? "GAME OVER: CLICK/KEY CONTINUE, ESC QUIT" : A4_WORD(0xae80) ?
         "WAR: TERRAIN+MAGNET LOCKED, ARROWS/MAP" : core_swamp_selected ?
         "SWAMP ARMED 5000: LMB TARGET, RMB INERT" : "LMB RAISE, RMB LOWER, ARROWS/MAP SCROLL");
     snprintf(lines[2],48,"%s",core_swamp_selected ?
@@ -1544,6 +1675,19 @@ static void draw_original(int view_x, int view_y)
     }
     for (int pixel=0; pixel<320*56; ++pixel)
         prg_screen->chunky_buffer[200*320+pixel]=prg_screen->palette[hud[pixel]];
+    core_draw_pointer();
+}
+
+/* The diagnostic view has no d_screen: the end screen and the requesters
+ * are composed into game_pixels then copied onto the chunky buffer. */
+static void core_draw_diagnostic_overlay(void)
+{
+    if (!(core_end_shown && core_result) && !core_req.kind) return;
+    memset(game_pixels, 0xff, sizeof game_pixels);
+    if (core_end_shown && core_result) core_draw_end_screen();
+    core_draw_requester();
+    for (size_t pixel=0; pixel<320*200; ++pixel)   /* d_screen's 200 lines */
+        if (game_pixels[pixel] != 0xff) prg_screen->chunky_buffer[pixel]=prg_screen->palette[game_pixels[pixel]];
     core_draw_pointer();
 }
 
@@ -1597,6 +1741,7 @@ static void _draw_it(int16_t y, int16_t x)
         uint32_t colour = core_result == 1 ? 0xff8cffff : core_result ? 0xffff795d : 0xffffff80;
         for (int pixel=0; pixel<width; ++pixel) prg_screen->chunky_buffer[pixel] = colour;
     }
+    core_draw_diagnostic_overlay();
     } else draw_original(x,y);
     char title[512];
     snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; K knight 7500; Q quake 2500; F flood 40000; V volcano 10000; A Armageddon 80000; Space pause R reset Esc quit",
@@ -1615,5 +1760,5 @@ static void _do_war(void) { core_war(player); }
 static void _do_flood(void) { core_flood(player); }
 static void _do_quake(void) { core_quake(player,xoff,yoff,___newrand); }
 static void _do_volcano(void) { core_volcano(player,xoff,yoff,___newrand); }
-static void _do_funny(void) {}
+static void _do_funny(void) { core_do_funny(); }
 /* Ordinary _set_frame branches, asm:5728-5743,5846-5861. */

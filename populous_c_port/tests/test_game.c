@@ -3896,7 +3896,7 @@ static void test_town_economy_split(void)
     for (int owner=0; owner<2; ++owner) for (int full=0; full<=1; ++full) {
         setup_town_economy(owner,3100);
         if (full) {
-            no_peeps=208;
+            no_peeps=208; funny_done=1;   /* full-pool funny: test_funny_objects */
             for (int person=1; person<208; ++person) {
                 peeps[person*22]=6; peeps[person*22+1]=1-owner;
                 set_peep_word(person,4,77); set_peep_word(person,12,85);
@@ -3939,6 +3939,9 @@ static void setup_town_split(int owner, int parent, int child, int count)
     /* Allocated A4 storage immediately beyond the 208-record pool is a guard,
      * not a 209th record. Keep it dead so an off-by-one search would select it. */
     memset(peeps+208*22,0xb7,22);
+    /* A full pool also places a funny once (asm:3996-4006); that rule is
+     * test_funny_objects', so these layouts start with it already done. */
+    funny_done=child>=208;
     int16_t dead=-1; memcpy(peeps+208*22+4,&dead,sizeof dead);
 }
 
@@ -4295,7 +4298,7 @@ static void test_town_footprint_completion(void)
         setup_town_footprint(owner,650,1,0); map_blk[780]=32-owner;
         set_peep_word(0,12,42); set_peep_word(0,4,3100); game_turn=turn;
         A4_WORD(0x2ff4)=11; map_who[650]=occupant;
-        no_peeps=full ? 208 : 2;
+        no_peeps=full ? 208 : 2; funny_done=full;   /* full-pool funny: test_funny_objects */
         for (int person=1; person<no_peeps; ++person) {
             peeps[person*22]=0x80; peeps[person*22+1]=1-owner;
             set_peep_word(person,4,77); set_peep_word(person,8,650);
@@ -5065,6 +5068,92 @@ static int icon_lit(int base, int a, int b)
     return game_pixels[y*320+x]==(game_assets->background[y*320+x]^1);
 }
 
+/* _show_the_shield icons asm:2790-2826 and _icon_data asm:21656: first row
+ * plane words of icons 0..11 copied from the DC.L lines. */
+static int asm_icon_colour(const uint16_t planes[4], int bit)
+{
+    int colour=0;
+    for (int plane=0;plane<4;++plane) colour|=((planes[plane]>>(15-bit))&1)<<plane;
+    return colour;
+}
+static void test_shield_icons(void)
+{
+    static const uint16_t row0[12][4]={
+        {0xffbe,0xff7f,0x0080,0x0000},{0xfffe,0xffff,0x0000,0x0000},{0x8000,0x0000,0x0000,0xffff},
+        {0x8000,0x0000,0x0000,0xffff},{0x8000,0x0000,0x0000,0xffff},{0x8010,0x0008,0x0008,0xfff7},
+        {0x8003,0x0001,0x0001,0xfffe},{0x9100,0x0080,0x1c80,0xe37f},{0x0007,0x6000,0x8000,0x1fff},
+        {0x8000,0x0000,0x0000,0xffff},{0x8000,0x0000,0x0000,0xffff},{0x8001,0x0001,0x0002,0xfffc}};
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    assert(no_peeps>0 && peep_word(0,4)>0);
+    view_who=0; game_render();
+    static uint8_t empty[320*200]; memcpy(empty,game_pixels,sizeof empty);
+    uint8_t saved_owner=peeps[1], saved_weapon=peeps[3];
+    for (int owner=0;owner<2;++owner) for (int weapon=0;weapon<=11;++weapon) {
+        view_who=1; peeps[1]=(uint8_t)owner;
+        /* Slot 0 is a byte no slot 1..10 holds; slot 11 is read but never drawn. */
+        int value=0;
+        if (weapon) value=(uint16_t)A4_WORD(0x2f96+2*weapon);
+        else for (int clash=1; clash; ) { clash=0; for (int d=1;d<=10;++d) if ((uint16_t)A4_WORD(0x2f96+2*d)==value) { clash=1; ++value; } }
+        peeps[3]=(uint8_t)value;
+        int expect=0;
+        for (int d=1;d<=10;++d) if ((uint16_t)A4_WORD(0x2f96+2*d)==peeps[3]) { expect=d; break; }
+        assert(weapon==0 ? !expect : weapon==11 || expect);
+        game_render();
+        for (int bit=0;bit<16;++bit) {
+            assert(game_pixels[4*320+0x110+bit]==asm_icon_colour(row0[owner],bit));
+            int at=4*320+0x120+bit;
+            assert(game_pixels[at]==(expect ? asm_icon_colour(row0[expect+1],bit) : empty[at]));
+        }
+    }
+    peeps[1]=saved_owner; peeps[3]=saved_weapon;
+    view_who=0; game_render(); assert(!memcmp(empty,game_pixels,sizeof empty));
+}
+
+/* _zoom_map flashes: _toggle_icon(d_screen,...) shows for one frame, the
+ * next _clr_wsc restores _back_scr (asm:611,762,989). Diamond of 226 px. */
+static int frame_diff(const uint8_t *a, int *first)
+{
+    int count=0; *first=-1;
+    for (int pixel=0;pixel<320*200;++pixel) if (a[pixel]!=game_pixels[pixel]) { if (*first<0) *first=pixel; ++count; }
+    return count;
+}
+static void test_icon_flashes(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    view_who=0; core_tool=0; game_render();
+    static uint8_t base[320*200]; memcpy(base,game_pixels,sizeof base);
+    int first;
+    /* Scroll pad centre (icon 4, line 1) at screen (64,168): base 0x12c0,
+     * x0 = 16*4-16 = 48, y0 = 120+32+8 = 160; mask row 1 is bits 16,17. */
+    assert(core_toolbar(64,168,1,0));
+    game_render(); assert(frame_diff(base,&first)==226 && first==161*320+48+16);
+    assert(game_pixels[168*320+50]==(base[168*320+50]^1) && game_pixels[168*320+49]==base[168*320+49]);
+    game_render(); assert(frame_diff(base,&first)==0);
+    /* Tendency (3,3) at (16,176) is a persistent state icon: no flash. */
+    assert(core_toolbar(16,176,1,0));
+    game_render(); assert(frame_diff(base,&first)==0);
+    /* Message icon (system 2,2) at (304,192): base 0x17e4 = row 152, byte 36,
+     * x0 = 8*36+32-32 = 288, y0 = 152+16+16 = 184. Posts 14/2. */
+    uint8_t *mailbox=A4_DISP(0x82b6+player*46);
+    mailbox[0]=0; mailbox[2]=0;
+    assert(core_toolbar(304,192,1,1));
+    assert(mailbox[0]==14 && mailbox[2]==2);
+    game_render(); assert(frame_diff(base,&first)==226 && first==185*320+288+16);
+    game_render(); assert(frame_diff(base,&first)==0);
+    /* _do_action y=2 (asm:18404-18406): _serial_off set, nothing happens. */
+    assert(serial_off==1);
+    static uint8_t a4_before[0x10000];
+    uint8_t *a4=prg_a4-32768; size_t span=sizeof a4_before;
+    memcpy(a4_before,a4,span);
+    int kind=core_req.kind;
+    A4_DISP(0x82b6+(1-player)*46)[0]=0;
+    core_consume_terrain_mailboxes();
+    assert(core_req.kind==kind && serial_off==1);
+    for (size_t at=0; at<span; ++at)
+        if (at<32768+(int16_t)0x82b6 || at>=32768+(int16_t)0x82b6+92) assert(a4[at]==a4_before[at]);
+    game_render(); assert(frame_diff(base,&first)==0);
+}
+
 static void test_query_and_shield(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
@@ -5086,6 +5175,7 @@ static void test_query_and_shield(void)
     /* Query clicks neither sculpt nor spend mana; the table follows the blit. */
     memset(game_assets->background,1,sizeof game_assets->background);
     memset(game_assets->sprite_keep,1,sizeof game_assets->sprite_keep);
+    set_peep_word(0,12,0);   /* synthetic start +$C 255 hits the _debug exit */
     game_render();
     assert(no_sprites>0 && A4_WORD(0x9a22)==184 && A4_WORD(0x9a24)==88 && A4_WORD(0x9a28)==1);
     core_tool=2; SDL_SetWindowSize(prg_screen->window,640,512);
@@ -5171,23 +5261,26 @@ static void test_original_graphics_output(void)
     game_assets->land_indices[15*768+8*32+16]=2;
     game_assets->land_indices[42*768+8*32+16]=4;
     game_assets->sprite_indices[8*256]=8;
+    /* +$C 0 (the synthetic start's 255 is _move_sprite's _debug exit) and _toggle 0. */
+    set_peep_word(0,12,0); toggle=0; memcpy(before,prg_a4_area,sizeof before);
     game_render();
     assert(game_pixels[72*320+192]==3); /* first flat tile */
-    assert(game_pixels[88*320+184]==9); /* first walker at (8,8), no interpolation */
+    assert(game_pixels[88*320+184]==9); /* first walker at (8,8), counter 0: no offset */
     assert(a4_same(before));
+    set_peep_word(0,12,255);   /* restore the start state for the ticks below */
     for (int tick=0;tick<16;++tick) game_tick();
     int settlements=0;
     for (int cell=0;cell<4096;++cell) settlements+=map_bk2[cell]==42;
     assert(settlements>0);
     game_assets->sprite_indices[64*256]=8;
-    game_render();
+    toggle=0; game_render();
     assert(game_pixels[96*320+192]==5); /* town overlay, tile_top-8 */
     assert(game_pixels[88*320+192]==9); /* settled occupant uses frame 64 */
     /* _move_sprite compares flags to exactly 1: flags 9 is a town defending
      * a battle, not a peaceful occupant. Distinct frame pixels catch precedence. */
     assert(peep_word(0,8)==8*64+8 && map_who[8*64+8]==1);
     for (int owner=0;owner<2;++owner) for (int phase=0;phase<2;++phase) {
-        peeps[0]=9; peeps[1]=owner; game_turn=16+phase*4;
+        peeps[0]=9; peeps[1]=owner; game_turn=16+phase*4; toggle=phase;
         game_assets->sprite_indices[(64+phase+owner*2)*256]=8;
         game_assets->sprite_indices[(138+phase)*256]=2+phase*2;
         memcpy(before,prg_a4_area,sizeof before);
@@ -5238,7 +5331,7 @@ static void sprite_scene(void)
     memset(map_who,0,4096); memset(map_bk2,0,4096);
     memset(map_blk,15,4096); memset(map_alt,0,4096);
     memset(peeps,0,208*22); no_peeps=2;
-    xoff=16; yoff=16; mousex=-100; mousey=-100;
+    xoff=16; yoff=16; mousex=-100; mousey=-100; view_who=0;
     core_tendency(0)=core_tendency(1)=1;
 }
 static void sprite_case(int flags, int owner, int stored, uint32_t heading,
@@ -5252,7 +5345,8 @@ static void sprite_case(int flags, int owner, int stored, uint32_t heading,
     set_peep_word(0,10,delta); set_peep_word(0,12,stored);
     set_peep_word(1,4,100); set_peep_word(1,8,4000);
     memcpy(peeps+14,&heading,sizeof heading);
-    game_turn=turn; map_blk[cell]=block; map_alt[cell]=altitude;
+    /* _toggle (asm:606-612) drives walker/town phases; follow turn/4 here. */
+    game_turn=turn; toggle=((uint16_t)turn/4)&1; map_blk[cell]=block; map_alt[cell]=altitude;
     uint8_t expected[64000],before[sizeof prg_a4_area];
     memcpy(before,prg_a4_area,sizeof before);
     draw_original(16,16);
@@ -5298,11 +5392,11 @@ static void test_special_sprite_frames(void)
         for (int turn=0;turn<4;++turn) {
             sprite_case(0x80,owner,32767,headings[raw],phase*4+turn,1,15,0,0,0,remnant[turn],184,56);
             for (int block=0;block<2;++block) for (int direction=0;direction<8;++direction)
-                sprite_case(18,owner,7,headings[raw],phase*4+turn,directions[direction],block ? 0 : 15,0,0,0,
+                sprite_case(18,owner,0,headings[raw],phase*4+turn,directions[direction],block ? 0 : 15,0,0,0,
                     water[owner][headed][turn],184,block ? 60 : 56);
         }
         for (int direction=0;direction<8;++direction) for (int block=0;block<2;++block)
-            sprite_case(2,owner,7,headings[raw],phase*4,directions[direction],block ? 0 : 15,0,0,0,
+            sprite_case(2,owner,0,headings[raw],phase*4,directions[direction],block ? 0 : 15,0,0,0,
                 walkers[owner][headed][phase][direction],184,block ? 60 : 56);
     }
     sprite_case(5,1,42,1,0,1,15,0,0,0,78,192,56);
@@ -5319,29 +5413,39 @@ static void test_special_sprite_frames(void)
         for (int state=0;state<3;++state)
             sprite_case(wait_flags[state],owner,stored[sample],headed,0,1,15,0,0,0,wait_bounds[headed*2+owner][sample],192,56);
     }
-    /* Unsupported flags retain the old battle-before-water-before-walker cascade. */
-    const int fallback[][3]={{0,23,0},{4,23,0},{0x86,23,0},{0x88,139,1},
-        {0x16,100,0},{0x28,139,1},{0x62+1,23,0},{0x90,100,0},{0xff,139,1}};
-    for (unsigned sample=0;sample<sizeof fallback/sizeof fallback[0];++sample)
-        sprite_case(fallback[sample][0],1,32767,UINT32_MAX,7,1,0,0,0,0,
-            fallback[sample][1],fallback[sample][2] ? 192 : 184,fallback[sample][2] ? 56 : 60);
+    /* Mixed flags follow the _move_sprite dispatch (asm:15996-16016):
+     * ==2, ==1, bit 4, bits 5/6, bit 3, bit 7, then the +$C default. Stored
+     * 3 (counter 3 for the walking branches), delta 1 (dx 2, dy 1), owner 1,
+     * heading present, turn 7 (toggle 1), block 0 (+4 only when walking). */
+    const int mixed[][4]={
+        {0,3+32+4,192,56},{4,3+32+4,192,56},{0x0c,139,192,56},{0x86,105+3,184,56},
+        {0x88,139,192,56},{0x16,93+3+16+4,190,63},{0x18,93+3+16+4,190,63},
+        {0x28,3+24+2,192,56},{0x63,3+24+2,192,56},{0x90,93+3+16+4,190,63},
+        {0xff,93+3+16+4,190,63},{0xc4,3+24+2,192,56},{0x84,105+3,184,56},
+        {0x03,3+32+4,192,56},{0x0b,139,192,56}};
+    for (unsigned sample=0;sample<sizeof mixed/sizeof mixed[0];++sample)
+        sprite_case(mixed[sample][0],1,3,UINT32_MAX,7,1,0,0,0,0,
+            mixed[sample][1],mixed[sample][2],mixed[sample][3]);
     /* Current-cell coordinates, height lift, top clipping and far visible corners. */
     sprite_case(6,1,42,1,0,1,15,0,0,8,78,192,-8);
-    sprite_case(2,1,7,1,4,1,0,0,0,8,55,184,-4);
+    sprite_case(2,1,0,1,4,1,0,0,0,8,55,184,-4);
     sprite_case(0x80,0,0,0,3,1,15,7,0,0,108,296,112);
     sprite_case(5,0,85,0,0,1,15,7,7,0,85,192,168);
     sprite_case(0x22,0,101,0,0,1,15,3,2,3,101,208,72);
     sprite_case(5,1,42,1,0,1,0,0,0,0,78,192,56);
     sprite_case(0x80,1,0,1,3,1,0,0,0,0,108,184,56);
     sprite_case(0x62,1,102,1,4,1,0,0,0,0,128,192,56);
+    /* Walking counters >= 8 take the _debug exit (asm:16061-16069); a
+     * negative counter is multiplied as is (MULS). */
     for (int sample=0;sample<5;++sample) {
-        sprite_case(2,1,stored[sample],1,4,1,0,0,0,0,55,184,60);
-        sprite_case(18,1,stored[sample],1,7,1,0,0,0,0,116,184,60);
+        int counter=stored[sample], shown=counter<8;
+        sprite_case(2,1,counter,1,4,1,0,0,0,0,shown ? 55 : -1,184+2*counter,60+counter);
+        sprite_case(18,1,counter,1,7,1,0,0,0,0,shown ? 116 : -1,184+2*counter,60+counter);
     }
 }
 static void test_special_sprite_order_and_guards(void)
 {
-    sprite_scene(); game_turn=4;
+    sprite_scene(); game_turn=4; toggle=1;
     uint8_t expected[64000],before[sizeof prg_a4_area];
     draw_original(16,16); memcpy(expected,game_pixels,sizeof expected);
     /* Reverse slot order: the earlier cell's celebration overlaps the later
@@ -5350,7 +5454,7 @@ static void test_special_sprite_order_and_guards(void)
     for (int person=0;person<3;++person) {
         peeps[person*22]=person ? 5 : 2;
         set_peep_word(person,4,100); set_peep_word(person,8,16*64+16+(person==0));
-        set_peep_word(person,10,1); set_peep_word(person,12,person==2 ? 86 : 85);
+        set_peep_word(person,10,1); set_peep_word(person,12,person==2 ? 86 : person ? 85 : 0);
     }
     map_who[16*64+16]=2; map_who[16*64+17]=1;
     sprite_mask_oracle(expected,85,192,56);
@@ -5371,6 +5475,172 @@ static void test_special_sprite_order_and_guards(void)
         assert(a4_same(before)); assert_sprite_pixels(expected);
     }
 }
+/* 32x32 "funny" objects: _do_place_funny asm:8862-9013, _do_funny
+ * asm:8630-8858, _move_sprite asm:16061-16197, main loop asm:630-641 and
+ * _draw_s_32 asm:19365-19504. */
+static void funny_clear(void)
+{
+    for (int slot=0xd1;slot<0xd3;++slot) memset(peeps+slot*22,0,22);
+    memset(map_who,0,4096);
+}
+static void test_funny_objects(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    /* Real export: spr_320.dat is 13 frames (Read $2080, asm:16443-16449),
+     * loaded byte for byte; the fixture export has none (Open fails, the
+     * original skips the Read) and loads without a sheet. */
+    char error[256];
+    GraphicsAssets *real=graphics_load(POPULOUS_DEFAULT_ASSET_DIR,0,0,error,sizeof error);
+    assert(real);
+    GraphicsSheet big=graphics_big_sprites(real);
+    assert(big.width==32 && big.height==32 && big.size==13*1024);
+    static uint8_t file_bytes[13*1024+1];
+    FILE *file=fopen(POPULOUS_DEFAULT_ASSET_DIR "/pixels/spr_320.dat.indices.u8","rb"); assert(file);
+    assert(fread(file_bytes,1,sizeof file_bytes,file)==13*1024 && !fclose(file));
+    assert(!memcmp(file_bytes,real->big_indices,13*1024));
+    int opaque=0; for (int i=0;i<13*1024;++i) opaque+=!real->big_keep[i];
+    assert(opaque>0 && opaque<13*1024);
+    graphics_free(real);
+    assert(!graphics_big_sprites(game_assets).indices && game_assets->big_size==0);
+    assert(funny_done==0 && !peep_word(0xd1,4) && !peep_word(0xd2,4));
+    /* _draw_s_32 placement, mask and clip rules on a synthetic frame. */
+    static uint8_t screen[320*200], indices[2*1024], keep[2*1024];
+    memset(keep,1,sizeof keep); memset(indices,0,sizeof indices);
+    indices[1024+0]=9; keep[1024+0]=0;           /* frame 1 (0,0): replace */
+    indices[1024+31*32+31]=6;                    /* frame 1 (31,31): OR over keep */
+    indices[1024+1*32+0]=4; keep[1024+1*32+0]=0; /* frame 1 (0,1) */
+    GraphicsSheet sheet={indices,keep,sizeof indices,32,32};
+    memset(screen,3,sizeof screen);
+    assert(graphics_draw_s_32(screen,sizeof screen,sheet,1,100,50));
+    assert(screen[50*320+100]==9 && screen[81*320+131]==7 && screen[51*320+100]==4);
+    assert(screen[50*320+101]==3 && screen[49*320+100]==3);
+    assert(!graphics_draw_s_32(screen,sizeof screen,sheet,2,100,50));   /* past the sheet */
+    memset(screen,3,sizeof screen);
+    assert(!graphics_draw_s_32(screen,sizeof screen,sheet,1,100,-1));  /* TST D1/BMI */
+    assert(!graphics_draw_s_32(screen,sizeof screen,sheet,1,100,199)); /* $C7-199 = 0: BLE */
+    for (int i=0;i<320*200;++i) assert(screen[i]==3);
+    assert(graphics_draw_s_32(screen,sizeof screen,sheet,1,100,198));  /* DBF 1: two rows */
+    assert(screen[198*320+100]==9 && screen[199*320+100]==4);
+    assert(graphics_draw_s_32(screen,sizeof screen,sheet,1,300,10));   /* D7 $28: one word */
+    assert(screen[10*320+300]==9 && screen[11*320+0]==3);
+    /* Placement: first free slot, table fields, edge formulas. */
+    funny_clear(); seed=1234;
+    uint16_t saved=seed; int expect=(int16_t)___newrand()%125/2+0xfc0; seed=saved;
+    core_place_funny(0,0);
+    assert(peep_word(0xd1,4)==1 && peeps[0xd1*22]==2 && peep_word(0xd1,8)==expect);
+    assert(map_who[expect]==0xd2 && peep_word(0xd1,10)==-64 && peep_word(0xd1,6)==0);
+    assert(peeps[0xd1*22+2]==4 && peeps[0xd1*22+3]==0 && peeps[0xd1*22+20]==0 && peeps[0xd1*22+21]==1);
+    saved=seed; int odd=___newrand()&1, value=(int16_t)___newrand()%43; seed=saved;
+    core_place_funny(2,2);
+    assert(peep_word(0xd2,8)==(odd ? value*64 : value) && peep_word(0xd2,10)==65);
+    assert(peeps[0xd2*22+2]==12 && peeps[0xd2*22+3]==9 && peep_word(0xd2,6)==9);
+    saved=seed; core_place_funny(1,0); assert(seed==saved);           /* both slots busy */
+    funny_clear(); saved=seed; core_place_funny(3,0); assert(seed==saved && !peep_word(0xd1,4));
+    for (int trial=0;trial<8;++trial) {
+        funny_clear(); saved=seed; odd=___newrand()&1; value=(int16_t)___newrand()%43; seed=saved;
+        core_place_funny(1,1);
+        int position=(value+20)*64+(odd ? 63 : 0xfc0);
+        assert(peep_word(0xd1,8)==position && peep_word(0xd1,10)==-65 && peeps[0xd1*22+2]==8 && peeps[0xd1*22+3]==5);
+        int marked=0; for (int i=0;i<4096;++i) marked+=map_who[i]!=0;
+        assert(marked==(position<4096));   /* out-of-map edge cell is not written */
+    }
+    /* _do_funny: frame bounce every turn, a step every 8th, then trails. */
+    funny_clear();
+    memset(map_blk,15,4096); memset(map_bk2,0,4096);
+    int start=40*64+20;
+    map_blk[start-64-1]=0; map_blk[start-64+1]=16;
+    core_place_funny(0,3); set_peep_word(0xd1,8,start); map_who[start]=0xd2;
+    static const int frames[16]={1,2,3,4,3,2,1,0,1,2,3,4,3,2,1,0};
+    for (int turn=0;turn<16;++turn) {
+        core_do_funny();
+        assert(peep_word(0xd1,6)==frames[turn]);
+        if (turn==6) assert(peep_word(0xd1,12)==7 && peep_word(0xd1,8)==start && map_who[start]==0xd2);
+        if (turn==7) {
+            int now=start-64;
+            assert(peep_word(0xd1,12)==0 && peep_word(0xd1,8)==now && map_who[now]==0xd2 && !map_who[start]);
+            assert(map_bk2[now]==50 && map_bk2[now-1]==0 && map_bk2[now+1]==0);   /* sea and 16 skipped */
+        }
+    }
+    assert(map_bk2[start-128]==50 && map_bk2[start-129]==51 && map_bk2[start-127]==52);
+    /* Type 1 converts 15/31/32/66 to 53 and kills the occupant; type 2 puts 47+i. */
+    funny_clear(); assert(game_reset(0)); funny_clear(); memset(map_blk,15,4096);
+    start=30*64+30; map_blk[start-65]=31; map_blk[start-65-64]=40; map_blk[start-65-1]=66;
+    int victim=0; int victim_cell=start-65-1; assert(peep_word(victim,4)>0);
+    map_who[peep_word(victim,8)]=0; set_peep_word(victim,8,victim_cell); map_who[victim_cell]=victim+1;
+    core_place_funny(1,3); set_peep_word(0xd1,8,start); map_who[start]=0xd2;
+    for (int turn=0;turn<8;++turn) core_do_funny();
+    assert(map_blk[start-65]==53 && map_blk[start-65-64]==40 && map_blk[start-65-1]==53);
+    assert(peep_word(victim,4)==0 && peeps[victim*22]==0 && map_who[victim_cell]==0 && map_who[start-65]==0xd2);
+    funny_clear(); memset(map_blk,15,4096); map_blk[start+65+1]=0;
+    core_place_funny(2,3); set_peep_word(0xd1,8,start); map_who[start]=0xd2;
+    for (int turn=0;turn<8;++turn) core_do_funny();
+    assert(map_blk[start+65]==47 && map_blk[start+65+64]==48 && map_blk[start+65+1]==0);
+    /* Leaving the map ends it (valid_move 1); the cell was already cleared. */
+    funny_clear(); core_place_funny(0,3); set_peep_word(0xd1,8,5); map_who[5]=0xd2;
+    for (int turn=0;turn<8;++turn) core_do_funny();
+    assert(!peep_word(0xd1,4) && !map_who[5] && peep_word(0xd1,8)==5);
+    /* Triggers: game turn 4096 (start_seed&3, asm:752-760) and once on a full pool. */
+    assert(game_reset(0)); funny_clear();
+    start_seed=6; game_turn=0x0fff; game_tick();
+    assert(game_turn==0x1000 && peep_word(0xd1,4)==1 && peeps[0xd1*22+20]==2);
+    game_tick(); assert(!peep_word(0xd2,4));
+    assert(game_reset(0)); funny_clear(); start_seed=3; game_turn=0x0fff; game_tick();
+    assert(!peep_word(0xd1,4) && !peep_word(0xd2,4));
+    for (int owner=0;owner<2;++owner) {
+        setup_town_split(owner,0,208,208); funny_clear(); funny_done=0;
+        A4_WORD(0x82bc+owner*46)=1; A4_WORD(0x2ff6)=30000;
+        core_settle_tick(0);
+        assert(funny_done==1 && peep_word(0xd1,4)==1 && peeps[0xd1*22+20]==1 && peep_word(0xd1,10)==-65);
+        funny_clear(); core_settle_tick(0); assert(!peep_word(0xd1,4));
+    }
+    /* Render: _move_sprite position, interpolation by +$C, edge hiding,
+     * main-loop offset (-8,-16) and the queued _sprite entries. */
+    assert(game_reset(0));
+    memset(game_assets->background,1,sizeof game_assets->background);
+    memset(game_assets->land_keep,1,sizeof game_assets->land_keep);
+    memset(game_assets->land_indices,0,sizeof game_assets->land_indices);
+    memset(game_assets->big_keep,1,sizeof game_assets->big_keep);
+    memset(game_assets->big_indices,0,sizeof game_assets->big_indices);
+    /* Without a sheet the object is still queued but nothing is drawn. */
+    funny_clear(); draw_original(16,16);
+    static uint8_t plain[320*200]; memcpy(plain,game_pixels,sizeof plain);
+    map_who[17*64+17]=0xd2; peeps[0xd1*22]=2; set_peep_word(0xd1,10,-64);
+    draw_original(16,16);
+    assert(!memcmp(plain,game_pixels,sizeof plain) && no_sprites==1 && A4_WORD(0x9a28)==0xd2);
+    game_assets->big_size=13*1024;
+    for (int frame=0;frame<13;++frame) { game_assets->big_indices[frame*1024]=2+frame%13; game_assets->big_keep[frame*1024]=0; }
+    static const struct { int step,dx,dy,hide_u,hide_v; } moves[]={
+        {-65,0,-2,0,0},{-64,2,-1,-1,0},{-63,4,0,7,0},{1,2,1,7,-1},
+        {65,0,2,7,7},{64,-2,1,-1,7},{63,-4,0,0,7},{-1,-2,-1,0,-1},{5,0,0,-1,-1}};
+    for (unsigned m=0;m<sizeof moves/sizeof *moves;++m)
+    for (int u=0;u<8;u+=3) for (int v=0;v<8;v+=7) for (int counter=0;counter<9;counter+=2) for (int flat=0;flat<2;++flat) {
+        funny_clear(); memset(map_alt,0,4096); memset(map_blk,15,4096); view_who=0;
+        int cell=(16+v)*64+16+u, frame=(int)(m+counter)%13;
+        map_alt[cell]=2; if (cell+moves[m].step>=0) map_alt[cell+moves[m].step]=1;
+        if (!flat) map_blk[cell]=20;
+        static uint8_t base[320*200]; draw_original(16,16); memcpy(base,game_pixels,sizeof base);
+        map_who[cell]=0xd2; peeps[0xd1*22]=2;
+        set_peep_word(0xd1,6,frame); set_peep_word(0xd1,10,moves[m].step); set_peep_word(0xd1,12,counter);
+        draw_original(16,16);
+        int sx=176+16*(u-v)+8+moves[m].dx*counter, sy=64+8*(u+v)-16-8+(flat ? 0 : 4)+1*counter+moves[m].dy*counter;
+        int hidden=counter>=8 || (counter>4 && (u==moves[m].hide_u || v==moves[m].hide_v));
+        int colour=game_pixels[(sy-16)*320+sx-8];
+        if (hidden) { assert(!memcmp(base,game_pixels,sizeof base) && no_sprites==0); continue; }
+        /* Only the frame's single opaque pixel (its origin) changes. */
+        int changed=0; for (int i=0;i<320*200;++i) changed+=base[i]!=game_pixels[i];
+        assert(colour==2+frame && changed==(base[(sy-16)*320+sx-8]!=colour));
+        assert(no_sprites==1 && A4_WORD(0x9a22)==sx && A4_WORD(0x9a24)==sy && A4_WORD(0x9a26)==frame && A4_WORD(0x9a28)==0xd2);
+    }
+    /* The view_who marker (frame $44) is queued but past the 13-frame sheet. */
+    funny_clear(); memset(map_alt,0,4096); memset(map_blk,15,4096);
+    map_who[17*64+17]=0xd2; peeps[0xd1*22]=2; set_peep_word(0xd1,6,3); set_peep_word(0xd1,10,-64);
+    view_who=0xd2; draw_original(16,16);
+    assert(no_sprites==2 && A4_WORD(0x9a2a)==A4_WORD(0x9a22)+8 && A4_WORD(0x9a2e)==0x44 && A4_WORD(0x9a30)==0xd2);
+    /* A shaken screen skips _move_sprite (asm:15842-15849). */
+    view_who=0; core_shake_dy=2; no_sprites=5; draw_original(16,16); assert(no_sprites==5); core_shake_dy=0;
+    funny_clear(); view_who=0;
+}
+
 static void test_special_sprites(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
@@ -6321,7 +6591,10 @@ static void test_quake_shake(void)
         memset(game_assets->sprite_indices,0,sizeof game_assets->sprite_indices);
         game_assets->land_indices[15*768+8*32+16]=2;
         game_assets->sprite_indices[8*256]=8;
-        game_render(); assert(game_pixels[72*320+192]==3 && game_pixels[88*320+184]==9);
+        /* The synthetic start leaves +$C at 255: _move_sprite's _debug exit
+         * (asm:16061-16069) would hide it until the first _set_frame. */
+        toggle=0; set_peep_word(0,12,0); game_render(); assert(game_pixels[72*320+192]==3 && game_pixels[88*320+184]==9);
+        set_peep_word(0,12,255);
         int sprites=no_sprites;
         GraphicsAssets *assets=game_assets;
         if (!run) game_assets=NULL;
@@ -9360,8 +9633,10 @@ static void test_knight_lifecycle(void)
             assert(peep_word(0,4)>0 && core_tool==1 && core_swamp_selected==1);
             assert_mailbox_empty(); assert_live_occupancy();
             if (!(tick%10)) {
+                /* Moving walkers are now drawn from their departure cell, so
+                 * the render-owned _sprite/_ok_to_build block may change. */
                 memcpy(expected,prg_a4_area,sizeof expected); game_render();
-                assert(!memcmp(expected,prg_a4_area,sizeof expected));
+                assert(a4_same(expected));
             }
         }
         printf("Knight controlled ticks: owner=%d moved=%d battle=%d remnant=%d celebration=%d resumed=%d expired=%d tick=%d\n",
@@ -9992,18 +10267,81 @@ static void test_battle_entry_town_reward(void)
     }
 }
 
+/* _move_sprite walking branch (asm:16061-16224) and SUB_49F72 (asm:16225-16254):
+ * a walker is drawn from the map_who (departure) cell, moved by +$C along
+ * +$A with the altitude difference, and hidden in the second half of moves
+ * leaving the 8x8 view. Literal per-direction table from the asm. */
+static void test_walker_interpolation(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    static const struct { int step,dx,dy,hide_u,hide_v,frame; } moves[]={
+        {-65,0,-2,0,0,0},{-64,2,-1,-1,0,2},{-63,4,0,7,0,4},{1,2,1,7,-1,6},
+        {65,0,2,7,7,8},{64,-2,1,-1,7,10},{63,-4,0,0,7,12},{-1,-2,-1,0,-1,14},{5,0,0,-1,-1,8}};
+    for (unsigned m=0;m<sizeof moves/sizeof *moves;++m)
+    for (int u=0;u<8;u+=7) for (int v=0;v<8;v+=7) for (int counter=0;counter<9;++counter)
+    for (int water=0;water<(counter%3==2 ? 2 : 1);++water) {   /* water: counters 2,5,8 */
+        int flat=(counter+u)&1, owner=(counter>>1)&1, headed=v>0, tog=counter&1, turn=counter+m;
+        sprite_scene(); toggle=tog; game_turn=turn; player=1;
+        int cell=(16+v)*64+16+u, next=cell+moves[m].step;
+        map_alt[cell]=3; if (next>=0 && next<4096) map_alt[next]=1;
+        if (!flat) map_blk[cell]=20;
+        uint8_t expected[64000],before[sizeof prg_a4_area];
+        draw_original(16,16); memcpy(expected,game_pixels,sizeof expected);
+        /* Departure-cell layout of core_move: +8 is the destination. */
+        peeps[0]=water ? 0x12 : 2; peeps[1]=owner; peeps[17]=headed ? 0x80 : 0;
+        set_peep_word(0,4,100); set_peep_word(0,8,next); set_peep_word(0,10,moves[m].step);
+        set_peep_word(0,12,counter); set_peep_word(0,18,water);
+        map_who[cell]=1;
+        int frame=water ? 93+(turn&3)+16*headed+4*owner : moves[m].frame+tog+16*owner+32*headed;
+        int sx=176+16*(u-v)+8+moves[m].dx*counter;
+        int sy=64+8*(u+v)-8*3-8+(flat ? 0 : 4)+2*counter+moves[m].dy*counter;
+        int hidden=counter>=8 || (counter>4 && (u==moves[m].hide_u || v==moves[m].hide_v));
+        if (!hidden) sprite_mask_oracle(expected,frame,sx,sy);
+        memcpy(before,prg_a4_area,sizeof before); draw_original(16,16);
+        assert(a4_same(before)); assert_sprite_pixels(expected);
+        /* asm:15965-15982, before the dispatch (so also when hidden): own
+         * peeps OR the whole flag byte (+1 for +$12), others flags&$F8. */
+        assert(ok_to_build==(owner==1 ? peeps[0]|water : peeps[0]&0xf8));
+        if (hidden) { assert(no_sprites==0); continue; }
+        assert(no_sprites==1 && A4_WORD(0x9a22)==sx && A4_WORD(0x9a24)==sy &&
+               A4_WORD(0x9a26)==frame && A4_WORD(0x9a28)==1);
+    }
+    /* A walker whose map_who cell is neither +8 nor +8-+$A is not drawn. */
+    sprite_scene(); peeps[0]=2; set_peep_word(0,4,100);
+    set_peep_word(0,8,16*64+18); set_peep_word(0,10,1); map_who[16*64+16]=1;
+    draw_original(16,16); assert(no_sprites==0);
+    /* The view_who marker: frame $44 at x+8, after the occupant. */
+    sprite_scene(); toggle=0; peeps[0]=2; set_peep_word(0,4,100);
+    set_peep_word(0,8,16*64+17); set_peep_word(0,10,1); set_peep_word(0,12,2);
+    map_who[16*64+16]=1; view_who=1;
+    uint8_t expected[64000];
+    map_who[16*64+16]=0; draw_original(16,16); memcpy(expected,game_pixels,sizeof expected);
+    map_who[16*64+16]=1;
+    sprite_mask_oracle(expected,6,188,58); sprite_mask_oracle(expected,0x44,196,58);
+    draw_original(16,16); assert_sprite_pixels(expected);
+    assert(no_sprites==2 && A4_WORD(0x9a2a)==196 && A4_WORD(0x9a2c)==58 &&
+           A4_WORD(0x9a2e)==0x44 && A4_WORD(0x9a30)==1);
+    view_who=0;
+    _closeall(); SDL_Quit();
+}
+
 static void test_battle_frame_render_and_entry(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
     const int frames[]={70,71,72,130,131,132,134,135,136,138,139,140};
     const int invalid[]={0,35,73,129,133,137,141,32767,-32768,-1};
     uint32_t headings[]={0,1,UINT32_MAX,0x80000000u,0x00008000u};
-    const int flags[]={8,9,0x18,0xff};
+    /* _move_sprite tests bit 4 before bit 3 (asm:16004-16012): 0x18/0xff
+     * take the walking branch, whose +$C >= 8 is the _debug exit. */
+    const int flags[]={8,9,0x0c,0x8b};
     for (int owner=0; owner<2; ++owner) for (int turn=0; turn<8; ++turn)
     for (unsigned raw=0; raw<sizeof headings/sizeof headings[0]; ++raw) {
-        for (unsigned frame=0; frame<sizeof frames/sizeof frames[0]; ++frame)
+        for (unsigned frame=0; frame<sizeof frames/sizeof frames[0]; ++frame) {
             sprite_case(flags[frame%4],owner,frames[frame],headings[raw],turn,1,15,0,0,0,
                         frames[frame],192,56);
+            sprite_case(frame%2 ? 0xff : 0x18,owner,frames[frame],headings[raw],turn,1,15,0,0,0,
+                        -1,192,56);
+        }
         for (unsigned frame=0; frame<sizeof invalid/sizeof invalid[0]; ++frame)
             sprite_case(8,owner,invalid[frame],headings[raw],turn,1,15,0,0,0,
                         turn<4 ? 138 : 139,192,56);
@@ -10115,6 +10453,9 @@ static void test_water_town_state(void)
             set_peep_word(person,8,900);
         }
         no_peeps=208;
+        /* A full pool also places a funny once (asm:3996-4006); that is
+         * covered by test_funny_objects, here it has already happened. */
+        funny_done=1;
         int occupant=sample%3; map_who[650]=occupant;
         uint8_t expected[sizeof prg_a4_area];
         int evacuate=!plots[plot].capacity || war || heading;
@@ -11968,6 +12309,8 @@ static void entry_click(const uint8_t *entry, int dx, int dy)
 {
     screen_click(core_rec_w(entry,0)+dx+1, core_rec_w(entry,2)+dy+1, SDL_BUTTON_LEFT);
 }
+/* _do_message's OK (_end_ok of _requester 0x28,0x3c,0x100,0x30). */
+static void disk_ok_click(void) { screen_click(core_rec_w(core_end_ok,0)+4, core_rec_w(core_end_ok,2)+8, SDL_BUTTON_LEFT); }
 static void world_ok_click(void) { screen_click(core_rec_w(core_world_ok,0)+4, core_rec_w(core_world_ok,2)+8, SDL_BUTTON_LEFT); }
 static void world_new_click(void) { screen_click(core_rec_w(core_world_cancel,0)+4, core_rec_w(core_world_cancel,2)+8, SDL_BUTTON_LEFT); }
 static void world_type(const char *text)
@@ -12150,9 +12493,22 @@ static void test_save_load(void)
     screen_click(0x60, 0xa2, SDL_BUTTON_LEFT); assert(core_file.field == 2);
     world_type("slot\b\bved\n"); assert(!core_file.field && !strcmp(core_filename, "SLVED"));
     memcpy(snapshot, prg_a4_area, sizeof snapshot);
+    char level_path[512]; snprintf(level_path, sizeof level_path, "%s/level.dat", test_data_directory);
+    assert(access(level_path, F_OK));   /* no level.dat: the disk check after the save */
     screen_click(core_rec_w(core_file_ok,0)+4, core_rec_w(core_file_ok,2)+8, SDL_BUTTON_LEFT);
-    assert(core_req.kind == CORE_REQ_NONE && A4_WORD(0x3054) == 1);
     assert(save_read("SLVED.GAM", file, sizeof file) == CORE_SAVE_SIZE);
+    /* LAB_46110..LAB_46144 (asm:10931-10944): _saved is set, then
+     * _do_message(strInsertDisk,0) until level.dat opens; only OK, keys ignored. */
+    assert(core_req.kind == CORE_REQ_FILE && core_disk_message == CORE_DISK_SAVE && A4_WORD(0x3054) == 1);
+    world_type("x\n"); assert(!strcmp(core_filename, "SLVED") && core_disk_message == CORE_DISK_SAVE);
+    core_draw_requester(); assert_tile(32,0x3c,12);
+    assert(core_rec_w(core_end_ok,0) == 144 && core_rec_w(core_end_ok,4) == 192 && core_rec_w(core_end_ok,2) == 0x5c);
+    screen_click(0x100, 0x60, SDL_BUTTON_LEFT); assert(core_disk_message == CORE_DISK_SAVE);
+    disk_ok_click(); assert(core_req.kind == CORE_REQ_FILE && core_disk_message == CORE_DISK_SAVE);
+    write_level_fixture(1, 1);
+    disk_ok_click();
+    assert(core_req.kind == CORE_REQ_NONE && !core_disk_message && A4_WORD(0x3054) == 1);
+    assert(!unlink(level_path));
     /* LOAD A GAME lists the drawer (upper-cased .GAM files, sorted), a row
      * picks the name; the arrows scroll while top+5 < count. */
     save_write("b.gam", file, 4); save_write("note.txt", file, 4);
@@ -12728,6 +13084,92 @@ static void test_world_screen(void)
     _animate(); assert(core_req.kind == CORE_REQ_WORLD && core_world.origin == CORE_WORLD_START);
     requested_world = 0; core_req.kind = CORE_REQ_NONE; prg_quit = 0;
     assert(!unlink(path));
+    _closeall(); SDL_Quit();
+}
+
+/* diskerr_47222 (asm:12369-12375): without level.dat _show_world shows
+ * _do_message(strInsertDisk,0) (asm:11098-11141, text asm:21250-21256);
+ * its OK re-evaluates the name (LAB_47064 with -22 clear), so it repeats
+ * until the file is there. Also drawn in the diagnostic view. */
+static void test_insert_disk(void)
+{
+    if (getenv("POPULOUS_TEST_REAL_DATA")) return;
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    char path[512]; snprintf(path, sizeof path, "%s/level.dat", test_data_directory);
+    unlink(path);
+    assert(game_reset(0));
+    core_message[0] = 0; core_world_open(CORE_WORLD_START);
+    assert(core_req.kind == CORE_REQ_WORLD && core_disk_message == CORE_DISK_WORLD &&
+           !core_world.shown && !core_world.entry && !strcmp(core_message, "GENESIS"));
+    /* Frame 0x28,0x3c,0x100,0x30: title 12 at x 32 (0x28/16 words), the lone OK at 144..192. */
+    draw_original(xoff, yoff);
+    assert_tile(32,0x3c,12); assert_tile(0x110,0x3c,14); assert_tile(32,0x5c,15);
+    assert(core_rec_w(core_end_ok,0) == 144 && core_rec_w(core_end_ok,4) == 192 && core_rec_w(core_end_ok,2) == 0x5c && !strcmp(core_rec_text(core_end_ok), "OK"));
+    static uint8_t shown[sizeof game_pixels]; memcpy(shown, game_pixels, sizeof shown);
+    core_disk_layout(1);   /* the frame alone: both text lines differ */
+    int line1 = 0, line2 = 0;
+    for (int x = 0x38; x < 0x38 + 21*8; ++x) for (int y = 0; y < 8; ++y) {
+        line1 |= shown[(0x48+y)*320+x] != game_pixels[(0x48+y)*320+x];
+        line2 |= shown[(0x50+y)*320+x] != game_pixels[(0x50+y)*320+x];
+    }
+    assert(line1 && line2);
+    core_disk_layout(1); amiga_text(game_pixels, 0x38, 0x48, "INSERT THE ORIGINAL\nPOPULOUS DISK IN DF0:");
+    assert(!memcmp(shown, game_pixels, sizeof shown));   /* exactly strInsertDisk at 0x38,0x48 */
+    /* Keys are ignored, a click off OK keeps it, OK without the file repeats it. */
+    world_type("ABC\n"); assert(!strcmp(core_message, "GENESIS") && core_disk_message == CORE_DISK_WORLD);
+    screen_click(0x100, 0x48, SDL_BUTTON_LEFT); assert(core_disk_message == CORE_DISK_WORLD);
+    disk_ok_click(); assert(core_req.kind == CORE_REQ_WORLD && core_disk_message == CORE_DISK_WORLD && !core_world.shown);
+    /* Diagnostic view: the requester and the message over the map. */
+    diagnostic_view = 1; xoff = yoff = 0;
+    static uint32_t frame[320*256];
+    _draw_it(yoff, xoff);
+    memcpy(frame, prg_screen->chunky_buffer, sizeof frame);
+    for (int row = 0; row < 16; ++row) for (int column = 0; column < 16; ++column)
+        assert(frame[(0x3c+row)*320+32+column] == prg_screen->palette[icon_pixel(12,column,row)]);
+    core_disk_message = CORE_DISK_NONE; core_req.kind = CORE_REQ_NONE;
+    _draw_it(yoff, xoff);
+    /* The start world screen clears d_screen (as in the original view);
+     * the diagnostic rows below y 200 stay. */
+    assert(frame[2*320+2] == prg_screen->palette[0] && frame[2*320+2] != prg_screen->chunky_buffer[2*320+2]);
+    assert(!memcmp(frame + 200*320, prg_screen->chunky_buffer + 200*320, 56*320*sizeof *frame));
+    core_disk_message = CORE_DISK_WORLD; core_req.kind = CORE_REQ_WORLD;
+    /* The file is back: OK reads record 0 and shows the world lines. */
+    write_level_fixture(1, 1);
+    disk_ok_click();
+    assert(core_req.kind == CORE_REQ_WORLD && !core_disk_message && core_world.shown && !core_world.level &&
+           (uint16_t)conq_08_seed == 0xabcd);
+    world_ok_click(); assert(!core_req.kind && current_start.kind == START_ORIGINAL && in_conquest == 0);
+    assert(!unlink(path));
+    _closeall(); SDL_Quit();
+}
+
+/* The _end_game screen in the diagnostic view: the same requester, rows and
+ * button over the map, the pointer drawn; its button continues. */
+static void test_diagnostic_end_screen(void)
+{
+    if (getenv("POPULOUS_TEST_REAL_DATA")) return;
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    write_font_fixture();
+    assert(game_reset(0) && game_font_loaded);
+    end_kill(1);
+    draw_original(6, 6);
+    static uint8_t original[sizeof game_pixels]; memcpy(original, game_pixels, sizeof original);
+    diagnostic_view = 1; xoff = yoff = 0; mousex = 300; mousey = 230;
+    _draw_it(yoff, xoff);
+    static uint32_t frame[320*256]; memcpy(frame, prg_screen->chunky_buffer, sizeof frame);
+    /* Every pixel of the 16,16,0x120,0xa6 box matches the original view. */
+    for (int y = 16; y < 16+0xa6; ++y) for (int x = 16; x < 16+0x120; ++x)
+        assert(frame[y*320+x] == prg_screen->palette[original[y*320+x]]);
+    assert(SDL_ShowCursor(SDL_QUERY) == SDL_DISABLE);   /* the drawn pointer */
+    core_end_shown = 0; _draw_it(yoff, xoff); core_end_shown = 1;
+    assert(frame[2*320+2] == prg_screen->chunky_buffer[2*320+2]);   /* map outside the box */
+    int differs = 0;
+    for (int x = 32; x < 300; ++x) differs |= frame[32*320+x] != prg_screen->chunky_buffer[32*320+x];
+    assert(differs);
+    end_button_click();
+    assert(!core_end_shown && !core_result && current_start.kind == START_SYNTHETIC);
+    diagnostic_view = 0;
+    copy_real_font();
     _closeall(); SDL_Quit();
 }
 
@@ -13620,13 +14062,18 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_end_transition();
     test_lord_screen();
     test_world_screen();
+    test_insert_disk();
+    test_diagnostic_end_screen();
     test_requesters();
     test_save_load();
     test_custom_game();
     test_original_graphics_output();
     test_toolbar_icon_highlight();
     test_query_and_shield();
-    test_special_sprites(); test_battle_frame_render_and_entry();
+    test_shield_icons();
+    test_icon_flashes();
+    test_special_sprites(); test_battle_frame_render_and_entry(); test_walker_interpolation();
+    test_funny_objects();
     test_isometric_match();
     test_colocated_hostile_encounter();
     test_no_hidden_town();

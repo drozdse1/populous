@@ -166,6 +166,83 @@ static void core_remove(int person)
     if (view_who == person+1) view_who = 0;
     set_peep_word(person,4,0); peeps[person*22] = 0;
 }
+/* "Funny" objects: peep slots $D1/$D2 (_peeps+$11F6 = LAB_5420A, A4 0xae1c),
+ * the only users of the 32x32 sheet. _funny asm:24161-24171 (A4 0x8292),
+ * 12 bytes per type: step, first frame (low byte of +2), last frame (low
+ * byte of +4), then three trail offsets read at LAB_51686. */
+#define CORE_FUNNY_FIRST 0xd1
+#define CORE_FUNNY_END   0xd3
+static const int16_t core_funny[3][6] = {
+    {-64, 0, 4,  0,-1, 1},
+    {-65, 5, 8,  0,-64,-1},
+    { 65, 9,12,  0, 64, 1},
+};
+static void core_zero_funny(int slot)
+{
+    set_peep_word(slot,4,0);
+    int position = peep_word(slot,8), previous = (int16_t)(position-peep_word(slot,10));
+    if (position >= 0 && position < 4096 && map_who[position] == slot+1) map_who[position] = 0;
+    if (previous >= 0 && previous < 4096 && map_who[previous] == slot+1) map_who[previous] = 0;
+    if (view_who == slot+1) view_who = 0;
+}
+static void core_place_funny(int type, int edge)
+{
+    if (type < 0 || type > 2) return;
+    for (int slot = CORE_FUNNY_FIRST; slot < CORE_FUNNY_END; ++slot) {
+        if (peep_word(slot,4)) continue;
+        set_peep_word(slot,4,1); peeps[slot*22] = 2;
+        int position = peep_word(slot,8);
+        if (edge == 0) position = ((int16_t)___newrand()%125)/2 + 0xfc0;
+        else if (edge == 1 || edge == 2) {
+            int odd = ___newrand() & 1, value = (int16_t)___newrand()%43;
+            if (edge == 1) position = (value+20)*64 + (odd ? 63 : 0xfc0);
+            else position = odd ? value*64 : value;
+        }
+        set_peep_word(slot,8,(int16_t)position);
+        if (position >= 0 && position < 4096) map_who[position] = (uint8_t)(slot+1);
+        set_peep_word(slot,10,core_funny[type][0]);
+        peeps[slot*22+2] = (uint8_t)core_funny[type][2];
+        peeps[slot*22+3] = (uint8_t)core_funny[type][1];
+        peeps[slot*22+21] = 1;
+        set_peep_word(slot,6,core_funny[type][1]);
+        peeps[slot*22+20] = (uint8_t)type;
+        return;
+    }
+}
+static void core_do_funny(void)
+{
+    for (int slot = CORE_FUNNY_FIRST; slot < CORE_FUNNY_END; ++slot) {
+        uint8_t *record = peeps+slot*22;
+        if (!peep_word(slot,4)) continue;
+        set_peep_word(slot,12,(int16_t)(peep_word(slot,12)+1));
+        int step = (int8_t)record[21];
+        set_peep_word(slot,6,(int16_t)(peep_word(slot,6)+step));
+        uint16_t frame = (uint16_t)peep_word(slot,6);
+        if (frame >= record[2] || frame <= record[3]) record[21] = (uint8_t)-step;
+        if (peep_word(slot,12) <= 7) continue;
+        set_peep_word(slot,12,0);
+        int position = peep_word(slot,8), type = (int8_t)record[20];
+        if (position >= 0 && position < 4096 && map_who[position] == slot+1) map_who[position] = 0;
+        if (type < 0 || type > 2) continue;
+        if (!peep_word(slot,10)) set_peep_word(slot,10,core_funny[type][0]);
+        if (core_valid_move(position,peep_word(slot,10)) == 1) { set_peep_word(slot,4,0); continue; }
+        position += peep_word(slot,10);
+        set_peep_word(slot,8,(int16_t)position);
+        for (int index = 0; index < 3; ++index) {
+            int offset = core_funny[type][3+index];
+            if (core_valid_move(position,offset) == 1) continue;
+            int cell = position+offset, block = map_blk[cell];
+            if (type == 0) { if (block && block != 16) map_bk2[cell] = (uint8_t)(50+index); }
+            else if (type == 1) { if (block == 15 || block == 31 || block == 32 || block == 66) map_blk[cell] = 53; }
+            else if (block && block != 16) map_blk[cell] = (uint8_t)(47+index);
+            int victim = map_who[cell]-1;
+            if (victim < 0) continue;
+            if (victim < 208) core_remove(victim);
+            else if (victim < CORE_FUNNY_END) core_zero_funny(victim);
+        }
+        map_who[position] = (uint8_t)(slot+1);
+    }
+}
 static void core_frame_town(int person, int capacity)
 {
     set_peep_word(person,12,capacity >= 3050 ? 42 : 32+capacity*10/305);
@@ -882,6 +959,10 @@ static void core_settle_tick(int person)
                 /* asm:3964-3983: preserve a co-located walker or battle occupant. */
                 if (!map_who[position] || map_who[position] == person+1) map_who[position] = child+1;
                 if (peeps[person*22+2] < 4) ++peeps[person*22+2];
+            } else if (!funny_done) {
+                /* asm:3996-4006: no free slot of 208, once per game. */
+                core_place_funny(1,0);
+                funny_done = 1;
             }
         }
         /* asm:4007-4014: ADD.W can revive or kill; store before maintenance. */
@@ -1190,6 +1271,7 @@ static void core_consume_terrain_mailboxes(void)
         case 14:
             /* _do_action asm:18406-19032, switch on y; these cases return 0. */
             if (y == 1) core_tendency(owner) = (int16_t)x; /* _set_tend_icons is UI only */
+            else if (y == 2) { if (!serial_off) POP_LOGW("MSG", "Message requester needs the serial link; dropped"); }
             else if (y == 3) core_war(owner);
             else if (y == 4) core_flood(owner);
             else if (y == 5) core_knight(owner);
@@ -1664,6 +1746,8 @@ static void original_clear(WorldRandom random, unsigned internal_level)
     _clear_map();
     memset(map_steps, 0, 4096 * 2);
     memset(peeps, 0, 208 * 22);
+    for (int slot = 208; slot < CORE_FUNNY_END; ++slot) set_peep_word(slot,4,0);
+    funny_done = 0;
     no_peeps = 0;
     for (int owner = 0; owner < 2; ++owner) {
         core_tendency(owner) = 1;
@@ -2207,7 +2291,7 @@ static int game_reset_start(StartSelection selection)
     /* Single-player conquest start sets _serial_off (asm:12768); the end
      * score reads it (asm:14239). _score was cleared with the staged A4. */
     serial_off = 1;
-    core_end_shown = 0; core_end_next = -1;
+    core_end_shown = 0; core_end_next = -1; core_disk_message = CORE_DISK_NONE;
     if (selection.kind != START_CUSTOM) {   /* the custom _stats stand (asm:430-457) */
         stats_build_mode(0) = 0; stats_build_mode(1) = 1;
         stats_build_latch(0) = 1; stats_build_latch(1) = 0;
@@ -2252,6 +2336,7 @@ static void game_tick(void)
      * The original also lapses it while a button is held; the port has no
      * held-button state, so only the countdown applies. */
     if (view_timer && !--view_timer) view_who = old_view_who;
+    core_do_funny();   /* asm:680, before _move_peeps */
     _move_peeps();
     /* _move_peeps asm:4323-4347, after the peep loop: the pass's pre-move
      * good_pop or a surrender ends the game, _player first (___end_game(1)
@@ -2261,6 +2346,8 @@ static void game_tick(void)
     /* Preserve the C population/result timing; never modify terrain mid-movement. */
     if (core_result) core_clear_terrain_mailboxes();
     else core_consume_terrain_mailboxes();
+    /* asm:752-760: at game turn 4096 place type _start_seed&3 (3: none). */
+    if (game_turn == 0x1000) core_place_funny(start_seed & 3, 0);
 }
 
 static void game_render(void)

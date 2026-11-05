@@ -29,15 +29,15 @@ with_timeout = $(if $(TIMEOUT_BIN),$(TIMEOUT_BIN) $(1))
 SANITIZER_FLAGS = -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 
 TARGET = populous_init_port
-SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c pop_log.c
+SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c
 # populous_prg.c is a unity build of these fragments (kept for test #include).
 PRG_MODULES = modules/01_preamble.c modules/02_rules.c modules/03_ui_save.c modules/04_render_input.c a4_state.h
 CPPFLAGS += -DPOPULOUS_DEFAULT_ASSET_DIR='"$(abspath ../binaries/populous-extracted)"'
 OBJS = $(SRCS:.c=.o)
 HEADERS = $(wildcard *.h)
-RUNTIME_SOURCES = tests/test_runtime.c populous_init.c sdl_lowlevel.c graphics.c audio.c title_music.c pop_log.c $(HEADERS)
+RUNTIME_SOURCES = tests/test_runtime.c populous_init.c sdl_lowlevel.c graphics.c audio.c title_music.c intro_data.c pop_log.c $(HEADERS)
 # The launcher's asset, mixer and title replayer units; the test includes the rest.
-RUNTIME_LINK = graphics.c audio.c title_music.c pop_log.c
+RUNTIME_LINK = graphics.c audio.c title_music.c intro_data.c pop_log.c
 
 .PHONY: all clean run test-runtime test test-sanitize
 all: $(TARGET)
@@ -76,11 +76,11 @@ test-sanitize: tests/test_runtime_sanitize
 # Only activate game checks once the core step supplies real test sources.
 ifneq ($(wildcard tests/test_game.c),)
 .PHONY: test-game
-tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c pop_log.c $(HEADERS) $(PRG_MODULES)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c pop_log.c -o $@ $(LDLIBS)
+tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c $(HEADERS) $(PRG_MODULES)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c -o $@ $(LDLIBS)
 
-tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c pop_log.c $(HEADERS) $(PRG_MODULES)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c pop_log.c -o $@ $(LDLIBS)
+tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c $(HEADERS) $(PRG_MODULES)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c -o $@ $(LDLIBS)
 
 test-game: tests/test_game
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) ./tests/test_game
