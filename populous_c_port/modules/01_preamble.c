@@ -1,8 +1,15 @@
 #include "../pop_log.h"
-/* modules/01_preamble.c — unity-included from populous_prg.c (do not compile alone). */
-/* Original populous_prg.c lines 238-797. */
+/*
+ * modules/01_preamble.c
+ * ---------------------
+ * Unity-included from populous_prg.c (do not compile alone).
+ * Original populous_prg.c lines 238-797.
+ *
+ * Forward decls for Amiga/SDL shims, peep accessors, conquest constants,
+ * and the prg_main entry path.
+ */
 
-/* Prototypes for shims referenced by the translated chunk (defined at bottom of the inserted block) */
+/* Prototypes for shims referenced by the translated chunk (defined later). */
 static void *amiga_alloc_mem(uint32_t, uint32_t);
 static void  amiga_free_mem(void*);
 static void  ___open_screen(void);
@@ -211,7 +218,7 @@ static struct {
     char names[CORE_FILE_MAX][32];
 } core_file;
 static uint8_t core_file_ok[46];   /* _save_load -130(A5) */
-#define core_message ((char *)A4_DISP(0x3058))
+/* core_message lives in a4_state.h */
 static void core_world_open(int origin);
 static void core_world_key(int key);
 static void core_world_layout(int draw);

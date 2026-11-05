@@ -1,6 +1,15 @@
 #include "../pop_log.h"
-/* modules/04_render_input.c — unity-included from populous_prg.c (do not compile alone). */
-/* Original populous_prg.c lines 4764-5339. */
+/*
+ * modules/04_render_input.c
+ * -------------------------
+ * Unity-included from populous_prg.c (do not compile alone).
+ * Original populous_prg.c lines 4764-5339.
+ *
+ * Frame draw, _move_peeps tick, Amiga/SDL shims, and input handling.
+ * Prefer a4_state.h names over raw A4_WORD(0x…).
+ */
+
+/* ---- Peep framing / move_peeps ----------------------------------------- */
 
 static int core_frame_walker(int person)
 {
@@ -50,11 +59,11 @@ static void _move_peeps(void)
     }
     /* asm:3271-3335: per-pass AI bookkeeping, including the good_pop reset. */
     for (int owner = 0; owner < 2; ++owner) {
-        core_town_strength[owner] = (int16_t)(A4_WORD(0x82ca+owner*46)*3 + A4_WORD(0x82cc+owner*46));
-        A4_WORD(0x99fc+owner*16) = 0;
+        core_town_strength[owner] = (int16_t)(stats_city_count(owner)*3 + stats_town_tally(owner));
+        core_town_age(owner) = 0;
         core_good_pop(owner) = 0;
         core_city_count[owner] = 0; core_youngest_town_age[owner] = 0x4e1f;
-        A4_LONG(0x82d8+owner*46) = A4_LONG(0x82dc+owner*46) = A4_LONG(0x82e0+owner*46) = 0;
+        stats_best_town_ref(owner) = stats_oldest_town_ref(owner) = stats_youngest_town_ref(owner) = 0;
         core_oldest_town_age[owner] = 0; core_best_town_capacity[owner] = 0;
     }
     /* asm:3357-3424: release heading-bearing leaders before war recenters.
@@ -185,7 +194,7 @@ static void _move_peeps(void)
             /* asm:4092-4122: first walker of the pass for the enemy's AI
              * (host slot+1 encoding), then terrain flattening. */
             int owner = peep_owner(person);
-            if (!A4_LONG(0x82dc+(owner ? 0 : 1)*46)) A4_LONG(0x82dc+(owner ? 0 : 1)*46) = (uint32_t)(person+1);
+            if (!stats_oldest_town_ref(owner ? 0 : 1)) stats_oldest_town_ref(owner ? 0 : 1) = (uint32_t)(person+1);
             if (!stats_build_latch(owner)) core_one_block_flat(position,owner);
             core_move(person);
             /* asm:4100-4117: drop a stale +0x12 cell, then this path's loss. */
@@ -199,8 +208,8 @@ static void _move_peeps(void)
     }
     /* asm:4349-4370: publish this pass's town and city counts. */
     for (int owner = 0; owner < 2; ++owner) {
-        A4_WORD(0x82cc+owner*46) = A4_WORD(0x99fc+owner*16);
-        A4_WORD(0x82ca+owner*46) = core_city_count[owner];
+        stats_town_tally(owner) = core_town_age(owner);
+        stats_city_count(owner) = core_city_count[owner];
     }
 }
 static void _show_the_shield(void) { core_shield_state(); }
@@ -218,7 +227,7 @@ static void core_set_temp_view(int16_t who)
 static void core_interogate(int mx, int my, int right)
 {
     for (int i = 0; i < no_sprites && i < 64; ++i) {
-        int16_t x = A4_WORD(0x9a22+i*8), y = A4_WORD(0x9a24+i*8), who = A4_WORD(0x9a28+i*8);
+        int16_t x = sprite_x(i), y = sprite_y(i), who = sprite_who(i);
         if (mx < x || mx > x+12 || my < y || my > y+8) continue;
         if (core_tool == 2) {
             if (right) { view_timer = 0; view_who = who; }
@@ -284,7 +293,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
     int c = sx/2 + sy - 32, r = sy - sx/2 + 32;
     if (sy >= 200) return 0;
     int owner_ok = player >= 0 && player <= 1;
-    uint8_t *mailbox = owner_ok ? A4_DISP(0x82b6 + player*46) : NULL;
+    uint8_t *mailbox = owner_ok ? stats_bytes(player) : NULL;
     post = post && owner_ok;
     if (c > 0x112) {
         /* System icons asm:1700-1829: options, game options, pause, sound. */
@@ -321,7 +330,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else if (icon == 2 && line == 0) { mailbox[0] = 3; mailbox[1] = (uint8_t)xoff; mailbox[2] = (uint8_t)yoff; }
         else if (icon == 2 && line == 1) { mailbox[0] = 14; mailbox[2] = 5; }
         else if (icon == 2 && line == 2) {
-            if ((core_mana(player) > (int32_t)A4_LONG(0x8496) && (A4_WORD(0x82c4+player*46)&0x10)) || paint_map)
+            if ((core_mana(player) > (int32_t)mana_swamp_cost && (stats_power_mask(player)&0x10)) || paint_map)
                 { core_swamp_selected = 1; core_set_pointer(); }
         }
     } else if (icon <= 5) {
@@ -409,6 +418,8 @@ static void ___keyboard(void)
     while (!prg_quit && SDL_PollEvent(&event)) game_handle_event(&event);
 }
 
+/* ---- Input / SDL events --------------------------------------------- */
+
 static void game_handle_event(const SDL_Event *event)
 {
     if (event->type == SDL_QUIT) { prg_quit = 1; return; }
@@ -445,8 +456,8 @@ static void game_handle_event(const SDL_Event *event)
             if (key == SDLK_a) _do_war();
             /* Host S mapping for source selection asm:2021-2042 (> cost). */
             if (key == SDLK_s && player >= 0 && player <= 1 &&
-                core_mana(player) > (int32_t)A4_LONG(0x8496) &&
-                (A4_WORD(0x82c4+player*46)&0x10)) { core_swamp_selected = 1; core_set_pointer(); }
+                core_mana(player) > (int32_t)mana_swamp_cost &&
+                (stats_power_mask(player)&0x10)) { core_swamp_selected = 1; core_set_pointer(); }
         }
         if ((key == SDLK_LEFT || key == SDLK_KP_4 || key == SDLK_KP_7 || key == SDLK_KP_1) && xoff > 0) --xoff;
         if ((key == SDLK_RIGHT || key == SDLK_KP_6 || key == SDLK_KP_9 || key == SDLK_KP_3) && xoff < 56) ++xoff;

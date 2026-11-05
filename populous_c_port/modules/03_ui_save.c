@@ -1,6 +1,15 @@
 #include "../pop_log.h"
-/* modules/03_ui_save.c — unity-included from populous_prg.c (do not compile alone). */
-/* Original populous_prg.c lines 3188-4763. */
+/*
+ * modules/03_ui_save.c
+ * --------------------
+ * Unity-included from populous_prg.c (do not compile alone).
+ * Original populous_prg.c lines 3188-4763.
+ *
+ * Pointer / HUD, options requesters, .GAM save/load, world / lord screens.
+ * Prefer a4_state.h names over raw A4_WORD(0x…).
+ */
+
+/* ---- Pointer / HUD ----------------------------------------------------- */
 
 static void core_set_pointer(void)
 {
@@ -107,11 +116,7 @@ static void core_draw_icon(int x, int y, int icon)
  * word x2 (buttons) or width (menus), text at +6. */
 #define core_rec_w(r,o) (((A4Word *)((r)+(o)))->value)
 #define core_rec_text(r) ((char *)(r)+6)
-#define core_end_ok     A4_DISP(0x84c6)
-#define core_end_cancel A4_DISP(0x84f4)
-#define core_option_entry(i) A4_DISP(0x8522 + (i)*46)
-#define core_game_entry(i)   A4_DISP(0x87ee + (i)*46)
-#define core_set_entry(i)    A4_DISP(0x8fc0 + (i)*46)
+/* core_end_ok / core_end_cancel / *_entry live in a4_state.h */
 typedef struct { int16_t x, y, w; const char *text; } CoreMenuEntry;
 static void core_menu_install(uint8_t *table, const CoreMenuEntry *entries, int count)
 {
@@ -230,7 +235,7 @@ static const CoreMenuEntry core_set_template[11] = {
 /* _blank asm:24915-24923: 28 '^' glyphs. */
 static const char core_blank[] = "^^^^^^^^^^^^^^^^^^^^^^^^^^^^";
 
-static uint8_t *core_stats(int side) { return A4_DISP(0x82b6 + side*46); }
+static uint8_t *core_stats(int side) { return stats_bytes(side); }
 
 /* _options asm:13617-13660 window, then each pass of LAB_48228 (asm:13661-13740):
  * entry 0 names the side, 1..9 tick the _stats+0xe power bits. */
@@ -448,6 +453,8 @@ static const struct { int offset, size, kind; } core_save_regions[] = {
     {0xae72,4,CORE_SAVE_LONG},           /* _score */
 };
 /* 4 + regions + the checksum word: 29646 bytes. */
+/* ---- .GAM save / load ------------------------------------------------- */
+
 #define CORE_SAVE_SIZE (4 + 0x2102 + 4*0x1000 + 0x20 + 0x1222 + 2*0x2e + 7*2 + 10 + 2 + 2 + 4 + 2 + 2 + 4 + 2)
 #define CORE_SAVE_MAGNET_AT (4 + 0x2102 + 4*0x1000)
 #define CORE_SAVE_SCALARS_AT (CORE_SAVE_MAGNET_AT + 0x20 + 0x1222 + 2*0x2e)   /* _mode */
@@ -587,7 +594,7 @@ static int core_save_game(const char *name)
     core_save_mkdirs();
     FILE *out = fopen(temporary, "wb");
     if (!out) return 0;
-    A4_WORD(0x3082) = (int16_t)core_save_encode(file);   /* _land_checksum, asm:17189 */
+    land_checksum = (int16_t)core_save_encode(file);   /* _land_checksum, asm:17189 */
     int ok = fwrite(file, 1, sizeof file, out) == sizeof file;
     if (fclose(out)) ok = 0;
     if (ok && rename(temporary, path)) ok = 0;
@@ -639,7 +646,7 @@ static int core_load_game(const char *name)
     uint8_t *live = prg_a4;
     prg_a4 = staged + 32768;
     core_save_decode(file);
-    A4_WORD(0x3082) = (int16_t)core_get_be(file+CORE_SAVE_SIZE-2,2);   /* _land_checksum */
+    land_checksum = (int16_t)core_get_be(file+CORE_SAVE_SIZE-2,2);   /* _land_checksum */
     core_install_land(&rules);
     /* asm:17590-17682 */
     not_player = player ? 0 : 1;
@@ -647,7 +654,7 @@ static int core_load_game(const char *name)
     int last = 207;
     while (last >= 0 && !peep_word(last,4)) --last;
     no_peeps = (int16_t)(last + 1);
-    for (int owner = 0; owner < 2; ++owner) memset(A4_DISP(0x82b6 + owner*46), 0, 3);
+    for (int owner = 0; owner < 2; ++owner) memset(stats_bytes(owner), 0, 3);
     for (int person = 0; person < no_peeps; ++person) {
         uint32_t raw; memcpy(&raw, peeps+person*22+14, sizeof raw);
         if (raw) core_get_heading(person);
@@ -676,8 +683,7 @@ static int core_load_game(const char *name)
  * 0x58,0x22+8*row, arrows 0x88/0x89 at 0xd8, then _drawer (0x8d) and
  * _filename (0xa0), each 16 boxes. _drawer/_filename (20 bytes each) persist
  * in the A4. The original loops until OK or CANCEL; here it is a requester. */
-#define core_drawer   ((char *)A4_DISP(0x302c))
-#define core_filename ((char *)A4_DISP(0x3040))
+/* core_drawer / core_filename live in a4_state.h */
 static char *core_file_field(void) { return core_file.field == 1 ? core_drawer : core_filename; }
 static int core_file_compare(const void *a, const void *b) { return strcmp(a, b); }
 /* _get_a_dir asm:16841-16915 + _sort asm:11016-11079: files only, names
@@ -897,7 +903,7 @@ static void core_draw_end_screen(void)
 {
     core_end_button_layout(1);
     for (int r = 0; r < 7; ++r)
-        amiga_text(game_pixels, A4_WORD(0x8e7e + r*46) + 16, A4_WORD(0x8e80 + r*46) + 16, core_end_row(r));
+        amiga_text(game_pixels, end_row_x(r) + 16, end_row_y(r) + 16, end_row_text(r));
 }
 
 /* _end_words asm:24783-24785, _words asm:24786-24788 (two per rank, -1 none). */
@@ -1096,7 +1102,7 @@ static void core_world_line(int i, char *line, char you[8], char him[8])
     case 5: value = core_con(conq_04_mode & 4 ? 14 : conq_04_mode & 0x10 ? 15 : conq_04_mode & 8 ? 16 : 17); break;
     case 6: value = core_con(conq_04_mode & 2 ? 19 : 18); break;
     case 7: value = core_con(conq_04_mode & 1 ? 21 : 20); break;
-    case 9: snprintf(you, 8, "%u", A4_DISP(0x84c2)[0]); snprintf(him, 8, "%u", A4_DISP(0x84c3)[0]); return;
+    case 9: snprintf(you, 8, "%u", conq_06_your_count); snprintf(him, 8, "%u", conq_07_enemy_count); return;
     default:
         if (i >= 10) {
             strcpy(you, core_con(conq_03_yourpow & (1 << (i-10)) ? 22 : 23));
@@ -1120,7 +1126,7 @@ static int core_world_read(int record)
     uint8_t bytes[10];
     /* ___Seek/___Read: a short read past the end keeps the old bytes. */
     if (!fseek(file, (long)record * 10, SEEK_SET) && fread(bytes, 1, 10, file) == 10) {
-        memcpy(A4_DISP(0x84bc), bytes, 8);
+        memcpy((uint8_t *)&conquest, bytes, 8);  /* conquest..conq_05 contiguous */
         conq_08_seed = (int16_t)(bytes[8] << 8 | bytes[9]);
     }
     fclose(file);
@@ -1227,11 +1233,14 @@ static void core_world_click(void)
         return;
     }
     /* asm:12762-12771 */
-    player = 0; not_player = 1; A4_WORD(0x82ea) = 1; A4_WORD(0x82bc) = 0; A4_WORD(0x82be) = 1;
-    A4_WORD(0x82ec) = 0; serial_off = 1; paint_map = 0; war_flag = 0;
+    player = 0; not_player = 1;
+    stats_build_mode(1) = 1; stats_build_mode(0) = 0; stats_build_latch(0) = 1;
+    stats_build_latch(1) = 0; serial_off = 1; paint_map = 0; war_flag = 0;
     level_number = (int16_t)core_world.level;
     core_world_return(core_world.level);
 }
+/* ---- World / lord screens -------------------------------------------- */
+
 /* The caller clears the screen first (___clr_wsc asm:540, 14757), except
  * _game_options, which draws over its own setup screen. */
 static void core_draw_world(void)

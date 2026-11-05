@@ -1,6 +1,15 @@
 #include "../pop_log.h"
-/* modules/02_rules.c — unity-included from populous_prg.c (do not compile alone). */
-/* Original populous_prg.c lines 798-3187. */
+/*
+ * modules/02_rules.c
+ * ------------------
+ * Unity-included from populous_prg.c (do not compile alone).
+ * Original populous_prg.c lines 798-3187.
+ *
+ * Map vertices, population / battles / AI, divine powers, world generation,
+ * animate / reset. Prefer a4_state.h names over raw A4_WORD(0x…).
+ */
+
+/* ---- Map vertices / make_map ------------------------------------------- */
 
 static int core_vertex(int column, int row)
 {
@@ -40,10 +49,6 @@ static void _make_map(void)
     core_make_map_region(0,0,63,63);
 }
 
-/* moved to a4_state.h: core_mana(owner) ((int32_t)A4_LONG(0x9a02 + (owner) * 16)) */
-/* moved to a4_state.h: core_tendency(owner) A4_WORD(0x99fa + (owner) * 16) */
-/* moved to a4_state.h: core_leader(owner) A4_WORD(0x99f6 + (owner) * 16) */
-/* moved to a4_state.h: core_target(owner) A4_WORD(0x99f8 + (owner) * 16) */
 static int core_result, core_battles, core_settlements, core_tool;
 static int core_swamp_selected;
 static int core_shake_dy; /* terrain-only vertical offset, quake shake */
@@ -53,6 +58,8 @@ static const int16_t core_offsets[25] = {
 }; /* asm:24274 */
 static const uint16_t core_city[9] = {42,44,43,44,43,41,41,41,41};
 static const int32_t core_mana_values[11] = {-250,10,200,2500,5000,7500,10000,40000,80000,160000,1999999};
+/* ---- Population / mana ----------------------------------------------- */
+
 static int core_population(int owner)
 {
     int total = 0;
@@ -62,7 +69,6 @@ static int core_population(int owner)
 }
 /* good_pop/bad_pop: signed longs at A4+$99fe, stride 16 (asm:25331). The
  * index is the raw owner byte or word, scaled without an owner range check. */
-/* moved to a4_state.h: core_good_pop(owner) A4_LONG(0x99fe + (owner)*16) */
 static void core_add_mana(int owner, int amount)
 {
     int64_t value = (int64_t)core_mana(owner) + amount;
@@ -311,7 +317,7 @@ static int core_battle_over(int winner, int loser, bool raw_loser_nonzero)
          * negative host casualties must still reframe before any terrain edit. */
         if (raw_loser_nonzero) core_frame_town(loser,core_check_life(enemy,loser_position));
         int level=(int16_t)(peep_word(loser,12)-32);
-        reward=level>=0 && level<=10 ? A4_WORD(0x2ffa+level*2) : 100;
+        reward=level>=0 && level<=10 ? land_battle_add1(level) : 100;
         if (winner_heading) {
             peeps[loser*22]=0x80; set_peep_word(loser,4,1); set_peep_word(loser,6,40);
             peeps[winner*22]=2;
@@ -343,11 +349,11 @@ static int core_battle_over(int winner, int loser, bool raw_loser_nonzero)
     set_peep_word(winner,10,0); set_peep_word(winner,12,85);
     if (!map_who[position] || map_who[position]==loser+1) map_who[position]=winner+1;
     if (peeps[winner*22+20]) {
-        A4_WORD(0x82d4+owner*46)=position;
-        A4_WORD(0x82d2+owner*46)=2;
+        stats_go_to_pos(owner)=position;
+        stats_go_to_mode(owner)=2;
         --peeps[winner*22+20];
     }
-    if (peeps[loser*22+20]) A4_WORD(0x82d2+enemy*46)=0;
+    if (peeps[loser*22+20]) stats_go_to_mode(enemy)=0;
     /* ADD.L/SUB.L wrap before the signed loser-only comparison, not core_add_mana. */
     core_mana_long(owner)+=(uint32_t)reward;
     core_mana_long(enemy)-=(uint32_t)reward;
@@ -536,14 +542,14 @@ static int16_t core_best_town_capacity[2];
  * high one; scan is x-major over the cell's four vertices. Writes _stats only. */
 static void core_one_block_flat(int position, int owner)
 {
-    int block_stats = 0x82b6 + owner*46;
-    if (A4_WORD(block_stats+8) || (int32_t)core_mana_long(owner) < 20 ||
-        (int16_t)A4_WORD(0x99fc + owner*16) > 50 || !(A4_WORD(block_stats+14)&1) ||
+    if (stats_build_latch(owner) || (int32_t)core_mana_long(owner) < 20 ||
+        (int16_t)core_town_age(owner) > 50 || !(stats_power_mask(owner)&1) ||
         (game_mode&GAME_MODE_NO_BUILD)) return;
     int column = position & 63, row = (int16_t)position >= 0 ? (int16_t)position/64 : -((-(int16_t)position+63)/64);
     int base = row*65 + column;
-    int16_t sum = (int16_t)(A4_WORD(0xae86+base*2) + A4_WORD(0xae86+(base+1)*2) +
-                            A4_WORD(0xae86+(base+66)*2) + A4_WORD(0xae86+(base+65)*2));
+    A4Word *verts = (A4Word *)map_vertices;
+    int16_t sum = (int16_t)(verts[base].value + verts[base+1].value +
+                            verts[base+66].value + verts[base+65].value);
     if (sum == 1) return;
     int remainder = sum % 4, level = sum / 4; /* DIVS: truncating quotient/remainder */
     for (int x = column; x <= column+1; ++x) for (int y = row; y <= row+1; ++y) {
@@ -551,8 +557,10 @@ static void core_one_block_flat(int position, int owner)
         int command = remainder == 3 ? (height == level ? 1 : 0) :
                       remainder == 1 && height > level && !(game_mode&GAME_MODE_BUILD_ONLY_UP) ? 2 : 0;
         if (command) {
-            A4_DISP(block_stats)[0] = command; A4_DISP(block_stats+1)[0] = x; A4_DISP(block_stats+2)[0] = y;
-            A4_WORD(block_stats+8) = 1;
+            stats_cmd_byte(owner) = command;
+            stats_cmd_x(owner) = x;
+            stats_cmd_y(owner) = y;
+            stats_build_latch(owner) = 1;
             return;
         }
     }
@@ -616,14 +624,16 @@ static uint8_t core_make_level(int position, int owner)
     }
     return 1;
 }
+/* ---- Computer AI ---------------------------------------------------- */
+
 /* Host guard: the AI dereferences _magnet leaders and _stats pointers as
  * peep records without validation. Outside the 208-slot table the original
  * reads unrelated memory; the port then skips that AI routine for the pass. */
 static int core_ai_slot(int slot) { return slot >= 0 && slot < 208; }
-/* Signed CMP.L of mana against (threshold + bonus), ADD.L wrapping. */
-static int core_ai_mana_above(int owner, int threshold, uint32_t bonus)
+/* Signed CMP.L of mana against (cost + bonus), ADD.L wrapping. */
+static int core_ai_mana_above(int owner, uint32_t cost, uint32_t bonus)
 {
-    return (int32_t)core_mana_long(owner) > (int32_t)(A4_LONG(threshold)+bonus);
+    return (int32_t)core_mana_long(owner) > (int32_t)(cost + bonus);
 }
 static void core_ai_put(int s, int command, int16_t cell)
 {
@@ -637,78 +647,89 @@ static void core_ai_put(int s, int command, int16_t cell)
  * (slot+1), each clamped at zero only. */
 static void core_do_computer_effect(int owner)
 {
-    int s = 0x82b6 + owner*46;
+    int s = stats_base(owner);
     if (!core_leader(owner)) {
         int16_t target = core_target(owner);
         int who = target >= 0 && target < 4096 ? map_who[target] : 0; /* host bound */
         if (who && peep_owner(who-1) != owner) {
-            core_ai_put(s, A4_DISP(s)[0], target);
+            core_ai_put(s, stats_cmd_byte(owner), target);
             return;
         }
     }
-    int subject = (int)A4_LONG(s+0x26) - 1;
-    int16_t cell = peep_word(subject,8);
+    int subject = (int)stats_oldest_town_ref(owner) - 1;
+    int16_t cell = peep_word(subject, 8);
     int16_t x = (int16_t)((cell & 63) - 3), y = (int16_t)((cell >> 6) - 3);
     if (x < 0) x = 0;
     if (y < 0) y = 0;
-    A4_DISP(s+1)[0] = (uint8_t)x; A4_DISP(s+2)[0] = (uint8_t)y;
+    stats_cmd_x(owner) = (uint8_t)x;
+    stats_cmd_y(owner) = (uint8_t)y;
 }
 /* _devil_effect asm:9300-9525. Called per owner from _move_peeps asm:3266-3270
- * while the _stats+8 latch is clear. The permission word is copied to a local:
+ * while the build latch is clear. The permission word is copied to a local:
  * BTST on its high byte is bit 8 (war), on its low byte bits 0..7. */
 static void core_devil_effect(int owner)
 {
-    int s = 0x82b6 + owner*46, enemy = owner ? 0 : 1;
-    if (A4_WORD(s+8)) return;
+    int s = stats_base(owner), enemy = owner ? 0 : 1;
+    if (stats_build_latch(owner)) return;
     if ((core_leader(owner) && !core_ai_slot(core_leader(owner)-1)) ||
         (core_leader(enemy) && !core_ai_slot(core_leader(enemy)-1)) ||
-        A4_LONG(s+0x26) > 208) return;
-    uint16_t flags = (uint16_t)A4_WORD(s+14);
+        stats_oldest_town_ref(owner) > 208) return;
+    uint16_t flags = (uint16_t)stats_power_mask(owner);
     /* asm:9317-9349: armageddon when richer by >999 and more populous. */
-    if ((flags&0x100) && core_ai_mana_above(owner,0x84a6,999) &&
-        (int32_t)A4_LONG(0x99fe + owner*16) > (int32_t)A4_LONG(0x99fe + enemy*16)) {
-        A4_DISP(s)[0] = 14; A4_DISP(s+2)[0] = 3; A4_WORD(s+8) = 1;
+    if ((flags & 0x100) && core_ai_mana_above(owner, mana_war_cost, 999) &&
+        (int32_t)core_good_pop(owner) > (int32_t)core_good_pop(enemy)) {
+        stats_cmd_byte(owner) = 14;
+        stats_cmd_y(owner) = 3;
+        stats_build_latch(owner) = 1;
         return;
     }
     /* asm:9350-9365: flood. */
-    if ((flags&0x80) && core_ai_mana_above(owner,0x84a2,1999)) {
-        A4_DISP(s)[0] = 14; A4_DISP(s+2)[0] = 4; A4_WORD(s+8) = 1;
+    if ((flags & 0x80) && core_ai_mana_above(owner, mana_flood_cost, 1999)) {
+        stats_cmd_byte(owner) = 14;
+        stats_cmd_y(owner) = 4;
+        stats_build_latch(owner) = 1;
         return;
     }
     /* asm:9366-9396: knight for a leader above 3000; returns either way. */
-    if ((flags&0x20) && core_leader(owner) && peep_word(core_leader(owner)-1,4) > 3000) {
-        if (core_ai_mana_above(owner,0x849a,500)) {
-            A4_DISP(s)[0] = 14; A4_DISP(s+2)[0] = 5; A4_WORD(s+8) = 1;
+    if ((flags & 0x20) && core_leader(owner) && peep_word(core_leader(owner)-1, 4) > 3000) {
+        if (core_ai_mana_above(owner, mana_knight_cost, 500)) {
+            stats_cmd_byte(owner) = 14;
+            stats_cmd_y(owner) = 5;
+            stats_build_latch(owner) = 1;
         }
         return;
     }
-    if (!A4_LONG(s+0x26)) return;
+    if (!stats_oldest_town_ref(owner)) return;
     /* asm:9398-9419: volcano. */
-    if (core_ai_mana_above(owner,0x849e,500) && (flags&0x40)) {
-        A4_DISP(s)[0] = 6;
+    if (core_ai_mana_above(owner, mana_volcano_cost, 500) && (flags & 0x40)) {
+        stats_cmd_byte(owner) = 6;
         core_do_computer_effect(owner);
-        A4_WORD(s+8) = 1; A4_WORD(s+0x12) = 0;
+        stats_build_latch(owner) = 1;
+        stats_send_flag(owner) = 0;
         return;
     }
     /* asm:9420-9482: swamp on the enemy leader; no latch write. */
-    if (core_ai_mana_above(owner,0x8496,500) && (flags&0x10)) {
-        int16_t count = A4_WORD(s+0x12);
-        if (!(count < A4_WORD(s+0x1a) && (flags&8)) && !(count > A4_WORD(s+0x18) && (flags&0x40))) {
-            int16_t theirs = (int16_t)(core_leader(enemy)-1), ours = (int16_t)(core_leader(owner)-1);
-            if (theirs != -1 && (ours == -1 || peep_word(theirs,4) > peep_word(ours,4))) {
-                A4_WORD(s+0x12) = (int16_t)(count+1);
-                core_ai_put(s, 4, peep_word(theirs,8));
+    if (core_ai_mana_above(owner, mana_swamp_cost, 500) && (flags & 0x10)) {
+        int16_t count = stats_send_flag(owner);
+        if (!(count < stats_ai_delay(owner) && (flags & 8)) &&
+            !(count > stats_ai_seed(owner) && (flags & 0x40))) {
+            int16_t theirs = (int16_t)(core_leader(enemy) - 1);
+            int16_t ours = (int16_t)(core_leader(owner) - 1);
+            if (theirs != -1 && (ours == -1 || peep_word(theirs, 4) > peep_word(ours, 4))) {
+                stats_send_flag(owner) = (int16_t)(count + 1);
+                core_ai_put(s, 4, peep_word(theirs, 8));
                 return;
             }
         }
     }
     /* asm:9483-9524: earthquake on the target town. */
-    if (core_ai_mana_above(owner,0x8492,500) && peeps[((int)A4_LONG(s+0x26)-1)*22] == 1 && (flags&8)) {
-        if (A4_WORD(s+0x12) >= A4_WORD(s+0x1a) && (flags&0x50)) return;
-        A4_DISP(s)[0] = 3;
+    if (core_ai_mana_above(owner, mana_quake_cost, 500) &&
+        peeps[((int)stats_oldest_town_ref(owner) - 1) * 22] == 1 && (flags & 8)) {
+        if (stats_send_flag(owner) >= stats_ai_delay(owner) && (flags & 0x50)) return;
+        stats_cmd_byte(owner) = 3;
         core_do_computer_effect(owner);
-        A4_WORD(s+8) = 1;
-        A4_WORD(s+0x12) = (int16_t)(A4_WORD(s+0x12)+1);
+        stats_build_latch(owner) = 1;
+        stats_send_flag(owner) = (int16_t)(stats_send_flag(owner) + 1);
     }
 }
 static void core_ai_tendency(int s, uint8_t value)
@@ -798,7 +819,7 @@ static void core_settle_tick(int person)
     int old_frame = peep_word(person,12); /* asm:3634-3636, before reframing. */
     core_frame_town(person,capacity);
     /* asm:3658-3661: LAB_52DEA counts non-city frames during the pass. */
-    if (capacity < 3050) A4_WORD(0x99fc+owner*16) = (uint16_t)A4_WORD(0x99fc+owner*16)+1;
+    if (capacity < 3050) core_town_age(owner) = (uint16_t)core_town_age(owner)+1;
     else if (owner < 2) ++core_city_count[owner]; /* asm:3637-3645 */
     /* asm:3667-3677: reclaim a departed walker's slot, never another occupant. */
     if (!map_who[position]) map_who[position] = person+1;
@@ -806,20 +827,20 @@ static void core_settle_tick(int person)
      * word, BGE skips ties) becomes the enemy-indexed _stats+0x22 pointer. */
     if (owner < 2 && !(core_best_town_capacity[owner] >= (int16_t)capacity)) {
         core_best_town_capacity[owner] = (int16_t)capacity;
-        A4_LONG(0x82d8+(owner ? 0 : 1)*46) = (uint32_t)(person+1);
+        stats_best_town_ref(owner ? 0 : 1) = (uint32_t)(person+1);
     }
     /* asm:3706-3737: the oldest-so-far town (unsigned, ties replace) becomes
      * the enemy-indexed _stats+0x26 pointer (host slot+1 encoding). */
     uint16_t age = (uint16_t)((uint16_t)game_turn-(uint16_t)peep_word(person,6));
     if (owner < 2 && !(core_oldest_town_age[owner] > age)) {
         core_oldest_town_age[owner] = age;
-        A4_LONG(0x82dc+(owner ? 0 : 1)*46) = (uint32_t)(person+1);
+        stats_oldest_town_ref(owner ? 0 : 1) = (uint32_t)(person+1);
     }
     /* asm:3738-3765: the strictly youngest town (unsigned) is this owner's
      * own _stats+0x2a pointer. */
     if (owner < 2 && core_youngest_town_age[owner] > age) {
         core_youngest_town_age[owner] = age;
-        A4_LONG(0x82e0+owner*46) = (uint32_t)(person+1);
+        stats_youngest_town_ref(owner) = (uint32_t)(person+1);
     }
     /* asm:3766-3817: town levelling while this owner's latch is clear. Flat
      * cells keep the result in peep +20 and skip an unchanged, unflagged frame. */
@@ -838,11 +859,11 @@ static void core_settle_tick(int person)
             capacity = 305;
             stats_build_latch(owner) = 1;
         }
-        uint16_t cheat = (uint16_t)A4_WORD(0x2fb4);
+        uint16_t cheat = (uint16_t)land_cheat_owner;
         if (cheat && (uint16_t)owner == (uint16_t)(cheat-1u)) capacity = 50;
         /* asm:3863-3882: EXT.L signed word then ADD.L, without host mana bounds. */
-        core_mana_long(owner)+=(uint32_t)(int32_t)(int16_t)A4_WORD(0x2fb6+level*2);
-        peeps[person*22+3] = A4_WORD(0x2fcc+level*2)&255;
+        core_mana_long(owner)+=(uint32_t)(int32_t)(int16_t)land_mana_add(level);
+        peeps[person*22+3] = land_weapons_add(level)&255;
         if (peep_word(person,4) > capacity) {
             int child;
             for (child = 0; child < 208 && peep_word(child,4)>0; ++child) {}
@@ -864,7 +885,7 @@ static void core_settle_tick(int person)
             }
         }
         /* asm:4007-4014: ADD.W can revive or kill; store before maintenance. */
-        set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)+(uint16_t)A4_WORD(0x2fe2+level*2)));
+        set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)+(uint16_t)land_population_add(level)));
     }
     /* asm:4037-4055: use this resident's life-scan scratch after economy.
      * Evacuation bypasses both maintenance and signed cleanup (asm:3633). */
@@ -1059,7 +1080,7 @@ static void core_consume_terrain_mailboxes(void)
              * y=8 asm:18729-18733: _new_map = 0, _game_options. The serial
              * exchange that follows for two players is not ported. */
             else if (y == 7 && owner == player && !core_req.kind) {
-                const uint8_t *other = A4_DISP(0x82b6 + (owner ? 0 : 1) * 46);
+                const uint8_t *other = stats_bytes(owner ? 0 : 1);
                 if (!(other[2] == 7 && other[0] == 14)) core_options_open(x ? player : not_player);
             } else if (y == 8 && owner == player && !core_req.kind) {
                 options_new_map = 0; core_game_options_open();
@@ -1131,10 +1152,12 @@ static int core_flood(int owner)
     if (owner == player) score_long += 250;
     effect = 74;
     for (int index = 0; index < 4225; ++index)
-        if (A4_WORD(0xae86+index*2) > 0) --A4_WORD(0xae86+index*2);
+        if (((A4Word *)map_vertices)[index].value > 0) --((A4Word *)map_vertices)[index].value;
     _make_map();
     return 1;
 }
+
+/* ---- Divine powers --------------------------------------------------- */
 
 /* _do_knight asm:8392-8478. Diagnostic views never grant editor powers. */
 static int core_knight(int owner)
@@ -1146,7 +1169,7 @@ static int core_knight(int owner)
     int subject=leader-1, position=peep_word(subject,8);
     if (peep_word(subject,4) <= 0 || peep_owner(subject) != owner ||
         position < 0 || position >= 4096) return 0;
-    uint32_t mana=core_mana_long(owner), cost=A4_LONG(0x849a);
+    uint32_t mana=core_mana_long(owner), cost=mana_knight_cost;
     /* Signed CMP.L admission, unsigned SUB.L/ADD.L wrap, as in core_war. */
     if ((mana ^ 0x80000000u) < (cost ^ 0x80000000u) ||
         !(stats_power_mask(owner)&0x20)) return 0;
@@ -1166,7 +1189,7 @@ static int core_war(int owner)
 {
     if (owner < 0 || owner > 1 || no_peeps < 0 || no_peeps > 208 ||
         pause || core_result || prg_quit) return 0;
-    uint32_t mana = core_mana_long(owner), cost = A4_LONG(0x84a6);
+    uint32_t mana = core_mana_long(owner), cost = mana_war_cost;
     /* Signed CMP.L without an out-of-range signed conversion. BTST targets
      * the high byte of the original big-endian permission word. */
     if ((mana ^ 0x80000000u) < (cost ^ 0x80000000u) ||
@@ -1320,9 +1343,9 @@ static int core_quake(int owner, int column, int row, WorldRandom random)
 {
     if (owner < 0 || owner > 1 || column < 0 || column > 56 || row < 0 || row > 56 ||
         pause || war_flag || core_result ||
-        core_mana(owner) < (int32_t)A4_LONG(0x8492) ||
+        core_mana(owner) < (int32_t)mana_quake_cost ||
         !(stats_power_mask(owner)&8)) return 0;
-    core_mana_long(owner) -= A4_LONG(0x8492);
+    core_mana_long(owner) -= mana_quake_cost;
     raise_min_col = raise_max_col = column;
     raise_min_row = raise_max_row = row;
     effect = 76;
@@ -1350,7 +1373,7 @@ static int core_volcano(int owner, int column, int row, WorldRandom random)
 {
     if (owner < 0 || owner > 1 || column < 0 || column > 56 || row < 0 || row > 56 ||
         pause || war_flag || core_result ||
-        core_mana(owner) < (int32_t)A4_LONG(0x849e) ||
+        core_mana(owner) < (int32_t)mana_volcano_cost ||
         !(stats_power_mask(owner)&0x40)) return 0;
     /* asm:8141-8157 reads blue twice. Zero protects cell zero, not no cell.
      * Reject unsupported stale references before payment or terrain mutation. */
@@ -1361,7 +1384,7 @@ static int core_volcano(int owner, int column, int row, WorldRandom random)
         protected_cell = peep_word(leader-1,8);
         if (protected_cell < 0 || protected_cell >= 4096) return 0;
     }
-    core_mana_long(owner) -= A4_LONG(0x849e);
+    core_mana_long(owner) -= mana_volcano_cost;
     if (owner == player) score_long += 100;
     raise_min_col = raise_max_col = column;
     raise_min_row = raise_max_row = row;
@@ -1398,9 +1421,9 @@ static int core_swamp(int owner, int column, int row, WorldRandom random)
 {
     if (owner < 0 || owner > 1 || column < 0 || column > 255 || row < 0 || row > 255 ||
         pause || war_flag || core_result ||
-        core_mana(owner) < (int32_t)A4_LONG(0x8496) ||
+        core_mana(owner) < (int32_t)mana_swamp_cost ||
         !(stats_power_mask(owner)&0x10)) return 0;
-    core_mana_long(owner) -= A4_LONG(0x8496);
+    core_mana_long(owner) -= mana_swamp_cost;
     if (owner == player) score_long += 50;
     for (int attempt = 0; attempt < 30; ++attempt) {
         int x = column + random()%7 - 3;
@@ -1495,6 +1518,8 @@ static int original_place_people(int friendly_count, int enemy_count)
     return 1;
 }
 
+/* ---- World generation / clear ---------------------------------------- */
+
 static void original_clear(WorldRandom random, unsigned internal_level)
 {
     _clear_map();
@@ -1507,10 +1532,10 @@ static void original_clear(WorldRandom random, unsigned internal_level)
         core_leader(owner) = 0;
         core_mana_long(owner) = 399;
         int value = random() % 3;
-        A4_WORD(0x82d0 + owner * 46) = value;
-        A4_WORD(0x82ce + owner * 46) = value + random() % 5 + 1;
+        stats_ai_delay(owner) = value;
+        stats_ai_seed(owner) = value + random() % 5 + 1;
     }
-    if (internal_level > 0x4d3) A4_LONG(0x9a12) = 2700; /* mana_values[3] + 200 */
+    if (internal_level > 0x4d3) mana_high_bonus = 2700; /* mana_values[3] + 200 */
     devil_magnet = god_magnet = 0x820;
     pointer = 1; mode = 2; surrender_side = -1;
     right_button = left_button = 2;
@@ -1523,7 +1548,7 @@ static int original_generate(const LevelStart *start)
     conquest = record->rating; conq_01_speed = record->speed;
     conq_02_enemypow = record->enemy_powers; conq_03_yourpow = record->your_powers;
     conq_04_mode = record->mode_flags; conq_05_terrain = record->terrain;
-    A4_DISP(0x84c2)[0] = record->your_count; A4_DISP(0x84c3)[0] = record->enemy_count;
+    conq_06_your_count = record->your_count; conq_07_enemy_count = record->enemy_count;
     conq_08_seed = (int16_t)record->seed_offset;
     seed = start_seed = (int16_t)start->initial_seed;
     ground_in = record->terrain;
@@ -1556,20 +1581,20 @@ static int tutorial_generate(void)
 {
     /* Bytes +0..+3 (command, x, y), then BE words into the host-endian A4. */
     for (int owner = 0; owner < 2; ++owner) {
-        memcpy(A4_DISP(0x82b6 + owner*46), tutorial_stats[owner], 4);
+        memcpy(stats_bytes(owner), tutorial_stats[owner], 4);
         for (int field = 4; field < 46; field += 2)
-            A4_WORD(0x82b6 + owner*46 + field) = (int16_t)(tutorial_stats[owner][field] << 8 | tutorial_stats[owner][field+1]);
+            A4_WORD(stats_base(owner) + field) = (int16_t)(tutorial_stats[owner][field] << 8 | tutorial_stats[owner][field+1]);
     }
     in_conquest = -1;
     conquest = 1; conq_01_speed = 1; conq_02_enemypow = 0; conq_03_yourpow = 0x3f;
     conq_04_mode = 3; conq_05_terrain = 0; conq_08_seed = 0;
-    A4_DISP(0x84c2)[0] = 15; A4_DISP(0x84c3)[0] = 3;
+    conq_06_your_count = 15; conq_07_enemy_count = 3;
     seed = start_seed = 0x69bc;
     game_mode = 1;                  /* _tutorial_game_mode */
     ground_in = 0;
     ___newrand();
     original_clear(___newrand, 0);
-    A4_LONG(0x9a02) = 10000;        /* LAB_5188C -> LAB_52DF0 */
+    core_mana_long(0) = 10000;        /* LAB_5188C -> LAB_52DF0 */
     original_make_thing(2, 4, ___newrand);
     original_make_thing(4, 2, ___newrand);
     original_make_thing(3, 3, ___newrand);
@@ -1602,7 +1627,7 @@ static int custom_generate(int16_t arg, int counts[2])
     start_seed = seed;
     if (seed && (___newrand() & 1) && arg == -1 && ++ground_in > 3) ground_in = 0;
     for (int owner = 0; owner < 2; ++owner) {   /* LAB_516B6/LAB_516C0, asm:1122-1129 */
-        A4_WORD(0x82c8 + owner*46) = 0; A4_WORD(0x82d2 + owner*46) = 0;
+        stats_send_flag(owner) = 0; stats_go_to_mode(owner) = 0;
     }
     original_clear(___newrand, 0);
     original_make_thing(2, 4, ___newrand);
@@ -1611,7 +1636,7 @@ static int custom_generate(int16_t arg, int counts[2])
     _make_map();
     original_woods(___newrand);
     for (int owner = 0; owner < 2; ++owner)
-        counts[owner] = serial_off ? (A4_WORD(0x82c2 + owner*46) > 4 ? 3 : 1) : 1;
+        counts[owner] = serial_off ? (stats_rating(owner) > 4 ? 3 : 1) : 1;
     if (!original_place_people(counts[0], counts[1])) return 0;
     score_long = (uint32_t)counts[player ? 1 : 0] * 10;   /* asm:7679-7686, 7781-7788 */
     seed = (int16_t)((uint16_t)seed + 1u);
@@ -1630,7 +1655,7 @@ static const struct { int16_t x, y, w; const char *text; } core_end_template[7] 
     {0x10,0x41,0x18,"NUMBER OF CASTLES  0000 0000"},
     {0x10,0x50,0x18,"YOUR SCORE         000000000"},
 };
-#define core_end_row(r) ((char *)A4_DISP(0x8e84 + (r)*46))
+/* end_row_* macros live in a4_state.h */
 static int core_end_shown, core_end_next, core_end_finished;
 /* _won_conquest lord screen, asm:14503-14765. The original loops inside
  * _won_conquest, so the game stays frozen (core_result is kept) until the
@@ -1652,13 +1677,13 @@ static void core_long_asc(char *out, int32_t value) { sprintf(out, "%ld", (long)
 static int32_t core_end_stats(int won)
 {
     for (int r = 0; r < 7; ++r) {
-        A4_WORD(0x8e7e + r*46) = core_end_template[r].x;
-        A4_WORD(0x8e80 + r*46) = core_end_template[r].y;
-        A4_WORD(0x8e82 + r*46) = core_end_template[r].w;
-        memset(core_end_row(r), 0, 40);
-        strcpy(core_end_row(r), core_end_template[r].text);
+        end_row_x(r) = core_end_template[r].x;
+        end_row_y(r) = core_end_template[r].y;
+        end_row_w(r) = core_end_template[r].w;
+        memset(end_row_text(r), 0, 40);
+        strcpy(end_row_text(r), core_end_template[r].text);
     }
-    strcpy(core_end_row(0) + 5, won ? "WON" : "LOST");  /* asm:14022-14044 */
+    strcpy(end_row_text(0) + 5, won ? "WON" : "LOST");  /* asm:14022-14044 */
     int you = player, him = not_player;
     for (int r = 2; r <= 5; ++r) {
         int16_t mine = 0, theirs = 0;
@@ -1680,22 +1705,22 @@ static int32_t core_end_stats(int won)
         size_t length = strlen(a);
         while (length < 5) a[length++] = ' ';
         a[length] = 0;
-        strcpy(core_end_row(r) + 19, a); strcat(core_end_row(r), b);   /* asm:14280-14316 */
+        strcpy(end_row_text(r) + 19, a); strcat(end_row_text(r), b);   /* asm:14280-14316 */
     }
     /* Score row asm:14204-14272. */
     uint32_t score = score_long;
     if (battle_won(you) > battle_won(him)) score += 5000;
     for (uint16_t bit = 8; bit <= 0x100; bit <<= 1) {
-        if (!(A4_WORD(0x82c4 + you*46) & bit)) score += 1000;
-        if (A4_WORD(0x82c4 + him*46) & bit) score += 1000;
+        if (!(stats_power_mask(you) & bit)) score += 1000;
+        if (stats_power_mask(him) & bit) score += 1000;
     }
     /* asm:14239-14247: set for every single-player start (asm:12768). */
-    if (serial_off) score += (uint32_t)(int32_t)(int16_t)((10 - A4_WORD(0x82c6 + him*46)) * 15);
+    if (serial_off) score += (uint32_t)(int32_t)(int16_t)((10 - stats_build_period(him)) * 15);
     if (won) score *= 10u;
     if ((int32_t)score < 500) score = 500;
     if ((int32_t)score > 555555) score = 515090;
     score_long = score;
-    core_long_asc(core_end_row(6) + 19, (int32_t)score);
+    core_long_asc(end_row_text(6) + 19, (int32_t)score);
     return (int32_t)score;
 }
 
@@ -1798,7 +1823,7 @@ static void core_enter_end(void)
 static int core_leave_end(void)
 {
     if (!core_end_shown) return 0;
-    A4_WORD(0x82bc + player*46) = 0;
+    stats_build_mode(player) = 0;
     if (core_end_next >= 0) {
         int old = level_number;
         level_number = (int16_t)core_end_next;
@@ -1856,6 +1881,8 @@ static int core_custom_start(int16_t from, int16_t arg)
     return 0;
 }
 
+/* ---- Reset / tick / animate ------------------------------------------ */
+
 static int game_reset(int scenario)
 {
     return game_reset_start((StartSelection){START_SYNTHETIC, scenario});
@@ -1864,12 +1891,17 @@ static int game_reset(int scenario)
 /* The LAND rule tables and _map_colour of ___load_ground, into the A4. */
 static void core_install_land(const LandRules *loaded)
 {
-    const uint16_t *tables[] = {loaded->population_add,loaded->mana_add,loaded->weapons_add,loaded->battle_add1,loaded->battle_add2,loaded->weapons_order};
-    const int offsets[] = {0x2fe2,0x2fb6,0x2fcc,0x2ffa,0x3010,0x2f96};
-    for (int table = 0; table < 6; ++table)
-        for (int index = 0; index < (table == 4 ? 3 : 11); ++index) A4_WORD(offsets[table]+index*2) = tables[table][index];
+    /* LAND tables land in fixed A4 slots (see land_* macros in a4_state.h). */
+    for (int i = 0; i < 11; ++i) {
+        land_population_add(i) = loaded->population_add[i];
+        land_mana_add(i) = loaded->mana_add[i];
+        land_weapons_add(i) = loaded->weapons_add[i];
+        land_battle_add1(i) = loaded->battle_add1[i];
+        if (i < 3) land_battle_add2(i) = loaded->battle_add2[i];
+        land_weapons_order(i) = loaded->weapons_order[i];
+    }
     a4_walk_death = loaded->walk_death;
-    memcpy(map_colour_data,loaded->map_colour,32);
+    memcpy(map_colour_data, loaded->map_colour, 32);
 }
 
 static int game_reset_start(StartSelection selection)
@@ -1897,15 +1929,15 @@ static int game_reset_start(StartSelection selection)
         /* The original keeps all of A4 between maps; the port carries the
          * custom inputs: _stats (both records), _game_mode, _player. */
         uint8_t kept_stats[92]; int16_t modes = game_mode, side = player;
-        if (core_custom_live) memcpy(kept_stats, A4_DISP(0x82b6), 92);
+        if (core_custom_live) memcpy(kept_stats, stats, 92);
         uint8_t *live = prg_a4;
         prg_a4 = staged + 32768;
-        if (core_custom_live) memcpy(A4_DISP(0x82b6), kept_stats, 92);
+        if (core_custom_live) memcpy(stats, kept_stats, 92);
         else {
             for (int owner = 0; owner < 2; ++owner) {
-                memcpy(A4_DISP(0x82b6 + owner*46), core_boot_stats[owner], 4);
+                memcpy(stats_bytes(owner), core_boot_stats[owner], 4);
                 for (int field = 4; field < 46; field += 2)
-                    A4_WORD(0x82b6 + owner*46 + field) = (int16_t)(core_boot_stats[owner][field] << 8 | core_boot_stats[owner][field+1]);
+                    A4_WORD(stats_base(owner) + field) = (int16_t)(core_boot_stats[owner][field] << 8 | core_boot_stats[owner][field+1]);
             }
             modes = CORE_BOOT_GAME_MODE; side = 0;
         }
@@ -1914,7 +1946,7 @@ static int game_reset_start(StartSelection selection)
         int counts[2];
         int generated = custom_generate(core_land.arg, counts);
         terrain = (unsigned)ground_in;
-        int16_t speed = A4_WORD(0x82c6 + 46);   /* LAB_516E2 */
+        int16_t speed = stats_build_period(1);   /* LAB_516E2 */
         original.record.speed = speed > 0 && speed < 256 ? (uint8_t)speed : 0;
         original.record.your_count = (uint8_t)counts[0]; original.record.enemy_count = (uint8_t)counts[1];
         prg_a4 = live;
@@ -1996,9 +2028,9 @@ static int game_reset_start(StartSelection selection)
                (size_t)sound_kept[field].size);
     memcpy(prg_a4_area, staged, sizeof prg_a4_area);
     core_install_land(&loaded);
-    for (int index = 0; index < 25; ++index) A4_WORD(0x842c+index*2) = core_offsets[index];
-    for (int index = 0; index < 9; ++index) A4_WORD(0x8474+index*2) = core_city[index];
-    for (int index = 0; index < 11; ++index) A4_LONG(0x8486+index*4) = (uint32_t)core_mana_values[index];
+    for (int index = 0; index < 25; ++index) dir_offset_table(index) = core_offsets[index];
+    for (int index = 0; index < 9; ++index) city_block_table(index) = core_city[index];
+    for (int index = 0; index < 11; ++index) mana_value_table(index) = (uint32_t)core_mana_values[index];
     if (selection.kind == START_SYNTHETIC) {
     for (int owner = 0; owner < 2; ++owner) {
         core_mana_long(owner) = 399; /* _setup_display asm:1070 */
@@ -2038,15 +2070,15 @@ static int game_reset_start(StartSelection selection)
     serial_off = 1;
     core_end_shown = 0; core_end_next = -1;
     if (selection.kind != START_CUSTOM) {   /* the custom _stats stand (asm:430-457) */
-        A4_WORD(0x82bc) = 0; A4_WORD(0x82bc + 46) = 1;
-        A4_WORD(0x82be) = 1; A4_WORD(0x82be + 46) = 0;
-        A4_WORD(0x82c6) = 1; A4_WORD(0x82c6 + 46) = selected_speed;
+        stats_build_mode(0) = 0; stats_build_mode(1) = 1;
+        stats_build_latch(0) = 1; stats_build_latch(1) = 0;
+        stats_build_period(0) = 1; stats_build_period(1) = selected_speed;
     }
     if (selection.kind == START_TUTORIAL) {
         /* The copied _stats words stand; _start_game sets _pause (asm:13988). */
         for (int owner = 0; owner < 2; ++owner)
             for (int field = 6; field <= 0x10; field += 2)
-                A4_WORD(0x82b6 + owner*46 + field) = (int16_t)(tutorial_stats[owner][field] << 8 | tutorial_stats[owner][field+1]);
+                A4_WORD(stats_base(owner) + field) = (int16_t)(tutorial_stats[owner][field] << 8 | tutorial_stats[owner][field+1]);
         pause = 1;
     }
     core_result = core_battles = core_settlements = core_tool = core_swamp_selected = 0; core_set_pointer();
@@ -2164,7 +2196,7 @@ static void _main(void)
     /* 1989 had two lines (call + move); 1993 version */
     _setup_serial_interrupt();
 
-    A4_WORD(0x98a2) = 0x2580;
+    serial_period = 0x2580;
     ___set_serial();
 
     _animate();
@@ -2228,10 +2260,10 @@ static void _free_inter(void)
 static void _setup_serial_interrupt(void)
 {
     LAB_52DAA = 0x02; LAB_52DAB = 0;
-    ___SetIntVector(0xb, (void*)A4_DISP(0x99b4)); /* serial_read */
+    ___SetIntVector(0xb, (void*)serial_read_vec); /* serial_read */
 
     LAB_52DC0 = 0x02; LAB_52DC1 = 0;
-    ___SetIntVector(0, (void*)A4_DISP(0x99ca)); /* serial_write */
+    ___SetIntVector(0, (void*)serial_write_vec); /* serial_write */
 }
 
 static void _free_serial_interrupt(void)
@@ -2333,7 +2365,7 @@ static void _setup_display(void)
 static void _clear_map(void)
 {
     /* _alt is 65*65 words; cell buffers are each 64*64 bytes (asm 54274). */
-    memset(A4_DISP(0xae86), 0, 65 * 65 * 2);
+    memset(map_vertices, 0, 65 * 65 * 2);
     memset(map_blk, 0, 4096);
     memset(map_alt, 0, 4096);
     memset(map_bk2, 0, 4096);
@@ -2374,11 +2406,11 @@ static void _move_mana(void)
     if (!game_assets || player < 0 || player > 1) return;
     int32_t mana = (int32_t)core_mana_long(player);
     int step = 0;
-    while (step < 10 && mana > (int32_t)A4_LONG(0x8486 + step*4)) ++step;
+    while (step < 10 && mana > (int32_t)mana_value_table(step)) ++step;
     int x = 0x137, y = 0x57;
     if (step <= 9) {
         if (!step) step = 1;
-        int32_t low = (int32_t)A4_LONG(0x8486 + (step-1)*4), high = (int32_t)A4_LONG(0x8486 + step*4);
+        int32_t low = (int32_t)mana_value_table(step-1), high = (int32_t)mana_value_table(step);
         int eighth = high != low ? (int)(int16_t)((mana - low) * 8 / (high - low)) : 0;
         x = (step-1)*16 + eighth*2 + 0xa0; y = (step-1)*8 + eighth + 8;
     }
