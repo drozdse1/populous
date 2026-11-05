@@ -1,3 +1,4 @@
+#include "../pop_log.h"
 /* modules/02_rules.c — unity-included from populous_prg.c (do not compile alone). */
 /* Original populous_prg.c lines 798-3187. */
 
@@ -1032,7 +1033,7 @@ static void core_consume_terrain_mailboxes(void)
         if (stats_build_mode(displacement / 46) == 1) {
             unsigned divisor = (uint16_t)stats_build_period(displacement / 46);
             if (!divisor) {
-                fprintf(stderr, "Terrain mailbox owner %d: zero cadence divisor; command discarded, latch preserved\n", owner);
+                POP_LOG_ERROR("Terrain mailbox owner %d: zero cadence divisor; command discarded, latch preserved", owner);
                 continue;
             }
             if ((uint16_t)game_turn % divisor == 0) stats_build_latch(displacement / 46) = 0;
@@ -1235,14 +1236,14 @@ static int core_load_sound(const char *name)
     char path[1024], error[128];
     snprintf(path,sizeof path,"%s/raw/%s",directory,name);
     FILE *file = fopen(path,"rb");
-    if (!file) { fprintf(stderr,"Sound %s: %s\n",path,strerror(errno)); return -1; }
+    if (!file) { POP_LOG_ERROR("Sound %s: %s",path,strerror(errno)); return -1; }
     static uint8_t data[0x40000];
     size_t size = fread(data,1,sizeof data,file);
     int big = fgetc(file) != EOF;
     fclose(file);
     AudioBank bank;
     if (big || !audio_bank_parse(&bank,data,size,error,sizeof error)) {
-        fprintf(stderr,"Sound %s: %s\n",path,big ? "file too large" : error);
+        POP_LOG_ERROR("Sound %s: %s",path,big ? "file too large" : error);
         return -1;
     }
     core_free_all_sounds();
@@ -1807,7 +1808,7 @@ static int core_leave_end(void)
     }
     StartSelection next = current_start;
     if (in_conquest == -1 && current_start.kind != START_SYNTHETIC ? !core_custom_start(seed, -1) : !game_reset_start(next)) {
-        fprintf(stderr, "End of game: next world could not be started.\n");
+        POP_LOG_ERROR("End of game: next world could not be started.");
         return 0;
     }
     return 1;
@@ -1918,14 +1919,14 @@ static int game_reset_start(StartSelection selection)
         original.record.your_count = (uint8_t)counts[0]; original.record.enemy_count = (uint8_t)counts[1];
         prg_a4 = live;
         if (!generated || terrain > 3 || !original.record.speed) {
-            fprintf(stderr, "Custom landscape %d rejected: unsupported starting population or speed\n", (int)core_land.from);
+            POP_LOG_ERROR("Custom landscape %d rejected: unsupported starting population or speed", (int)core_land.from);
             return 0;
         }
     } else if (selection.kind == START_ORIGINAL) {
         LevelTable levels;
         if (!level_data_load(directory, &levels, error, sizeof error) ||
             !level_data_select(&levels, (unsigned)scenario, &original)) {
-            fprintf(stderr, "Original level data: %s\n", error);
+            POP_LOG_ERROR("Original level data: %s", error);
             return 0;
         }
         terrain = original.record.terrain;
@@ -1936,11 +1937,11 @@ static int game_reset_start(StartSelection selection)
     } else terrain = demo_levels[scenario][5];
     unsigned selected_speed = selection.kind != START_SYNTHETIC ? original.record.speed : demo_levels[scenario][1];
     if (!selected_speed) {
-        fprintf(stderr, "Start %d rejected: unsupported zero terrain mailbox cadence divisor\n", scenario);
+        POP_LOG_ERROR("Start %d rejected: unsupported zero terrain mailbox cadence divisor", scenario);
         return 0;
     }
     if (!land_rules_load(directory, terrain, &loaded, error, sizeof error)) {
-        fprintf(stderr,"Original LAND data: %s. Set POPULOUS_DATA_DIR to extracted land0..3.\n",error);
+        POP_LOG_ERROR("Original LAND data: %s. Set POPULOUS_DATA_DIR to extracted land0..3.",error);
         return 0;
     }
     /* raw/font.dat is byte-identical to _font_data (asm:21949-22372);
@@ -1957,7 +1958,7 @@ static int game_reset_start(StartSelection selection)
         int generated = original_generate(&original);
         prg_a4 = live;
         if (!generated) {
-            fprintf(stderr, "Original level %d rejected: insufficient terrain or unsupported starting population\n", scenario);
+            POP_LOG_ERROR("Original level %d rejected: insufficient terrain or unsupported starting population", scenario);
             return 0;
         }
     } else if (selection.kind == START_TUTORIAL) {
@@ -1965,10 +1966,10 @@ static int game_reset_start(StartSelection selection)
         prg_a4 = staged + 32768;
         int generated = tutorial_generate();
         prg_a4 = live;
-        if (!generated) { fprintf(stderr, "Tutorial rejected: unsupported starting population\n"); return 0; }
+        if (!generated) { POP_LOG_ERROR("Tutorial rejected: unsupported starting population"); return 0; }
     }
     GraphicsAssets *loaded_assets = graphics_load(asset_directory,terrain,loaded.sprite_set,error,sizeof error);
-    if (!loaded_assets) { fprintf(stderr,"Original graphics: %s\n",error); return 0; }
+    if (!loaded_assets) { POP_LOG_ERROR("Original graphics: %s",error); return 0; }
     graphics_free(game_assets);
     game_assets = loaded_assets;
     diagnostic_view = 0;
@@ -2091,8 +2092,8 @@ static void game_render(void)
     if (prg_screen) amiga_present(prg_screen);
 }
 
-static void _keyboard(void) { printf("[PRG] _keyboard\n"); }
-static void _mouse(void)    { printf("[PRG] _mouse\n"); }
+static void _keyboard(void) { POP_LOGD("PRG", "_keyboard"); }
+static void _mouse(void)    { POP_LOGD("PRG", "_mouse"); }
 
 /* =========================================================================
  * TRANSLATED FROM THE ASSEMBLY CHUNK YOU PASTED (populous.prg, 1993 Hit Squad)
@@ -2141,7 +2142,7 @@ static void _main(void)
     fb             = amiga_alloc_mem(0x104, 0x00010002);
     for (int index = 0; index < 8; ++index) {
         if (!host_buffers[index]) {
-            fprintf(stderr, "PRG allocation failed\n");
+            POP_LOG_ERROR("PRG allocation failed");
             prg_status = EXIT_FAILURE;
             _closeall();
             return;
@@ -2193,7 +2194,7 @@ static void _closeall(void)
     amiga_destroy_screen(prg_screen);
     prg_screen = NULL;
 
-    printf("[HW] INTENA = 0x0010\n");
+    POP_LOGD("HW", "INTENA = 0x0010");
     _free_serial_interrupt();
     _closelibrary();
 }
@@ -2235,7 +2236,7 @@ static void _setup_serial_interrupt(void)
 
 static void _free_serial_interrupt(void)
 {
-    printf("[HW] INTENA = 0x0801\n");
+    POP_LOGD("HW", "INTENA = 0x0801");
 }
 
 static void _closelibrary(void)
@@ -2320,7 +2321,7 @@ static void _setup_display(void)
     seed++;
 
     /* Quick visible game init status for testing different levels via CLI */
-    printf("[INIT] conquest=%d speed=%d enemy_pow=0x%02x your_pow=0x%02x mode=%d terrain=%d seed=%d\n",
+    POP_LOGD("INIT", "conquest=%d speed=%d enemy_pow=0x%02x your_pow=0x%02x mode=%d terrain=%d seed=%d",
            conquest, conq_01_speed, conq_02_enemypow, conq_03_yourpow, game_mode, ground_in, start_seed);
 }
 

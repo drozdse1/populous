@@ -38,6 +38,7 @@
 #include "symbols_prg.h"
 #include "sdl_lowlevel.h"
 #include "a4_state.h"
+#include "pop_log.h"
 
 /* Host-side demo / window state (not part of the A4 image). */
 static AmigaScreen *prg_screen = NULL;

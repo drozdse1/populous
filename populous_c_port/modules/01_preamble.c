@@ -1,3 +1,4 @@
+#include "../pop_log.h"
 /* modules/01_preamble.c — unity-included from populous_prg.c (do not compile alone). */
 /* Original populous_prg.c lines 238-797. */
 
@@ -38,9 +39,9 @@ static void  ___exit(int16_t);
 static int32_t ___mulu(int32_t,int32_t);
 static int32_t ___divs(int32_t,int32_t);
 static uint16_t ___newrand(void);
-static void ___SetIntVector(int16_t vec, void *handler) { printf("[PRG] SetIntVector %d\n", vec); }
-static void *___OpenLibrary(const char *name, uint32_t ver) { printf("[PRG] OpenLibrary %s\n", name); return (void*)0x1000; }
-static void  ___CloseLibrary(void *base) { printf("[PRG] CloseLibrary\n"); }
+static void ___SetIntVector(int16_t vec, void *handler) { POP_LOGD("PRG", "SetIntVector %d", vec); }
+static void *___OpenLibrary(const char *name, uint32_t ver) { POP_LOGD("PRG", "OpenLibrary %s", name); return (void*)0x1000; }
+static void  ___CloseLibrary(void *base) { POP_LOGD("PRG", "CloseLibrary"); }
 
 /* Note: many more offsets exist in the full binary (map at ~0x5b376 area etc.).
    Add them as we translate more bodies. The prg_a4_area simulates the entire
@@ -519,10 +520,11 @@ static int parse_start(int argc, char **argv, StartSelection *out)
 
 void prg_main(void)
 {
+    pop_log_init();
     prg_status = EXIT_SUCCESS;
     prg_quit = 0;
     if (!parse_start(g_argc, g_argv, &requested_start)) {
-        fprintf(stderr, "Usage: populous_init_port [nonnegative integer <= INT_MAX | --level 0..494 | --code WORLDNAME | --conquest | --tutorial]\n");
+        POP_LOG_INFO("Usage: populous_init_port [nonnegative integer <= INT_MAX | --level 0..494 | --code WORLDNAME | --conquest | --tutorial]");
         prg_status = EXIT_FAILURE;
         return;
     }
@@ -551,13 +553,13 @@ int prg_exit_status(void) { return prg_status; }
 /* old skeleton duplicate - real translated version from the chunk is present later */
 static void _setup_display(void)
 {
-    printf("[PRG] _setup_display (old)\n");
+    POP_LOGD("PRG", "_setup_display (old)");
 }
 #endif
 
 static void _make_copper(void)
 {
-    printf("[PRG] _make_copper\n");
+    POP_LOGD("PRG", "_make_copper");
 }
 
 /* _make_map, asm:1420-1539. Cells derive from the separate 65x65 vertices. */

@@ -15,3 +15,5 @@ and `tests/test_game.c` (which `#include`s `populous_prg.c`) keep working.
 When editing gameplay state, prefer names from `a4_state.h` over raw
 `A4_WORD(0x…)` / `A4_DISP(0x…)`. Dynamic `stats+N` style offsets still need the
 raw accessors.
+
+Logging uses `../pop_log.h` (DEBUG for old `[PRG]`/`[SDL]` traces; default INFO).

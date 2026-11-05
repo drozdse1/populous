@@ -6,9 +6,20 @@ The playable PRG lives under a unity build:
 
 - `a4_state.h` — A4 globals with speaking names (`war_flag`, `map_vertex_word`, `core_mana`, …)
 - `populous_prg.c` — includes `modules/01_preamble.c` … `04_render_input.c` in order
-- existing units — `populous_init.c` (launcher), `graphics.c`, `audio.c`, `land_data.c`, `level_data.c`, `sdl_lowlevel.c`
+- existing units — `populous_init.c` (launcher), `graphics.c`, `audio.c`, `land_data.c`, `level_data.c`, `sdl_lowlevel.c`, `pop_log.c`
 
-See `modules/README.md`. Keep behaviour identical when splitting further; run `make test`.
+See `modules/README.md`.
+
+## Logging
+
+Leveled logger in `pop_log.h` / `pop_log.c` (TRACE/DEBUG/INFO/WARN/ERROR).
+
+- Default level: **INFO** (quiet). Old `[PRG]`/`[SDL]`/`[EXEC]` traces are DEBUG.
+- `POPULOUS_LOG_LEVEL=debug` (or `trace`/`warn`/`error`/`off`) to change.
+- `POPULOUS_LOG_TIMESTAMPS=1` prefixes `HH:MM:SS`.
+- WARN/ERROR go to stderr; lower levels to stdout.
+
+Keep behaviour identical when splitting further; run `make test`.
 
 
 This is an incremental study port of the 1993 Hit Squad release, based on the

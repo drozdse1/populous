@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <limits.h>
+#include "pop_log.h"
 
 AmigaScreen *amiga_create_screen(int width, int height, int depth)
 {
@@ -12,7 +13,7 @@ AmigaScreen *amiga_create_screen(int width, int height, int depth)
         width > INT_MAX / (int)sizeof(uint32_t) || height > INT_MAX / 2 ||
         (size_t)width > SIZE_MAX / sizeof(uint32_t) / (size_t)height) {
         SDL_SetError("Invalid Amiga screen dimensions or depth");
-        fprintf(stderr, "amiga_create_screen: %s\n", SDL_GetError());
+        POP_LOG_ERROR("amiga_create_screen: %s", SDL_GetError());
         return NULL;
     }
     AmigaScreen *scr = calloc(1, sizeof(AmigaScreen));
@@ -42,30 +43,30 @@ AmigaScreen *amiga_create_screen(int width, int height, int depth)
                                    SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                    width * 2, height * 2, SDL_WINDOW_SHOWN);
     if (!scr->window) {
-        fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+        POP_LOG_ERROR("SDL_CreateWindow failed: %s", SDL_GetError());
         goto failed;
     }
     scr->renderer = SDL_CreateRenderer(scr->window, -1,
                                       SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!scr->renderer) {
-        fprintf(stderr, "Accelerated renderer unavailable: %s; trying software\n", SDL_GetError());
+        POP_LOG_WARN("Accelerated renderer unavailable: %s; trying software", SDL_GetError());
         scr->renderer = SDL_CreateRenderer(scr->window, -1, SDL_RENDERER_SOFTWARE);
         if (!scr->renderer) {
-            fprintf(stderr, "Software renderer failed: %s\n", SDL_GetError());
+            POP_LOG_ERROR("Software renderer failed: %s", SDL_GetError());
             goto failed;
         }
     }
     scr->texture = SDL_CreateTexture(scr->renderer, SDL_PIXELFORMAT_ARGB8888,
                                      SDL_TEXTUREACCESS_STREAMING, width, height);
     if (!scr->texture) {
-        fprintf(stderr, "SDL_CreateTexture failed: %s\n", SDL_GetError());
+        POP_LOG_ERROR("SDL_CreateTexture failed: %s", SDL_GetError());
         goto failed;
     }
     return scr;
 
 allocation_failed:
     SDL_OutOfMemory();
-    fprintf(stderr, "amiga_create_screen: %s\n", SDL_GetError());
+    POP_LOG_ERROR("amiga_create_screen: %s", SDL_GetError());
 failed:
     amiga_destroy_screen(scr);
     return NULL;
@@ -134,5 +135,5 @@ void amiga_set_copper_list(AmigaScreen *scr, uint16_t *copperlist, int size)
     /* Stub: In a real low-level port we would interpret the copper list
      * (move to color regs, wait, etc). For now we just print that we got one. */
     (void)scr; (void)copperlist; (void)size;
-    printf("[SDL] Copper list set (size=%d) - stubbed\n", size);
+    POP_LOGD("SDL", "Copper list set (size=%d) - stubbed", size);
 }

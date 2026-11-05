@@ -1,3 +1,4 @@
+#include "../pop_log.h"
 /* modules/03_ui_save.c — unity-included from populous_prg.c (do not compile alone). */
 /* Original populous_prg.c lines 3188-4763. */
 
@@ -335,7 +336,7 @@ static void core_game_options_close(void)
     core_req.kind = CORE_REQ_NONE; left_button = 2;
     int16_t new_map = A4_WORD(0x309a);
     if (new_map && !(in_conquest == -1 ? core_custom_new_map(new_map) : game_reset_start(current_start)))
-        fprintf(stderr, "Game options: map restart failed; keeping the current game.\n");
+        POP_LOG_ERROR("Game options: map restart failed; keeping the current game.");
 }
 /* _game_options click, asm:12878-13350. In a conquest game entries 0..8
  * are ignored. Inert here: TWO PLAYERS (_two_players, serial); SAVE A GAME / LOAD A GAME open
@@ -610,13 +611,13 @@ static int core_load_game(const char *name)
     fclose(in);
     if (count != CORE_SAVE_SIZE || core_get_be(file,4) != CORE_SAVE_SIGNATURE ||
         core_get_be(file+CORE_SAVE_SIZE-2,2) != core_save_checksum(file)) {
-        fprintf(stderr, "Load game: %s is not a saved game.\n", path);
+        POP_LOG_ERROR("Load game: %s is not a saved game.", path);
         return 0;
     }
     uint32_t loaded_player = core_get_be(file+CORE_SAVE_SCALARS_AT+6,2);
     uint32_t terrain = core_get_be(file+CORE_SAVE_SCALARS_AT+8,2);
     if (loaded_player > 1 || terrain > 3) {
-        fprintf(stderr, "Load game: %s has an unsupported player or landscape.\n", path);
+        POP_LOG_ERROR("Load game: %s has an unsupported player or landscape.", path);
         return 0;
     }
     /* ___load_ground(_ground_in,0), asm:17586-17589. */
@@ -628,11 +629,11 @@ static int core_load_game(const char *name)
     if (!directory) directory = default_data;
     LandRules rules;
     if (!land_rules_load(directory, terrain, &rules, error, sizeof error)) {
-        fprintf(stderr, "Load game: LAND data: %s\n", error);
+        POP_LOG_ERROR("Load game: LAND data: %s", error);
         return 0;
     }
     GraphicsAssets *assets = graphics_load(asset_directory, terrain, rules.sprite_set, error, sizeof error);
-    if (!assets) { fprintf(stderr, "Load game: graphics: %s\n", error); return 0; }
+    if (!assets) { POP_LOG_ERROR("Load game: graphics: %s", error); return 0; }
     _Alignas(4) static uint8_t staged[sizeof prg_a4_area];
     memcpy(staged, prg_a4_area, sizeof staged);
     uint8_t *live = prg_a4;
@@ -797,7 +798,7 @@ static void core_file_click(void)
     if (core_file.save) {
         if (!core_save_game(name)) { core_file.error = 1; return; }   /* "ERROR IN SAVING" */
         A4_WORD(0x3054) = 1;   /* _saved; the level.dat disk check is not needed here */
-    } else if (!core_load_game(name)) fprintf(stderr, "Load game: %s could not be loaded.\n", name);
+    } else if (!core_load_game(name)) POP_LOG_ERROR("Load game: %s could not be loaded.", name);
     core_game_options_close();   /* _save_load returns 1 either way */
 }
 static void core_draw_game_options(void);
@@ -1135,11 +1136,11 @@ static void core_world_return(int result)
     if (result == -1 && core_world.origin != CORE_WORLD_OPTIONS) { core_world_open(core_world.origin); return; }
     if (core_world.origin == CORE_WORLD_OPTIONS) A4_WORD(0x309a) = 1;
     if (result == -1 && !core_custom_new_map(1)) {
-        fprintf(stderr, "World selection: landscape %d could not be started.\n", (int)seed);
+        POP_LOG_ERROR("World selection: landscape %d could not be started.", (int)seed);
         in_conquest = core_req.saved_conquest;
     }
     if (result != -1 && !game_reset_start((StartSelection){START_ORIGINAL, result / 5})) {
-        fprintf(stderr, "World selection: world %d could not be started.\n", result);
+        POP_LOG_ERROR("World selection: world %d could not be started.", result);
         in_conquest = (int16_t)level_number;
         if (core_world.origin != CORE_WORLD_OPTIONS) return;   /* keep the screen */
     }
@@ -1173,7 +1174,7 @@ static void core_world_evaluate(void)
     if (core_world.level < 0) { core_world_entry(); return; }
     /* Port: a missing level.dat stays in the entry ("insert disk" loops). */
     if (!core_world_read(core_world.level / 25)) {
-        fprintf(stderr, "World selection: level.dat not found.\n");
+        POP_LOG_ERROR("World selection: level.dat not found.");
         core_world_entry(); return;
     }
     core_world.shown = 1; core_world.entry = 0; left_button = 2;
@@ -1222,7 +1223,7 @@ static void core_world_click(void)
     if (result == 2) { core_message[0] = 0; core_world_entry(); return; }
     if (result != 1) return;
     if (core_world.level / 5 >= LEVEL_COUNT) {   /* port: no level.dat record above 2470 */
-        fprintf(stderr, "World selection: world %d has no level.dat record.\n", core_world.level);
+        POP_LOG_ERROR("World selection: world %d has no level.dat record.", core_world.level);
         return;
     }
     /* asm:12762-12771 */

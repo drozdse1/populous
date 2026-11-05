@@ -27,6 +27,7 @@
 #include "graphics.h"
 #include "audio.h"
 #include "title_music.h"
+#include "pop_log.h"
 #ifndef POPULOUS_DEFAULT_ASSET_DIR
 #define POPULOUS_DEFAULT_ASSET_DIR "binaries/populous-extracted"
 #endif
@@ -139,9 +140,9 @@ static void *amiga_alloc_mem(uint32_t size, uint32_t attributes)
     /* Original used Exec AllocMem with MEMF_CHIP | MEMF_CLEAR etc. */
     void *mem = calloc(1, size);
     if (mem) {
-        printf("[EXEC] AllocMem(%u, 0x%08x) -> %p\n", size, attributes, mem);
+        POP_LOGD("EXEC", "AllocMem(%u, 0x%08x) -> %p", size, attributes, mem);
     } else {
-        fprintf(stderr, "[EXEC] AllocMem(%u) FAILED\n", size);
+        POP_LOGE("EXEC", "AllocMem(%u) FAILED", size);
     }
     return mem;
 }
@@ -153,7 +154,7 @@ static void amiga_free_mem(void *mem)
 
 static void *amiga_open_library(const char *name, uint32_t version)
 {
-    printf("[EXEC] OpenLibrary(\"%s\", %u)\n", name, version);
+    POP_LOGD("EXEC", "OpenLibrary(\"%s\", %u)", name, version);
     if (strstr(name, "graphics"))   return (void*)0x1000;
     if (strstr(name, "intuition"))  return (void*)0x2000;
     return NULL;
@@ -161,7 +162,7 @@ static void *amiga_open_library(const char *name, uint32_t version)
 
 static void amiga_close_library(void *base)
 {
-    printf("[EXEC] CloseLibrary(%p)\n", base);
+    POP_LOGD("EXEC", "CloseLibrary(%p)", base);
 }
 
 /* ========================================================================= */
@@ -173,13 +174,13 @@ static void sub_384(void)   /* originally opened libs + first big allocs */
 {
     g.graphics_base = amiga_open_library("graphics.library", 0);
     if (!g.graphics_base) {
-        fprintf(stderr, "graphics.library open failed\n");
+        POP_LOG_ERROR("graphics.library open failed");
         exit(1);
     }
 
     g.intuition_base = amiga_open_library("intuition.library", 0);
     if (!g.intuition_base) {
-        fprintf(stderr, "intuition.library open failed\n");
+        POP_LOG_ERROR("intuition.library open failed");
         exit(1);
     }
 
@@ -205,13 +206,13 @@ static void sub_11a(void)
     if (g.alloc_4b0)   memset(g.alloc_4b0,   0, 0x4B0);
 
     /* MOVE.W #$0410,INTENA */
-    printf("[HW] INTENA = 0x0410  (enable display & copper interrupts)\n");
+    POP_LOGD("HW", "INTENA = 0x0410  (enable display & copper interrupts)");
 }
 
 /* SUB_16E - sets up the loader structures for "demo.pic" and "populous.prg" */
 static void sub_16e(void)
 {
-    printf("[LOADER] SUB_16E - creating startup structures for demo.pic / populous.prg\n");
+    POP_LOGD("LOADER", "SUB_16E - creating startup structures for demo.pic / populous.prg");
 
     /* The disassembly allocates a small struct and fills pointers to strings */
     g.load_pic_struct = amiga_alloc_mem(0x28, 0x00000002);
@@ -225,7 +226,7 @@ static void sub_16e(void)
 static void sub_226(void)
 {
     g.copper_area = amiga_alloc_mem(0x480, 0x00010002);
-    printf("[INIT] SUB_226 - allocated copper / screen control area (0x480 bytes)\n");
+    POP_LOGD("INIT", "SUB_226 - allocated copper / screen control area (0x480 bytes)");
 
     /* The original then did pointer arithmetic into this block for copper list etc. */
 }
@@ -236,7 +237,7 @@ static void sub_29e(void)
     /* Original did MOVE.W #$018f, something at 0x82ac */
     g.screen_width  = 320;
     g.screen_height = 256;
-    printf("[INIT] SUB_29E - display params set (320x256)\n");
+    POP_LOGD("INIT", "SUB_29E - display params set (320x256)");
 }
 
 /* SUB_2C6 - cleanup of early allocations */
@@ -257,14 +258,14 @@ static void sub_2c6(void)
 /* SUB_308 - select one of the allocated buffers */
 static void sub_308(int16_t which)
 {
-    printf("[SELECT] SUB_308(0x%04x) - choosing buffer\n", (uint16_t)which);
+    POP_LOGD("SELECT", "SUB_308(0x%04x) - choosing buffer", (uint16_t)which);
     /* In the real code this picked between the different alloc_ blocks */
 }
 
 /* SUB_2E2 - poke interrupt register */
 static void sub_2e2(int16_t value)
 {
-    printf("[HW] SUB_2E2 - INTENA write 0x%04x\n", (uint16_t)value);
+    POP_LOGD("HW", "SUB_2E2 - INTENA write 0x%04x", (uint16_t)value);
 }
 
 /* ========================================================================= */
@@ -531,7 +532,7 @@ static int launch_load_assets(void)
     if (file) fclose(file);
     if (!palette_ok || !launch_read(root, "pixels/load.pic.indices.u8", launch_load_pixels, sizeof launch_load_pixels) ||
         !launch_read(root, "pixels/demo.pic.indices.u8", launch_demo_pixels, sizeof launch_demo_pixels)) {
-        fprintf(stderr, "[LOADER] load.pic/demo.pic missing in %s\n", root);
+        POP_LOGE("LOADER", "load.pic/demo.pic missing in %s", root);
         return 0;
     }
     for (int i = 0; i < 32; ++i) launch_load_palette[i] = (uint16_t)(raw_palette[2*i] << 8 | raw_palette[2*i+1]);
@@ -539,14 +540,14 @@ static int launch_load_assets(void)
         if (launch_load_pixels[i] > 31 || launch_demo_pixels[i] > 15) return 0;
     launch_font_loaded = launch_read(root, "raw/font.dat", launch_font, sizeof launch_font);
     launch_assets = graphics_load(root, 0, 0, error, sizeof error);
-    if (!launch_assets) fprintf(stderr, "[LOADER] intro blocks: %s\n", error);
+    if (!launch_assets) POP_LOGE("LOADER", "intro blocks: %s", error);
     snprintf(path, sizeof path, "%s/raw/popsam", root);
     file = fopen(path, "rb");
     size_t length = file ? fread(popsam, 1, sizeof popsam, file) : 0;
     int whole = file && fgetc(file) == EOF;
     if (file) fclose(file);
     if (!whole || !title_bank_parse(&launch_music, popsam, length, error, sizeof error))
-        fprintf(stderr, "[LOADER] title music disabled: %s\n", whole ? error : "raw/popsam missing");
+        POP_LOGE("LOADER", "title music disabled: %s", whole ? error : "raw/popsam missing");
     return 1;
 }
 
@@ -575,7 +576,7 @@ static void launch_pointer(int window_x, int window_y, int *x, int *y)
  * returns the choice 1..3, or 0 to quit (Escape / window close, port). */
 static int sub_456(void)
 {
-    printf("[LOADER] SUB_456 - load.pic, click regions 3/2/1 (tutorial/conquest/game)\n");
+    POP_LOGD("LOADER", "SUB_456 - load.pic, click regions 3/2/1 (tutorial/conquest/game)");
     memset(&launch, 0, sizeof launch);
     launch.seed = 1;
     launch_load_begin();
@@ -603,10 +604,10 @@ static int sub_456(void)
     }
     if (result == LAUNCH_QUIT) {
         if (launch.state != LAUNCH_LOAD) launch_intro_end();
-        printf("[LOADER] quit from the launcher\n");
+        POP_LOGD("LOADER", "quit from the launcher");
         return 0;
     }
-    printf("[LOADER] choice = %d\n", launch.choice);
+    POP_LOGD("LOADER", "choice = %d", launch.choice);
     g.choice = launch.choice;
     return launch.choice;
 }
@@ -614,7 +615,7 @@ static int sub_456(void)
 /* SUB_536 - sets up a ton of tables (the big data area after the code) */
 static void sub_536(void)
 {
-    printf("[DATA] SUB_536 - initializing the big lookup tables (palettes, etc.)\n");
+    POP_LOGD("DATA", "SUB_536 - initializing the big lookup tables (palettes, etc.)");
 
     /* In the disassembly this clears and fills many tables at labels like
      * LAB_6F62, LAB_6F82, LAB_6FD2 etc. with the numeric data that follows.
@@ -627,11 +628,13 @@ static void sub_536(void)
 
 int main(int argc, char **argv)
 {
-    printf("=== Populous Amiga - C Port (SDL2 low-level) ===\n\n");
+    pop_log_init();
+
+    POP_LOG_DEBUG("=== Populous Amiga - C Port (SDL2 low-level) ===");
 
     int status = EXIT_FAILURE;
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        POP_LOG_ERROR("SDL_Init failed: %s", SDL_GetError());
         SDL_Quit();
         return status;
     }
@@ -639,7 +642,7 @@ int main(int argc, char **argv)
     /* Create a low-level Amiga-style screen */
     screen = amiga_create_screen(320, 256, 4);
     if (!screen) {
-        fprintf(stderr, "Failed to create screen\n");
+        POP_LOG_ERROR("Failed to create screen");
         goto cleanup;
     }
 
@@ -654,7 +657,7 @@ int main(int argc, char **argv)
     sub_226();          /* copper / extra screen control area */
     if (!g.alloc_1f400 || !g.alloc_8340 || !g.alloc_7d00 || !g.alloc_4b0 ||
         !g.load_pic_struct || !g.startup_struct || !g.copper_area) {
-        fprintf(stderr, "Launcher allocation failed\n");
+        POP_LOG_ERROR("Launcher allocation failed");
         goto cleanup;
     }
     sub_29e();          /* display params */
@@ -663,7 +666,7 @@ int main(int argc, char **argv)
      * port hands them to the PRG instead (CLI starts bypass the launcher). */
     int choice = 1;
     if (argc <= 1) {
-        if (!launch_load_assets()) fprintf(stderr, "[LOADER] launcher screens skipped, normal game\n");
+        if (!launch_load_assets()) POP_LOGE("LOADER", "launcher screens skipped, normal game");
         else choice = sub_456();     /* SUB_41C: load.pic choice, intro on timeout */
         launch_free_assets();
     }
@@ -674,7 +677,7 @@ int main(int argc, char **argv)
     /* SUB_16E asm:120-126 stores the choice at $42; populous.prg's _main
      * reads its low word as _start_of_game (prg asm:94-96). prg_main()
      * emulates the JMP into the loaded hunk (ENTRY $0003E1E8, A4 $000593EE). */
-    printf("\n[LAUNCHER] Choice %d -> populous.prg (_start_of_game)\n", choice);
+    POP_LOG_DEBUG("[LAUNCHER] Choice %d -> populous.prg (_start_of_game)", choice);
     extern void prg_main(void);
     extern int g_argc;
     extern char **g_argv;

@@ -1,3 +1,4 @@
+# POPULOUS_LOG_LEVEL=trace|debug|info|warn|error|off  POPULOUS_LOG_TIMESTAMPS=1
 # Portable defaults: `cc` is gcc on Linux and Apple clang on macOS.
 # Override with e.g. `make CC=gcc` or `make CC=clang`.
 ifeq ($(origin CC),default)
@@ -28,15 +29,15 @@ with_timeout = $(if $(TIMEOUT_BIN),$(TIMEOUT_BIN) $(1))
 SANITIZER_FLAGS = -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 
 TARGET = populous_init_port
-SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c
+SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c pop_log.c
 # populous_prg.c is a unity build of these fragments (kept for test #include).
 PRG_MODULES = modules/01_preamble.c modules/02_rules.c modules/03_ui_save.c modules/04_render_input.c a4_state.h
 CPPFLAGS += -DPOPULOUS_DEFAULT_ASSET_DIR='"$(abspath ../binaries/populous-extracted)"'
 OBJS = $(SRCS:.c=.o)
 HEADERS = $(wildcard *.h)
-RUNTIME_SOURCES = tests/test_runtime.c populous_init.c sdl_lowlevel.c graphics.c audio.c title_music.c $(HEADERS)
+RUNTIME_SOURCES = tests/test_runtime.c populous_init.c sdl_lowlevel.c graphics.c audio.c title_music.c pop_log.c $(HEADERS)
 # The launcher's asset, mixer and title replayer units; the test includes the rest.
-RUNTIME_LINK = graphics.c audio.c title_music.c
+RUNTIME_LINK = graphics.c audio.c title_music.c pop_log.c
 
 .PHONY: all clean run test-runtime test test-sanitize
 all: $(TARGET)
@@ -75,11 +76,11 @@ test-sanitize: tests/test_runtime_sanitize
 # Only activate game checks once the core step supplies real test sources.
 ifneq ($(wildcard tests/test_game.c),)
 .PHONY: test-game
-tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c $(HEADERS) $(PRG_MODULES)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c -o $@ $(LDLIBS)
+tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c pop_log.c $(HEADERS) $(PRG_MODULES)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c pop_log.c -o $@ $(LDLIBS)
 
-tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c $(HEADERS) $(PRG_MODULES)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c -o $@ $(LDLIBS)
+tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c pop_log.c $(HEADERS) $(PRG_MODULES)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c pop_log.c -o $@ $(LDLIBS)
 
 test-game: tests/test_game
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) ./tests/test_game
@@ -160,9 +161,9 @@ test-level-local: tests/test_game
 # Mixer, _load_sound and popsam parsers, title replayer; the device check uses SDL's dummy driver.
 .PHONY: test-audio test-audio-sanitize
 tests/test_audio: tests/test_audio.c audio.c audio.h title_music.c title_music.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< audio.c title_music.c -o $@ $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< audio.c title_music.c pop_log.c -o $@ $(LDLIBS)
 tests/test_audio_sanitize: tests/test_audio.c audio.c audio.h title_music.c title_music.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< audio.c title_music.c -o $@ $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< audio.c title_music.c pop_log.c -o $@ $(LDLIBS)
 test-audio: tests/test_audio
 	SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) ./tests/test_audio
 test-audio-sanitize: tests/test_audio_sanitize

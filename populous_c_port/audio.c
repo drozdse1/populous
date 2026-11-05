@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "pop_log.h"
 
 typedef struct AudioChannel {
     AudioWrite queue[AUDIO_QUEUE];
@@ -158,7 +159,7 @@ int audio_open(void)
     if (device) return 1;
     audio_reset();
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
-        fprintf(stderr, "Audio disabled: %s\n", SDL_GetError());
+        POP_LOG_WARN("Audio disabled: %s", SDL_GetError());
         return 0;
     }
     audio_inited = 1;
@@ -168,7 +169,7 @@ int audio_open(void)
     want.samples = 1024; want.callback = callback;
     device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (!device) {
-        fprintf(stderr, "Audio disabled: %s\n", SDL_GetError());
+        POP_LOG_WARN("Audio disabled: %s", SDL_GetError());
         SDL_QuitSubSystem(SDL_INIT_AUDIO); audio_inited = 0;
         return 0;
     }

@@ -1,3 +1,4 @@
+#include "../pop_log.h"
 /* modules/04_render_input.c — unity-included from populous_prg.c (do not compile alone). */
 /* Original populous_prg.c lines 4764-5339. */
 
@@ -365,23 +366,23 @@ static void amiga_free_mem(void *p){free(p);}
 static void ___open_screen(void)
 {
     ensure_prg_screen();
-    printf("[SDL] open_screen (real window created)\n");
+    POP_LOGD("SDL", "open_screen (real window created)");
 }
-static void ___read_sprites(int16_t n){printf("[PRG] read_sprites %d\n",n);}
-static void ___sprite_to_amiga(void){printf("[PRG] sprite_to_amiga\n");}
-static void ___start_game(void){printf("[PRG] start_game\n"); core_sound_start();}
-static void ___set_serial(void){printf("[PRG] set_serial\n");}
+static void ___read_sprites(int16_t n){POP_LOGD("PRG", "read_sprites %d",n);}
+static void ___sprite_to_amiga(void){POP_LOGD("PRG", "sprite_to_amiga");}
+static void ___start_game(void){POP_LOGD("PRG", "start_game"); core_sound_start();}
+static void ___set_serial(void){POP_LOGD("PRG", "set_serial");}
 static void ___load_ground(int16_t a, int16_t terrain)
 {
     /* Rule tables and indexed graphics are loaded transactionally by game_reset. */
     (void)a; (void)terrain;
 }
-static void ___Setscreen(int16_t m,void *s1,void *s2){printf("[SDL] Setscreen\n");}
-static void ___copy_screen(void *d,void *s){printf("[SDL] copy_screen\n");}
-static void ___toggle_icon(int16_t i,int16_t a,int16_t b,void *scr){printf("[SDL] toggle_icon 0x%04x\n",(uint16_t)i);}
+static void ___Setscreen(int16_t m,void *s1,void *s2){POP_LOGD("SDL", "Setscreen");}
+static void ___copy_screen(void *d,void *s){POP_LOGD("SDL", "copy_screen");}
+static void ___toggle_icon(int16_t i,int16_t a,int16_t b,void *scr){POP_LOGD("SDL", "toggle_icon 0x%04x",(uint16_t)i);}
 static void ___draw_it(int16_t y,int16_t x){_draw_it(y, x);}
-static void ___draw_s_32(int16_t x,int16_t y,void *scr){printf("[SDL] draw_s_32\n");}
-static void ___draw_sprite(int16_t f,int16_t x,int16_t y,void *scr){printf("[SDL] draw_sprite\n");}
+static void ___draw_s_32(int16_t x,int16_t y,void *scr){POP_LOGD("SDL", "draw_s_32");}
+static void ___draw_sprite(int16_t f,int16_t x,int16_t y,void *scr){POP_LOGD("SDL", "draw_sprite");}
 static void ___clr_wsc(void)
 {
     /* Called every frame before main draw in the _animate path.
@@ -398,12 +399,12 @@ static void ___swap_screens(void)
     ensure_prg_screen();
     if (prg_screen) amiga_present(prg_screen);
 }
-static int  ___show_world(void){printf("[PRG] show_world\n");return 0;}
-static void ___return_to_game(void){printf("[PRG] return_to_game\n");}
-static void ___display_debug(void){printf("[PRG] display_debug (1993)\n");}
-static void ___paint_the_map(void *p){printf("[PRG] paint_the_map\n");}
-static void ___text(const char *s,int16_t y,int16_t x,void *scr){printf("[SDL] text %s\n",s?s:"");}
-static void ___a_putpixel(int16_t c,int16_t pos){printf("[SDL] a_putpixel\n");}
+static int  ___show_world(void){POP_LOGD("PRG", "show_world");return 0;}
+static void ___return_to_game(void){POP_LOGD("PRG", "return_to_game");}
+static void ___display_debug(void){POP_LOGD("PRG", "display_debug (1993)");}
+static void ___paint_the_map(void *p){POP_LOGD("PRG", "paint_the_map");}
+static void ___text(const char *s,int16_t y,int16_t x,void *scr){POP_LOGD("SDL", "text %s",s?s:"");}
+static void ___a_putpixel(int16_t c,int16_t pos){POP_LOGD("SDL", "a_putpixel");}
 static void ___keyboard(void)
 {
     SDL_Event event;
@@ -435,7 +436,7 @@ static void game_handle_event(const SDL_Event *event)
             if (key == SDLK_p) paint_map = !paint_map;
             if (key == SDLK_d) { diagnostic_view = !diagnostic_view; xoff = yoff = diagnostic_view ? 0 : 6; }
             if (key == SDLK_r && !game_reset_start(current_start))
-            fprintf(stderr, "Reset failed; keeping the current game.\n");
+            POP_LOG_ERROR("Reset failed; keeping the current game.");
             if (!pause && !core_result && key >= SDLK_0 && key <= SDLK_3) core_tendency(0) = key-SDLK_0;
             if (key == SDLK_m) { core_tool = core_tool != 1; core_set_pointer(); }
             if (key == SDLK_q) _do_quake();
@@ -538,16 +539,16 @@ static void game_handle_event(const SDL_Event *event)
     }
     /* Unsupported special powers remain inert. */
 }
-static void ___setup_mouse(void){printf("[SDL] setup_mouse\n");}
-static void ___AddIntServer(int16_t l,void *is){printf("[PRG] AddIntServer %d\n",l);}
-static void ___RemIntServer(int16_t l,void *is){printf("[PRG] RemIntServer %d\n",l);}
+static void ___setup_mouse(void){POP_LOGD("SDL", "setup_mouse");}
+static void ___AddIntServer(int16_t l,void *is){POP_LOGD("PRG", "AddIntServer %d",l);}
+static void ___RemIntServer(int16_t l,void *is){POP_LOGD("PRG", "RemIntServer %d",l);}
 static void ___Delay(int16_t t){/*SDL_Delay*/;}
-static void ___reset_screen(void *v){printf("[SDL] reset\n");}
-static void ___free_amiga_sprites(void){printf("[PRG] free sprites\n");}
+static void ___reset_screen(void *v){POP_LOGD("SDL", "reset");}
+static void ___free_amiga_sprites(void){POP_LOGD("PRG", "free sprites");}
 static void ___free_all_sounds(void){core_free_all_sounds();}
 static void ___close_channels(void){audio_close();}
 static void *___FindTask(void *t){return (void*)1;}
-static void ___exit(int16_t c){printf("[PRG] exit\n");exit(c);}
+static void ___exit(int16_t c){POP_LOGD("PRG", "exit");exit(c);}
 static int32_t ___mulu(int32_t a,int32_t b){return a*b;}
 static int32_t ___divs(int32_t a,int32_t b){return b?a/b:0;}
 /* Correct implementation of the game's _newrand (from the disassembly BANNER and tetracorp analysis).
