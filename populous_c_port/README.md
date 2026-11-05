@@ -1381,6 +1381,17 @@ so outcomes appear one pass after the last death. Like `_clear_map` (asm 1023-11
 `r` reset keeps 0x99fc, good_pop/bad_pop and `_stats`+0x14/+0x16/+0x22/+0x26/+0x2a;
 only the next pass clears them, after `_devil_effect` (`--start-reset`). Open: opcodes 7-13, `_toggle` mana,
 edge-of-map targets (host rejects x/y>56) and null pointer reads (address 8).
+Level parameters in AI decisions (`--ai-level-parameters`): rating `_stats`+$c
+keeps the computer on its passive tendency path while towns < 2*rating+15 or
+`game_turn`%90 < rating+10 (`_set_devil_magnet` asm 9612-9627); reaction speed
+`_stats`+$10 is the `_get_message` cadence (asm 17932-17950): a controller-1 side's
+latch clears only when `game_turn` % speed == 0, so it re-decides once per `speed`
+turns; allowed powers `_stats`+$e are BTSTed before each `_devil_effect` choice
+(war $100, flood $80, knight $20, volcano $40, swamp $10, quake $08; magnet $02/$04
+in `_set_devil_magnet`, levelling $01) and again by each power consumer. Level
+records install them as asm 406-427 (rating/speed to the enemy record, powers as
+`pow<<3|7`). Fixed: `_do_computer_effect` aims at the own magnet cell only when the
+computer has NO leader (`TST.W _magnet; BNE`, asm 9530-9536); the port had it inverted.
 The 11928 results below are historical (immediate-commit movement).
 
 Original-data integration is explicit:

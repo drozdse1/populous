@@ -1424,13 +1424,14 @@ static void core_ai_put(int s, int command, int16_t cell)
     A4_DISP(s+1)[0] = (uint8_t)(cell & 63);
     A4_DISP(s+2)[0] = (uint8_t)(cell >> 6); /* ASR.W #6, low byte */
 }
-/* _do_computer_effect asm:9526-9600: aim at the computer's own magnet when
- * an enemy stands there and the computer has a leader; else 3 cells above
- * and left of the _stats+$26 peep (slot+1), each clamped at zero only. */
+/* _do_computer_effect asm:9526-9600: aim at the computer's own magnet cell
+ * when it has NO leader (TST.W _magnet; BNE LAB_450B8, asm:9530-9536) and an
+ * enemy stands there; else 3 cells above and left of the _stats+$26 peep
+ * (slot+1), each clamped at zero only. */
 static void core_do_computer_effect(int owner)
 {
     int s = 0x82b6 + owner*46;
-    if (core_leader(owner)) {
+    if (!core_leader(owner)) {
         int16_t target = core_target(owner);
         int who = target >= 0 && target < 4096 ? map_who[target] : 0; /* host bound */
         if (who && peep_owner(who-1) != owner) {
@@ -3198,7 +3199,11 @@ static void core_set_pointer(void)
  * 320x256 frame, HUD included. */
 static void core_draw_pointer(void)
 {
-    if (!game_assets || (uint16_t)pointer > 7) return;
+    /* The host cursor would double the drawn game pointer; show it only when none is drawn. */
+    int drawn = game_assets && (uint16_t)pointer <= 7;
+    if (SDL_ShowCursor(SDL_QUERY) != (drawn ? SDL_DISABLE : SDL_ENABLE))
+        SDL_ShowCursor(drawn ? SDL_DISABLE : SDL_ENABLE);
+    if (!drawn) return;
     GraphicsSheet small = graphics_sprites(game_assets);
     size_t base = (size_t)core_pointer_frames[pointer] * 256;
     if (base + 256 > small.size) return;

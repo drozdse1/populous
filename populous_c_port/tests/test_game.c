@@ -11200,14 +11200,15 @@ static void test_devil_effect(void)
         ai_run(expected);
         if (cell!=1234) break;
     }
-    /* _do_computer_effect asm:9526-9567: a leader and an enemy on the own
-     * magnet cell 2000 aim at (16,31); a friendly occupant falls back. */
-    for (int foe=1; foe>=0; --foe) {
-        ai_fixture(); A4_WORD(0x82f2)=0x40; A4_LONG(0x9a12)=901; core_leader(1)=1;
+    /* _do_computer_effect asm:9526-9567: TST.W _magnet; BNE LAB_450B8. Only
+     * WITHOUT an own leader and with an enemy on the own magnet cell 2000 is
+     * (16,31) aimed at; a leader or a friendly occupant falls back to (15,16). */
+    for (int leader=0; leader<2; ++leader) for (int foe=1; foe>=0; --foe) {
+        ai_fixture(); A4_WORD(0x82f2)=0x40; A4_LONG(0x9a12)=901; core_leader(1)=leader;
         core_target(1)=2000; ai_peep(0,2,1,100,600); ai_peep(2,1,0,50,1234); A4_LONG(0x830a)=3;
         ai_peep(4,2,foe ? 0 : 1,10,2000); map_who[2000]=5;
         memcpy(expected,prg_a4_area,65536); ai_expect_pass(expected);
-        if (foe) ai_expect_mail(expected,6,16,31,1); else ai_expect_mail(expected,6,15,16,1);
+        if (foe && !leader) ai_expect_mail(expected,6,16,31,1); else ai_expect_mail(expected,6,15,16,1);
         ai_run(expected);
     }
     /* asm:9420-9482: swamp on the enemy leader (slot 1 at 700 = 60,10),
@@ -11247,6 +11248,116 @@ static void test_computer_effect(void)
     core_do_computer_effect(1);
     assert(A4_DISP(0x82e4)[0]==6 && A4_DISP(0x82e5)[0]==60 && A4_DISP(0x82e6)[0]==60);
     puts("computer_effect: PASS");
+}
+/* Every _devil_effect / _set_devil_magnet choice tied to the _stats+$e bit
+ * the asm BTSTs before writing it (asm:9317-9524, 9784-9898). */
+static int ai_power_bit(const uint8_t *mail)
+{
+    if (mail[0]==14) return mail[2]==3 ? 0x100 : mail[2]==4 ? 0x80 : mail[2]==5 ? 0x20 : mail[2]==1 ? -1 : 0;
+    return mail[0]==6 ? 0x40 : mail[0]==4 ? 0x10 : mail[0]==3 ? 0x08 : 0;
+}
+/* Every branch eligible: rich, more populous, a 3001 own leader under a
+ * stronger enemy leader, an old town (flags 1) as the +$26 subject. */
+static void ai_power_fixture(uint16_t powers)
+{
+    ai_fixture(); A4_WORD(0x82f2)=(int16_t)powers; A4_LONG(0x9a12)=100000;
+    A4_LONG(0x9a0e)=5; A4_LONG(0x99fe)=4;
+    core_leader(1)=1; core_leader(0)=2; no_peeps=3;
+    ai_peep(0,2,1,3001,600); ai_peep(1,2,0,5000,700); ai_peep(2,1,0,50,1234);
+    A4_LONG(0x830a)=3; A4_WORD(0x82fe)=1; A4_WORD(0x82fc)=3;
+}
+static void test_ai_level_parameters(void)
+{
+    /* 1. Allowed powers (_stats+$e): over all 512 masks the computer only
+     * ever queues a power whose bit is set; each power is reached. */
+    int seen=0;
+    for (unsigned powers=0; powers<0x200; ++powers) {
+        ai_power_fixture((uint16_t)powers); core_devil_effect(1);
+        int bit=ai_power_bit(A4_DISP(0x82e4));
+        assert(bit>=0 && (!bit || (powers&(unsigned)bit)));
+        seen|=bit;
+        /* Without the knight's early return the order continues. */
+        ai_power_fixture((uint16_t)(powers&~0x20u)); peeps[0*22]=0; core_leader(1)=0;
+        core_devil_effect(1); bit=ai_power_bit(A4_DISP(0x82e4));
+        assert(bit>=0 && (!bit || (powers&(unsigned)bit)));
+        seen|=bit;
+    }
+    assert(seen==(0x100|0x80|0x40|0x20|0x10|0x08));
+    /* Consumers re-check the bit (asm:7863ff,8046ff,8295ff,7567ff,8392ff,
+     * 8482ff): a forged disallowed mailbox costs nothing and changes nothing. */
+    static const uint8_t forged[6][3]={{3,10,10},{4,10,10},{6,10,10},{14,0,3},{14,0,4},{14,0,5}};
+    for (int f=0; f<6; ++f) {
+        ai_power_fixture(0x7); int bit=ai_power_bit(forged[f]);
+        A4_WORD(0x82f2)=(int16_t)(0x1ff&~bit);
+        memcpy(A4_DISP(0x82e4),forged[f],3);
+        int16_t heights=A4_WORD(0xae86+(10*65+10)*2); uint16_t war=A4_WORD(0xae80);
+        core_consume_terrain_mailboxes();
+        assert(A4_LONG(0x9a12)==100000 && core_leader(1)==1 && A4_WORD(0xae80)==war &&
+               A4_WORD(0xae86+(10*65+10)*2)==heights);
+    }
+    /* Level records install rating/speed/powers exactly as asm:406-427. */
+    LevelStart start={{7,4,0x15,0x3,0,0,1,1,0},0,123};
+    memset(prg_a4_area,0,sizeof prg_a4_area); start_state();
+    original_generate(&start);
+    assert(A4_WORD(0x82f0)==7 && A4_WORD(0x82f4)==4 &&
+           A4_WORD(0x82f2)==((0x15<<3)|7) && A4_WORD(0x82c4)==((0x3<<3)|7));
+
+    /* 2. Reaction speed (_stats+$10): _get_message asm:17932-17950 clears the
+     * latch of a controller-1 side only when game_turn % speed == 0, so the
+     * computer re-decides exactly once per `speed` turns. */
+    for (int speed=1; speed<=6; ++speed) {
+        uint16_t trace[2][60]={{0}}; int decisions[2]={0,0};
+        for (int run=0; run<2; ++run) {
+            ai_fixture(); A4_WORD(0x82ea)=1; A4_WORD(0x82f4)=(int16_t)speed; game_turn=0;
+            for (int turn=0; turn<60; ++turn) {
+                core_tendency(1)=0;                     /* keep the tendency path live */
+                int latched_before=A4_WORD(0x82ec)!=0;
+                ++game_turn; _move_peeps();             /* game_tick order: ADDQ game_turn (asm:3248) first */
+                int decided=!latched_before && A4_WORD(0x82ec);
+                assert(decided==(A4_DISP(0x82e4)[0]==14));
+                decisions[run]+=decided;
+                trace[run][turn]=decided ? (uint16_t)(seed ^ A4_DISP(0x82e5)[0]<<8) : 0;
+                core_consume_terrain_mailboxes();
+                assert(!A4_WORD(0x82ec)==((uint16_t)game_turn%speed==0));
+            }
+        }
+        /* First pass decides (latch clear), then every turn after a multiple. */
+        int expected=1;
+        for (int t=1; t<60; ++t) if (t%speed==0) ++expected;
+        assert(decisions[0]==expected);
+        /* 4. Deterministic: same seed, same decisions and same RNG trace. */
+        assert(decisions[0]==decisions[1] && !memcmp(trace[0],trace[1],sizeof trace[0]));
+    }
+    /* A human side (controller 0) never has its latch cleared by cadence. */
+    ai_fixture(); A4_WORD(0x82ea)=0; A4_WORD(0x82ec)=1; A4_WORD(0x82f4)=1;
+    for (int turn=0; turn<10; ++turn) { ++game_turn; core_consume_terrain_mailboxes(); assert(A4_WORD(0x82ec)==1); }
+
+    /* 3. Rating (_stats+$c): asm:9612-9627 keeps the computer passive
+     * (tendency path) while towns < 2*rating+15 or game_turn%90 < rating+10;
+     * otherwise its leader goes after the youngest own town (+$2a). */
+    for (int rating=0; rating<=10; ++rating) for (int dt=-1; dt<=0; ++dt) for (int dturn=-1; dturn<=0; ++dturn) {
+        ai_fixture(); core_tendency(1)=0; A4_WORD(0x82f0)=(int16_t)rating;
+        A4_WORD(0x82f8)=0; A4_WORD(0x82fa)=(int16_t)(2*rating+15+dt);
+        game_turn=(int16_t)(90*3+rating+10+dturn);
+        core_leader(1)=1; ai_peep(0,2,1,100,600); ai_peep(3,1,1,90,300); A4_LONG(0x830e)=4;
+        uint16_t before=seed; core_set_devil_magnet(1);
+        const uint8_t *mail=A4_DISP(0x82e4);
+        if (dt<0 || dturn<0) {
+            assert(mail[0]==14 && mail[2]==1 && seed!=before);   /* passive, one newrand */
+        } else {
+            assert(mail[0]==5 && mail[1]==44 && mail[2]==4 && seed==before);
+            assert(A4_WORD(0x8302)==300 && A4_WORD(0x8300)==2);
+        }
+        assert(A4_WORD(0x82ec)==1);
+    }
+    /* Same world and turn: rating 0 attacks, rating 10 stays passive. */
+    for (int rating=0; rating<=10; rating+=10) {
+        ai_fixture(); core_tendency(1)=0; A4_WORD(0x82f0)=(int16_t)rating; A4_WORD(0x82fa)=20; game_turn=15;
+        core_leader(1)=1; ai_peep(0,2,1,100,600); ai_peep(3,1,1,90,300); A4_LONG(0x830e)=4;
+        core_set_devil_magnet(1);
+        assert(A4_DISP(0x82e4)[0]==(rating ? 14 : 5));
+    }
+    puts("ai_level_parameters: PASS");
 }
 static void test_make_level(void)
 {
@@ -11475,7 +11586,7 @@ static void test_good_pop(void)
 }
 static void test_computer_ai(void)
 {
-    test_set_devil_magnet(); test_devil_effect(); test_good_pop(); test_computer_effect(); test_make_level();
+    test_set_devil_magnet(); test_devil_effect(); test_good_pop(); test_computer_effect(); test_ai_level_parameters(); test_make_level();
     test_ai_opcode_magnet(); test_ai_opcode_action(); test_ai_opcode_effects();
 }
 
@@ -12966,6 +13077,7 @@ int main(int argc, char **argv)
         prepare_rule_data(); test_start_reset(); cleanup_rule_data(); return 0;
     }
     if (argc==2 && !strcmp(argv[1],"--computer-effect")) { test_computer_effect(); return 0; }
+    if (argc==2 && !strcmp(argv[1],"--ai-level-parameters")) { test_ai_level_parameters(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--devil-magnet")) { test_set_devil_magnet(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--make-level")) { test_make_level(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--opcode-magnet")) { test_ai_opcode_magnet(); return 0; }
