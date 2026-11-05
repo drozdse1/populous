@@ -87,6 +87,28 @@ static void test_loader(void)
     put_file(root,names[3],143*256-1,0); assert(!graphics_load(root,2,0,error,sizeof error));
     assert(!graphics_load(root,4,0,error,sizeof error));
     assert(!graphics_load(root,0,10,error,sizeof error));
+    /* spr_32N.dat (asm:16426-16449) is optional, but a present export is checked. */
+    put_file(root,names[3],143*256,0);
+    assets=graphics_load(root,2,0,error,sizeof error);
+    assert(assets && assets->big_size==0 && !graphics_big_sprites(assets).indices); graphics_free(assets);
+    const char *big[]={"spr_320.dat.indices.u8","spr_320.dat.keep.u8"};
+    put_file(root,big[0],GFX_BIG_PIXELS,5); put_file(root,big[1],GFX_BIG_PIXELS,1);
+    assets=graphics_load(root,2,0,error,sizeof error); assert(assets && assets->big_size==GFX_BIG_PIXELS);
+    static uint8_t screen[320*200]; memset(screen,2,sizeof screen);
+    assert(graphics_draw_s_32(screen,sizeof screen,graphics_big_sprites(assets),12,288,167));
+    assert(screen[167*320+288]==7 && screen[198*320+319]==7 && screen[166*320+288]==2 && screen[167*320+287]==2);
+    assert(!graphics_draw_s_32(screen,sizeof screen,graphics_big_sprites(assets),13,0,0));
+    graphics_free(assets);
+    put_file(root,big[0],GFX_BIG_PIXELS+1024,5); assert(!graphics_load(root,2,0,error,sizeof error));
+    put_file(root,big[0],1023,5); assert(!graphics_load(root,2,0,error,sizeof error));
+    put_file(root,big[0],1024,16); assert(!graphics_load(root,2,0,error,sizeof error));
+    put_file(root,big[0],1024,5); assert(!graphics_load(root,2,0,error,sizeof error));   /* keep size differs */
+    put_file(root,big[1],1024,2); assert(!graphics_load(root,2,0,error,sizeof error));
+    put_file(root,big[1],1024,0);
+    assets=graphics_load(root,2,0,error,sizeof error); assert(assets && assets->big_size==1024); graphics_free(assets);
+    snprintf(path,sizeof path,"%s/pixels/%s",root,big[1]); assert(!unlink(path));
+    assert(!graphics_load(root,2,0,error,sizeof error));   /* indices without keep */
+    snprintf(path,sizeof path,"%s/pixels/%s",root,big[0]); assert(!unlink(path));
     for (int n=0;n<5;++n) { snprintf(path,sizeof path,"%s/pixels/%s",root,names[n]); assert(!unlink(path)); }
     snprintf(path,sizeof path,"%s/pixels",root); assert(!rmdir(path)); assert(!rmdir(root));
 }

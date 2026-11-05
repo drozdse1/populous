@@ -63,6 +63,14 @@ GraphicsAssets *graphics_load(const char *root, unsigned land, unsigned sprites,
     if (!read_pixels(directory,name,assets->sprite_indices,143*256,GFX_SPRITE_PIXELS,256,15,&assets->sprite_size)) goto failed;
     snprintf(name,sizeof name,"sprites%u.dat.keep.u8",sprites);
     if (!read_pixels(directory,name,assets->sprite_keep,assets->sprite_size,assets->sprite_size,256,1,NULL)) goto failed;
+    /* _read_sprites asm:16426-16449: spr_32N.dat is optional (Open failure
+     * skips the Read); a present export must still be valid. */
+    snprintf(name,sizeof name,"spr_32%u.dat.indices.u8",sprites);
+    if (!faccessat(directory,name,F_OK,0)) {
+        if (!read_pixels(directory,name,assets->big_indices,1024,GFX_BIG_PIXELS,1024,15,&assets->big_size)) goto failed;
+        snprintf(name,sizeof name,"spr_32%u.dat.keep.u8",sprites);
+        if (!read_pixels(directory,name,assets->big_keep,assets->big_size,assets->big_size,1024,1,NULL)) goto failed;
+    }
     close(directory);
     if (error && error_size) error[0] = 0;
     return assets;
@@ -81,6 +89,11 @@ GraphicsSheet graphics_land(const GraphicsAssets *assets)
 GraphicsSheet graphics_sprites(const GraphicsAssets *assets)
 {
     return assets ? (GraphicsSheet){assets->sprite_indices,assets->sprite_keep,assets->sprite_size,16,16} : (GraphicsSheet){0};
+}
+
+GraphicsSheet graphics_big_sprites(const GraphicsAssets *assets)
+{
+    return assets && assets->big_size ? (GraphicsSheet){assets->big_indices,assets->big_keep,assets->big_size,32,32} : (GraphicsSheet){0};
 }
 
 int graphics_blit(uint8_t *dest, size_t size, int width, int height,
@@ -146,4 +159,17 @@ int graphics_walker_frame(int delta, int owner, int phase)
     for (int index = 0; index < 8; ++index)
         if (directions[index] == delta) frame = index*2;
     return frame+owner*16+phase;
+}
+
+/* _draw_s_32 asm:19365-19504 on a 320x200 four-plane screen: y < 0 draws
+ * nothing; from y 168 (#$a8) the DBF count is 199-y, i.e. 200-y rows (the
+ * screen's own bottom clip) and none at all at y 199. Right-hand words past
+ * column 320 are skipped (D7 $26/$28), exactly a clip at 320. Callers never
+ * pass x < 0 or x >= 320 (the original would wrap into the next row); they
+ * are rejected. Pixels: (screen AND keep) OR planes, as graphics_blit. */
+int graphics_draw_s_32(uint8_t *dest, size_t size, GraphicsSheet sheet, int frame, int x, int y)
+{
+    if (!dest || size < 320*200 || sheet.width != 32 || sheet.height != 32 ||
+        y < 0 || y >= 0xc7 || x < 0 || x >= 320) return 0;
+    return graphics_blit(dest,size,320,200,sheet,frame,x,y);
 }

@@ -543,6 +543,12 @@ non-symlink files, exact lengths (143..147 complete small-sprite frames), indice
 with a diagnostic rather than silently falling back to placeholder art. LAND
 rules continue to come from `POPULOUS_DATA_DIR` through the existing parser.
 
+The matching 32x32 sheet `pixels/spr_32N.dat.indices.u8`/`.keep.u8` (13 frames,
+the `$2080`-byte Read of `_read_sprites`, asm:16426-16449) is optional, as the
+original's `Open` failure simply skips the Read. When present it must be 1..13
+complete frames with a keep mask of equal length, otherwise loading fails. The
+supplied disk has only `spr_320.dat`.
+
 `POPULOUS_ASSET_DIR` names the export root, not `pixels/` or `graphics/`. If unset,
 make embeds the absolute local `binaries/populous-extracted` path; the executable
 can therefore start from the repo root or port directory. If `POPULOUS_DATA_DIR`
@@ -851,6 +857,42 @@ war, pause and permission gates and costs nothing (asm:8297); the 50 score is
 still awarded. The toolbar icon and `s` arm targeting in editor mode
 regardless of mana and permission (asm:2031). Computer swamp selection remains
 a TODO.
+
+## Funny objects and 32x32 sprites
+
+The 32x32 sheet has exactly one user in `populous.prg`: `_draw_s_32`
+(asm:19365-19504), called only from the main-loop sprite list (asm:630-641) for
+entries whose word +6 (the `_map_who` byte) is at least `$D1`, at (x-8, y-16)
+with frame +4. Such bytes come only from the two "funny" records, `_peeps`
+slots `$D1`/`$D2` (A4 0xae1c). No other screen (lord, world, requesters,
+closeups, knight, flags) uses the sheet; the knight and shield use 16x16 frames.
+
+- `_do_place_funny(type)` (asm:8862-9013) fills the first free funny slot from
+  `_funny` (asm:24161-24171): type 0 steps -64 with frames 0..4, type 1 steps
+  -65 with frames 5..8, type 2 steps +65 with frames 9..12; type 3 places
+  nothing. It is called at game turn 4096 with `_start_seed&3` (asm:752-760)
+  and once per game (`_funny_done`, asm:3996-4006, cleared at asm:1057) as
+  type 1 when a growing town finds all 208 ordinary slots in use.
+- `_do_funny` (asm:8630-8858) runs before `_move_peeps`: the frame bounces each
+  turn; every 8th turn the object steps and marks its cell and two side cells:
+  type 0 sets bk2 50/51/52 on land, type 1 turns blocks 15/31/32/66 into 53,
+  type 2 sets blocks 47/48/49 on land. Any occupant there is removed with the
+  `_zero_population` rules; leaving the map ends the object.
+- `_move_sprite` (asm:16061-16197) positions it like a walker (left+8,
+  top-8, +4 off flat ground) and interpolates by the step counter: altitude
+  difference and per-direction (dx,dy) times the counter, hiding the second
+  half of moves that leave the 8x8 view. The `_sprite` entry is queued as in
+  the original, including the `view_who` marker with frame `$44`.
+
+Deviations, all documented in the code: `_do_place_funny` reads a second,
+unpushed argument at `($A,A5)` that selects the start edge (main loop: the
+saved D4 high word; `_move_peeps`: an unused local), so the port passes 0
+(bottom row, random column). Edge-1 cells past the map, which the original
+writes outside `_map_who`, are not written. Frame `$44` lies beyond the
+13-frame sheet (the original would read past `_sprite_data_32`) and is not
+drawn. Without a loaded sheet the objects still act and are queued, but nothing
+is drawn. The asm checks turn 4096 every frame, also while paused; the port
+checks once per simulation tick.
 
 ## Editor mode (`_paint_map`)
 

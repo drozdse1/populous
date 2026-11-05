@@ -9,7 +9,7 @@ The original work provides a clean IRA disassembly of the 1993 Hit Squad budget 
 - `populous_c_port/` — An incremental, low-level C + SDL2 translation of the disassembly.
   - Preserves the original launcher + `populous.prg` split.
   - Emulates A4 as base register for globals.
-  - Uses SDL2 for original isometric LAND graphics, small sprites and the original game background; full presentation remains incomplete.
+  - Uses SDL2 for original isometric LAND graphics, small sprites, the 32x32 sprites of the wandering "funny" objects and the original game background; full presentation remains incomplete.
   - Repairs signed A4 storage, native-pointer ownership, initial map/population setup, reset and clean shutdown.
 
 The port now has a **bounded original-rule game loop**: movement, settlement, growth, mana, ordinary combat, legal sculpting and population-based outcomes use external original `landN` rules. Automated SDL-input matches reach victory/defeat. Independent X11/WSLg checks also observed growth, combat, a stable defeat, reset and clean exit through agent-driven inputs at human rates. This is a playable intermediate port, not a complete Amiga conversion: several rule branches, powers and strategic AI are unported, and a human-tested winning strategy has not been demonstrated. Original world initialization is available separately through `--level N`; see the port guide for bounded overlapping-start support and remaining campaign/state-machine limitations.

@@ -953,6 +953,99 @@ static void core_remove(int person)
     if (view_who == person+1) view_who = 0;
     set_peep_word(person,4,0); peeps[person*22] = 0;
 }
+/* "Funny" objects: peep slots $D1/$D2 (_peeps+$11F6 = LAB_5420A, A4 0xae1c),
+ * the only users of the 32x32 sheet. _funny asm:24161-24171 (A4 0x8292),
+ * 12 bytes per type: step, first frame (low byte of +2), last frame (low
+ * byte of +4), then three trail offsets read at LAB_51686. */
+#define funny_done A4_WORD(0xae70)
+#define CORE_FUNNY_FIRST 0xd1
+#define CORE_FUNNY_END   0xd3
+static const int16_t core_funny[3][6] = {
+    {-64, 0, 4,  0,-1, 1},
+    {-65, 5, 8,  0,-64,-1},
+    { 65, 9,12,  0, 64, 1},
+};
+/* _zero_population asm:5645-5705 on a funny slot: no town, no battle link
+ * (flags stay 2), and no _magnet can hold a slot number above 208. */
+static void core_zero_funny(int slot)
+{
+    set_peep_word(slot,4,0);
+    int position = peep_word(slot,8), previous = (int16_t)(position-peep_word(slot,10));
+    if (position >= 0 && position < 4096 && map_who[position] == slot+1) map_who[position] = 0;
+    if (previous >= 0 && previous < 4096 && map_who[previous] == slot+1) map_who[previous] = 0;
+    if (view_who == slot+1) view_who = 0;
+}
+/* _do_place_funny(type) asm:8862-9013: type > 2 places nothing; else the
+ * first free slot of $D1..$D2 gets one object. The start edge is chosen by
+ * a second word at ($A,A5) that neither caller pushes (asm:756-759 leaves
+ * the main loop's saved D4 high word there, asm:4002-4005 an unused
+ * _move_peeps local), so it is a parameter here. Edge 1's even branch
+ * yields cells past the map (row*64+$FC0); the original then writes
+ * _map_who out of bounds, the port does not. +$C is left as found. */
+static void core_place_funny(int type, int edge)
+{
+    if (type < 0 || type > 2) return;
+    for (int slot = CORE_FUNNY_FIRST; slot < CORE_FUNNY_END; ++slot) {
+        if (peep_word(slot,4)) continue;
+        set_peep_word(slot,4,1); peeps[slot*22] = 2;
+        int position = peep_word(slot,8);
+        if (edge == 0) position = ((int16_t)___newrand()%125)/2 + 0xfc0;
+        else if (edge == 1 || edge == 2) {
+            int odd = ___newrand() & 1, value = (int16_t)___newrand()%43;
+            if (edge == 1) position = (value+20)*64 + (odd ? 63 : 0xfc0);
+            else position = odd ? value*64 : value;
+        }
+        set_peep_word(slot,8,(int16_t)position);
+        if (position >= 0 && position < 4096) map_who[position] = (uint8_t)(slot+1);
+        set_peep_word(slot,10,core_funny[type][0]);
+        peeps[slot*22+2] = (uint8_t)core_funny[type][2];
+        peeps[slot*22+3] = (uint8_t)core_funny[type][1];
+        peeps[slot*22+21] = 1;
+        set_peep_word(slot,6,core_funny[type][1]);
+        peeps[slot*22+20] = (uint8_t)type;
+        return;
+    }
+}
+/* _do_funny asm:8630-8858, before _move_peeps (asm:678-681): the frame
+ * (+6) bounces between +3 and +2 every turn; every 8th turn (+$C) the
+ * object steps by +$A and marks three cells with its trail, killing any
+ * occupant there: type 0 puts bk2 50+i on land, type 1 turns flat, towns
+ * and 66 into 53, type 2 puts blk 47+i on land (and plots the overview,
+ * which the port recomputes every frame). Leaving the map ends it. */
+static void core_do_funny(void)
+{
+    for (int slot = CORE_FUNNY_FIRST; slot < CORE_FUNNY_END; ++slot) {
+        uint8_t *record = peeps+slot*22;
+        if (!peep_word(slot,4)) continue;
+        set_peep_word(slot,12,(int16_t)(peep_word(slot,12)+1));
+        int step = (int8_t)record[21];
+        set_peep_word(slot,6,(int16_t)(peep_word(slot,6)+step));
+        uint16_t frame = (uint16_t)peep_word(slot,6);
+        if (frame >= record[2] || frame <= record[3]) record[21] = (uint8_t)-step;
+        if (peep_word(slot,12) <= 7) continue;
+        set_peep_word(slot,12,0);
+        int position = peep_word(slot,8), type = (int8_t)record[20];
+        if (position >= 0 && position < 4096 && map_who[position] == slot+1) map_who[position] = 0;
+        if (type < 0 || type > 2) continue;   /* the original indexes past _funny */
+        if (!peep_word(slot,10)) set_peep_word(slot,10,core_funny[type][0]);
+        if (core_valid_move(position,peep_word(slot,10)) == 1) { set_peep_word(slot,4,0); continue; }
+        position += peep_word(slot,10);
+        set_peep_word(slot,8,(int16_t)position);
+        for (int index = 0; index < 3; ++index) {
+            int offset = core_funny[type][3+index];
+            if (core_valid_move(position,offset) == 1) continue;
+            int cell = position+offset, block = map_blk[cell];
+            if (type == 0) { if (block && block != 16) map_bk2[cell] = (uint8_t)(50+index); }
+            else if (type == 1) { if (block == 15 || block == 31 || block == 32 || block == 66) map_blk[cell] = 53; }
+            else if (block && block != 16) map_blk[cell] = (uint8_t)(47+index);
+            int victim = map_who[cell]-1;
+            if (victim < 0) continue;
+            if (victim < 208) core_remove(victim);
+            else if (victim < CORE_FUNNY_END) core_zero_funny(victim);
+        }
+        map_who[position] = (uint8_t)(slot+1);
+    }
+}
 static void core_frame_town(int person, int capacity)
 {
     set_peep_word(person,12,capacity >= 3050 ? 42 : 32+capacity*10/305);
@@ -1654,6 +1747,10 @@ static void core_settle_tick(int person)
                 /* asm:3964-3983: preserve a co-located walker or battle occupant. */
                 if (!map_who[position] || map_who[position] == person+1) map_who[position] = child+1;
                 if (peeps[person*22+2] < 4) ++peeps[person*22+2];
+            } else if (!funny_done) {
+                /* asm:3996-4006: no free slot of 208, once per game. */
+                core_place_funny(1,0);
+                funny_done = 1;
             }
         }
         /* asm:4007-4014: ADD.W can revive or kill; store before maintenance. */
@@ -2432,6 +2529,10 @@ static void original_clear(WorldRandom random, unsigned internal_level)
     _clear_map();
     memset(map_steps, 0, 4096 * 2);
     memset(peeps, 0, 208 * 22);
+    /* asm:1037-1057: the new-game loop clears +4 of all $D3 slots, then
+     * _funny_done; the funny records' other fields are left as found. */
+    for (int slot = 208; slot < CORE_FUNNY_END; ++slot) set_peep_word(slot,4,0);
+    funny_done = 0;
     no_peeps = 0;
     for (int owner = 0; owner < 2; ++owner) {
         core_tendency(owner) = 1;
@@ -3013,6 +3114,7 @@ static void game_tick(void)
      * The original also lapses it while a button is held; the port has no
      * held-button state, so only the countdown applies. */
     if (view_timer && !--view_timer) view_who = old_view_who;
+    core_do_funny();   /* asm:680, before _move_peeps */
     _move_peeps();
     /* _move_peeps asm:4323-4347, after the peep loop: the pass's pre-move
      * good_pop or a surrender ends the game, _player first (___end_game(1)
@@ -3022,6 +3124,9 @@ static void game_tick(void)
     /* Preserve the C population/result timing; never modify terrain mid-movement. */
     if (core_result) core_clear_terrain_mailboxes();
     else core_consume_terrain_mailboxes();
+    /* asm:752-760: at game turn 4096 place type _start_seed&3 (3: none).
+     * The unpushed edge word is taken as 0 (see core_place_funny). */
+    if (game_turn == 0x1000) core_place_funny(start_seed & 3, 0);
 }
 
 static void game_render(void)
@@ -4739,6 +4844,49 @@ static void core_show_the_shield(GraphicsSheet small)
     core_draw_bar(0x27,0x1f,0x20,bad ? (int)(31*bad/50000+1) : 0,8);
 }
 
+/* Funny occupant (map_who byte >= $D1), _move_sprite asm:15951-16258: the
+ * walking (flags 2 / bit 4) branch at asm:16061-16191 interpolates by +$C
+ * along +$A and hides the second half of moves leaving the 8x8 view; then
+ * asm:16192-16197 take frame +6. The main loop (asm:630-641) draws entries
+ * whose +6 is >= $D1 with _draw_s_32 at (x-8,y-16). The extra view_who
+ * entry (frame $44, asm:16245-16254) is queued like the original, but $44 is
+ * past the 13-frame sheet, so _draw_s_32 would read beyond _sprite_data_32;
+ * the port draws nothing for it. A shaken screen never gets here. */
+static const struct { int16_t step, hide_u, hide_v, dx, dy; } core_funny_moves[] = {
+    {-65, 0, 0, 0,-2}, {-64,-1, 0, 2,-1}, {-63, 7, 0, 4, 0}, {  1, 7,-1, 2, 1},
+    { 65, 7, 7, 0, 2}, { 64,-1, 7,-2, 1}, { 63, 0, 7,-4, 0}, { -1, 0,-1,-2,-1},
+};
+static void core_queue_sprite(int x, int y, int frame, int who)
+{
+    if (no_sprites >= 64) return;
+    int entry = 0x9a22 + no_sprites*8;
+    A4_WORD(entry) = (int16_t)x; A4_WORD(entry+2) = (int16_t)y;
+    A4_WORD(entry+4) = (int16_t)frame; A4_WORD(entry+6) = (int16_t)who;
+    ++no_sprites;
+}
+static void core_draw_funny(int u, int v, int cell)
+{
+    int who = map_who[cell], slot = who-1, flags = peeps[slot*22];
+    if (who > CORE_FUNNY_END) return;   /* past the 211-record _peeps */
+    if (flags != 2 && (flags == 1 || !(flags & 16))) return;   /* other branches never see funnies */
+    int counter = peep_word(slot,12), step = peep_word(slot,10), left, top;
+    if (counter >= 8 || !graphics_tile(u,v,map_alt[cell],&left,&top)) return;   /* asm:16063: _debug */
+    int next = cell+step, sx = left+8, sy = top-8;
+    sy += ((int8_t)map_alt[cell] - (next >= 0 && next < 4096 ? (int8_t)map_alt[next] : 0)) * counter;
+    if (map_blk[cell] != 15) sy += 4;
+    int dx = 0, dy = 0;
+    for (size_t index = 0; index < sizeof core_funny_moves/sizeof *core_funny_moves; ++index) {
+        if (core_funny_moves[index].step != step) continue;
+        if (counter > 4 && (u == core_funny_moves[index].hide_u || v == core_funny_moves[index].hide_v)) return;
+        dx = core_funny_moves[index].dx; dy = core_funny_moves[index].dy;
+        break;
+    }
+    sx += dx*counter; sy += dy*counter;
+    int frame = peep_word(slot,6);
+    core_queue_sprite(sx,sy,frame,who);
+    if (view_who == who) core_queue_sprite(sx+8,sy,0x44,who);
+    graphics_draw_s_32(game_pixels,sizeof game_pixels,graphics_big_sprites(game_assets),frame,sx-8,sy-16);
+}
 static void draw_original(int view_x, int view_y)
 {
     if (!game_assets || view_x<0 || view_x>56 || view_y<0 || view_y>56) return;
@@ -4777,6 +4925,7 @@ static void draw_original(int view_x, int view_y)
     sound_effect = 0;   /* asm:614, before _draw_it */
     for (int v=0; v<8 && !dy; ++v) for (int u=0; u<8; ++u) {
         int cell=(view_y+v)*64+view_x+u, person=(int)map_who[cell]-1;
+        if (map_who[cell]>=0xd1) { core_draw_funny(u,v,cell); continue; }
         if (person<0 || person>=no_peeps || peep_word(person,4)<=0 || peep_word(person,8)!=cell) continue;
         int left,top,owner=peep_owner(person),flags=peeps[person*22];
         if (owner>1 || !graphics_tile(u,v,map_alt[cell],&left,&top)) continue;
@@ -4937,7 +5086,7 @@ static void _do_war(void) { core_war(player); }
 static void _do_flood(void) { core_flood(player); }
 static void _do_quake(void) { core_quake(player,xoff,yoff,___newrand); }
 static void _do_volcano(void) { core_volcano(player,xoff,yoff,___newrand); }
-static void _do_funny(void) {}
+static void _do_funny(void) { core_do_funny(); }
 /* Ordinary _set_frame branches, asm:5728-5743,5846-5861. */
 static int core_frame_walker(int person)
 {
@@ -5295,7 +5444,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
     if (yoff > 56) yoff = 56;
     return 1;
 }
-static void _do_place_funny(int16_t a) { (void)a; }   /* matches the chunk call */
+static void _do_place_funny(int16_t a) { core_place_funny(a,0); }
 
 /* ___ shims (SDL / stdlib backed) */
 static void *amiga_alloc_mem(uint32_t s,uint32_t a){(void)a;return calloc(1,s);}

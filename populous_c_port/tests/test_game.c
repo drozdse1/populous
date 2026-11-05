@@ -3896,7 +3896,7 @@ static void test_town_economy_split(void)
     for (int owner=0; owner<2; ++owner) for (int full=0; full<=1; ++full) {
         setup_town_economy(owner,3100);
         if (full) {
-            no_peeps=208;
+            no_peeps=208; funny_done=1;   /* full-pool funny: test_funny_objects */
             for (int person=1; person<208; ++person) {
                 peeps[person*22]=6; peeps[person*22+1]=1-owner;
                 set_peep_word(person,4,77); set_peep_word(person,12,85);
@@ -3939,6 +3939,9 @@ static void setup_town_split(int owner, int parent, int child, int count)
     /* Allocated A4 storage immediately beyond the 208-record pool is a guard,
      * not a 209th record. Keep it dead so an off-by-one search would select it. */
     memset(peeps+208*22,0xb7,22);
+    /* A full pool also places a funny once (asm:3996-4006); that rule is
+     * test_funny_objects', so these layouts start with it already done. */
+    funny_done=child>=208;
     int16_t dead=-1; memcpy(peeps+208*22+4,&dead,sizeof dead);
 }
 
@@ -4295,7 +4298,7 @@ static void test_town_footprint_completion(void)
         setup_town_footprint(owner,650,1,0); map_blk[780]=32-owner;
         set_peep_word(0,12,42); set_peep_word(0,4,3100); game_turn=turn;
         A4_WORD(0x2ff4)=11; map_who[650]=occupant;
-        no_peeps=full ? 208 : 2;
+        no_peeps=full ? 208 : 2; funny_done=full;   /* full-pool funny: test_funny_objects */
         for (int person=1; person<no_peeps; ++person) {
             peeps[person*22]=0x80; peeps[person*22+1]=1-owner;
             set_peep_word(person,4,77); set_peep_word(person,8,650);
@@ -5371,6 +5374,172 @@ static void test_special_sprite_order_and_guards(void)
         assert(a4_same(before)); assert_sprite_pixels(expected);
     }
 }
+/* 32x32 "funny" objects: _do_place_funny asm:8862-9013, _do_funny
+ * asm:8630-8858, _move_sprite asm:16061-16197, main loop asm:630-641 and
+ * _draw_s_32 asm:19365-19504. */
+static void funny_clear(void)
+{
+    for (int slot=0xd1;slot<0xd3;++slot) memset(peeps+slot*22,0,22);
+    memset(map_who,0,4096);
+}
+static void test_funny_objects(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    /* Real export: spr_320.dat is 13 frames (Read $2080, asm:16443-16449),
+     * loaded byte for byte; the fixture export has none (Open fails, the
+     * original skips the Read) and loads without a sheet. */
+    char error[256];
+    GraphicsAssets *real=graphics_load(POPULOUS_DEFAULT_ASSET_DIR,0,0,error,sizeof error);
+    assert(real);
+    GraphicsSheet big=graphics_big_sprites(real);
+    assert(big.width==32 && big.height==32 && big.size==13*1024);
+    static uint8_t file_bytes[13*1024+1];
+    FILE *file=fopen(POPULOUS_DEFAULT_ASSET_DIR "/pixels/spr_320.dat.indices.u8","rb"); assert(file);
+    assert(fread(file_bytes,1,sizeof file_bytes,file)==13*1024 && !fclose(file));
+    assert(!memcmp(file_bytes,real->big_indices,13*1024));
+    int opaque=0; for (int i=0;i<13*1024;++i) opaque+=!real->big_keep[i];
+    assert(opaque>0 && opaque<13*1024);
+    graphics_free(real);
+    assert(!graphics_big_sprites(game_assets).indices && game_assets->big_size==0);
+    assert(funny_done==0 && !peep_word(0xd1,4) && !peep_word(0xd2,4));
+    /* _draw_s_32 placement, mask and clip rules on a synthetic frame. */
+    static uint8_t screen[320*200], indices[2*1024], keep[2*1024];
+    memset(keep,1,sizeof keep); memset(indices,0,sizeof indices);
+    indices[1024+0]=9; keep[1024+0]=0;           /* frame 1 (0,0): replace */
+    indices[1024+31*32+31]=6;                    /* frame 1 (31,31): OR over keep */
+    indices[1024+1*32+0]=4; keep[1024+1*32+0]=0; /* frame 1 (0,1) */
+    GraphicsSheet sheet={indices,keep,sizeof indices,32,32};
+    memset(screen,3,sizeof screen);
+    assert(graphics_draw_s_32(screen,sizeof screen,sheet,1,100,50));
+    assert(screen[50*320+100]==9 && screen[81*320+131]==7 && screen[51*320+100]==4);
+    assert(screen[50*320+101]==3 && screen[49*320+100]==3);
+    assert(!graphics_draw_s_32(screen,sizeof screen,sheet,2,100,50));   /* past the sheet */
+    memset(screen,3,sizeof screen);
+    assert(!graphics_draw_s_32(screen,sizeof screen,sheet,1,100,-1));  /* TST D1/BMI */
+    assert(!graphics_draw_s_32(screen,sizeof screen,sheet,1,100,199)); /* $C7-199 = 0: BLE */
+    for (int i=0;i<320*200;++i) assert(screen[i]==3);
+    assert(graphics_draw_s_32(screen,sizeof screen,sheet,1,100,198));  /* DBF 1: two rows */
+    assert(screen[198*320+100]==9 && screen[199*320+100]==4);
+    assert(graphics_draw_s_32(screen,sizeof screen,sheet,1,300,10));   /* D7 $28: one word */
+    assert(screen[10*320+300]==9 && screen[11*320+0]==3);
+    /* Placement: first free slot, table fields, edge formulas. */
+    funny_clear(); seed=1234;
+    uint16_t saved=seed; int expect=(int16_t)___newrand()%125/2+0xfc0; seed=saved;
+    core_place_funny(0,0);
+    assert(peep_word(0xd1,4)==1 && peeps[0xd1*22]==2 && peep_word(0xd1,8)==expect);
+    assert(map_who[expect]==0xd2 && peep_word(0xd1,10)==-64 && peep_word(0xd1,6)==0);
+    assert(peeps[0xd1*22+2]==4 && peeps[0xd1*22+3]==0 && peeps[0xd1*22+20]==0 && peeps[0xd1*22+21]==1);
+    saved=seed; int odd=___newrand()&1, value=(int16_t)___newrand()%43; seed=saved;
+    core_place_funny(2,2);
+    assert(peep_word(0xd2,8)==(odd ? value*64 : value) && peep_word(0xd2,10)==65);
+    assert(peeps[0xd2*22+2]==12 && peeps[0xd2*22+3]==9 && peep_word(0xd2,6)==9);
+    saved=seed; core_place_funny(1,0); assert(seed==saved);           /* both slots busy */
+    funny_clear(); saved=seed; core_place_funny(3,0); assert(seed==saved && !peep_word(0xd1,4));
+    for (int trial=0;trial<8;++trial) {
+        funny_clear(); saved=seed; odd=___newrand()&1; value=(int16_t)___newrand()%43; seed=saved;
+        core_place_funny(1,1);
+        int position=(value+20)*64+(odd ? 63 : 0xfc0);
+        assert(peep_word(0xd1,8)==position && peep_word(0xd1,10)==-65 && peeps[0xd1*22+2]==8 && peeps[0xd1*22+3]==5);
+        int marked=0; for (int i=0;i<4096;++i) marked+=map_who[i]!=0;
+        assert(marked==(position<4096));   /* out-of-map edge cell is not written */
+    }
+    /* _do_funny: frame bounce every turn, a step every 8th, then trails. */
+    funny_clear();
+    memset(map_blk,15,4096); memset(map_bk2,0,4096);
+    int start=40*64+20;
+    map_blk[start-64-1]=0; map_blk[start-64+1]=16;
+    core_place_funny(0,3); set_peep_word(0xd1,8,start); map_who[start]=0xd2;
+    static const int frames[16]={1,2,3,4,3,2,1,0,1,2,3,4,3,2,1,0};
+    for (int turn=0;turn<16;++turn) {
+        core_do_funny();
+        assert(peep_word(0xd1,6)==frames[turn]);
+        if (turn==6) assert(peep_word(0xd1,12)==7 && peep_word(0xd1,8)==start && map_who[start]==0xd2);
+        if (turn==7) {
+            int now=start-64;
+            assert(peep_word(0xd1,12)==0 && peep_word(0xd1,8)==now && map_who[now]==0xd2 && !map_who[start]);
+            assert(map_bk2[now]==50 && map_bk2[now-1]==0 && map_bk2[now+1]==0);   /* sea and 16 skipped */
+        }
+    }
+    assert(map_bk2[start-128]==50 && map_bk2[start-129]==51 && map_bk2[start-127]==52);
+    /* Type 1 converts 15/31/32/66 to 53 and kills the occupant; type 2 puts 47+i. */
+    funny_clear(); assert(game_reset(0)); funny_clear(); memset(map_blk,15,4096);
+    start=30*64+30; map_blk[start-65]=31; map_blk[start-65-64]=40; map_blk[start-65-1]=66;
+    int victim=0; int victim_cell=start-65-1; assert(peep_word(victim,4)>0);
+    map_who[peep_word(victim,8)]=0; set_peep_word(victim,8,victim_cell); map_who[victim_cell]=victim+1;
+    core_place_funny(1,3); set_peep_word(0xd1,8,start); map_who[start]=0xd2;
+    for (int turn=0;turn<8;++turn) core_do_funny();
+    assert(map_blk[start-65]==53 && map_blk[start-65-64]==40 && map_blk[start-65-1]==53);
+    assert(peep_word(victim,4)==0 && peeps[victim*22]==0 && map_who[victim_cell]==0 && map_who[start-65]==0xd2);
+    funny_clear(); memset(map_blk,15,4096); map_blk[start+65+1]=0;
+    core_place_funny(2,3); set_peep_word(0xd1,8,start); map_who[start]=0xd2;
+    for (int turn=0;turn<8;++turn) core_do_funny();
+    assert(map_blk[start+65]==47 && map_blk[start+65+64]==48 && map_blk[start+65+1]==0);
+    /* Leaving the map ends it (valid_move 1); the cell was already cleared. */
+    funny_clear(); core_place_funny(0,3); set_peep_word(0xd1,8,5); map_who[5]=0xd2;
+    for (int turn=0;turn<8;++turn) core_do_funny();
+    assert(!peep_word(0xd1,4) && !map_who[5] && peep_word(0xd1,8)==5);
+    /* Triggers: game turn 4096 (start_seed&3, asm:752-760) and once on a full pool. */
+    assert(game_reset(0)); funny_clear();
+    start_seed=6; game_turn=0x0fff; game_tick();
+    assert(game_turn==0x1000 && peep_word(0xd1,4)==1 && peeps[0xd1*22+20]==2);
+    game_tick(); assert(!peep_word(0xd2,4));
+    assert(game_reset(0)); funny_clear(); start_seed=3; game_turn=0x0fff; game_tick();
+    assert(!peep_word(0xd1,4) && !peep_word(0xd2,4));
+    for (int owner=0;owner<2;++owner) {
+        setup_town_split(owner,0,208,208); funny_clear(); funny_done=0;
+        A4_WORD(0x82bc+owner*46)=1; A4_WORD(0x2ff6)=30000;
+        core_settle_tick(0);
+        assert(funny_done==1 && peep_word(0xd1,4)==1 && peeps[0xd1*22+20]==1 && peep_word(0xd1,10)==-65);
+        funny_clear(); core_settle_tick(0); assert(!peep_word(0xd1,4));
+    }
+    /* Render: _move_sprite position, interpolation by +$C, edge hiding,
+     * main-loop offset (-8,-16) and the queued _sprite entries. */
+    assert(game_reset(0));
+    memset(game_assets->background,1,sizeof game_assets->background);
+    memset(game_assets->land_keep,1,sizeof game_assets->land_keep);
+    memset(game_assets->land_indices,0,sizeof game_assets->land_indices);
+    memset(game_assets->big_keep,1,sizeof game_assets->big_keep);
+    memset(game_assets->big_indices,0,sizeof game_assets->big_indices);
+    /* Without a sheet the object is still queued but nothing is drawn. */
+    funny_clear(); draw_original(16,16);
+    static uint8_t plain[320*200]; memcpy(plain,game_pixels,sizeof plain);
+    map_who[17*64+17]=0xd2; peeps[0xd1*22]=2; set_peep_word(0xd1,10,-64);
+    draw_original(16,16);
+    assert(!memcmp(plain,game_pixels,sizeof plain) && no_sprites==1 && A4_WORD(0x9a28)==0xd2);
+    game_assets->big_size=13*1024;
+    for (int frame=0;frame<13;++frame) { game_assets->big_indices[frame*1024]=2+frame%13; game_assets->big_keep[frame*1024]=0; }
+    static const struct { int step,dx,dy,hide_u,hide_v; } moves[]={
+        {-65,0,-2,0,0},{-64,2,-1,-1,0},{-63,4,0,7,0},{1,2,1,7,-1},
+        {65,0,2,7,7},{64,-2,1,-1,7},{63,-4,0,0,7},{-1,-2,-1,0,-1},{5,0,0,-1,-1}};
+    for (unsigned m=0;m<sizeof moves/sizeof *moves;++m)
+    for (int u=0;u<8;u+=3) for (int v=0;v<8;v+=7) for (int counter=0;counter<9;counter+=2) for (int flat=0;flat<2;++flat) {
+        funny_clear(); memset(map_alt,0,4096); memset(map_blk,15,4096); view_who=0;
+        int cell=(16+v)*64+16+u, frame=(int)(m+counter)%13;
+        map_alt[cell]=2; if (cell+moves[m].step>=0) map_alt[cell+moves[m].step]=1;
+        if (!flat) map_blk[cell]=20;
+        static uint8_t base[320*200]; draw_original(16,16); memcpy(base,game_pixels,sizeof base);
+        map_who[cell]=0xd2; peeps[0xd1*22]=2;
+        set_peep_word(0xd1,6,frame); set_peep_word(0xd1,10,moves[m].step); set_peep_word(0xd1,12,counter);
+        draw_original(16,16);
+        int sx=176+16*(u-v)+8+moves[m].dx*counter, sy=64+8*(u+v)-16-8+(flat ? 0 : 4)+1*counter+moves[m].dy*counter;
+        int hidden=counter>=8 || (counter>4 && (u==moves[m].hide_u || v==moves[m].hide_v));
+        int colour=game_pixels[(sy-16)*320+sx-8];
+        if (hidden) { assert(!memcmp(base,game_pixels,sizeof base) && no_sprites==0); continue; }
+        /* Only the frame's single opaque pixel (its origin) changes. */
+        int changed=0; for (int i=0;i<320*200;++i) changed+=base[i]!=game_pixels[i];
+        assert(colour==2+frame && changed==(base[(sy-16)*320+sx-8]!=colour));
+        assert(no_sprites==1 && A4_WORD(0x9a22)==sx && A4_WORD(0x9a24)==sy && A4_WORD(0x9a26)==frame && A4_WORD(0x9a28)==0xd2);
+    }
+    /* The view_who marker (frame $44) is queued but past the 13-frame sheet. */
+    funny_clear(); memset(map_alt,0,4096); memset(map_blk,15,4096);
+    map_who[17*64+17]=0xd2; peeps[0xd1*22]=2; set_peep_word(0xd1,6,3); set_peep_word(0xd1,10,-64);
+    view_who=0xd2; draw_original(16,16);
+    assert(no_sprites==2 && A4_WORD(0x9a2a)==A4_WORD(0x9a22)+8 && A4_WORD(0x9a2e)==0x44 && A4_WORD(0x9a30)==0xd2);
+    /* A shaken screen skips _move_sprite (asm:15842-15849). */
+    view_who=0; core_shake_dy=2; no_sprites=5; draw_original(16,16); assert(no_sprites==5); core_shake_dy=0;
+    funny_clear(); view_who=0;
+}
+
 static void test_special_sprites(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
@@ -10115,6 +10284,9 @@ static void test_water_town_state(void)
             set_peep_word(person,8,900);
         }
         no_peeps=208;
+        /* A full pool also places a funny once (asm:3996-4006); that is
+         * covered by test_funny_objects, here it has already happened. */
+        funny_done=1;
         int occupant=sample%3; map_who[650]=occupant;
         uint8_t expected[sizeof prg_a4_area];
         int evacuate=!plots[plot].capacity || war || heading;
@@ -13627,6 +13799,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_toolbar_icon_highlight();
     test_query_and_shield();
     test_special_sprites(); test_battle_frame_render_and_entry();
+    test_funny_objects();
     test_isometric_match();
     test_colocated_hostile_encounter();
     test_no_hidden_town();
