@@ -410,8 +410,9 @@ changing A4 and installs its actual values plus original initialized tables.
 Missing/invalid files fail startup: there is no invented-rule fallback.
 Audio, save/load and multiplayer remain absent; the conquest campaign is
 partially ported (see "Game end, score and conquest"). The original toolbar
-is clickable (see Controls); the options, game-options and message requesters
-it opens in the original are not ported. Selected tendency, mode, music, FX
+is clickable (see Controls); its options and game-options icons open the
+original requesters (see "Requesters and options"); the message requester is
+not ported. Selected tendency, mode, music, FX
 and pause icons are highlighted with the original `_toggle_icon` diamond XOR;
 the short press flashes on the power and view icons are not reproduced.
 
@@ -570,7 +571,8 @@ remains for malformed/legacy frames. Exact-zero town losses after normal entry
 retain their combat frame and use the original fallback reward of 100; direct
 completion fixtures without entry still exercise retained town-frame rewards.
 Full combat timing parity remains separate work. No
-copper, large-sprite specials, audio or toolbar requester is claimed.
+copper, large-sprite specials or audio is claimed; the toolbar requesters are
+described under "Requesters and options".
 
 The mouse pointer is the original hardware sprite: `_pointer` (A4 0x84b6) is
 set as in the original (query 0, terrain player*3+1, magnet player+2, swamp 5;
@@ -877,8 +879,10 @@ there is no terrain/population injection after the cast.
     the port bounds that scan. Viewing marks a 10-turn temporary view.
 - Lower-right system icons: `zzZ` toggles pause (also while paused or after the
   end); the music and FX icons toggle their flags (no audio yet). Options, game
-  options and the message icon post their original `_do_action` codes 7/8/2,
-  which the port does not handle yet.
+  options and the message icon post their original `_do_action` codes 7/8/2;
+  the consumer opens `_options` (7) and `_game_options` (8) at the next tick,
+  the message requester (2) stays inert. While a requester is open the game
+  is paused, keys other than Escape are ignored and left clicks go to it.
 - Left/right mouse: raise/lower the selected vertex. Neighbouring vertices follow
   the original maximum slope of one, height 0..8. Cost is 10 plus 4 per changed
   vertex; the original admission threshold is 10, so a large operation can leave
@@ -900,8 +904,9 @@ there is no terrain/population injection after the cast.
   Space: pause. `r`: reset the selected start and original graphics; synthetic
   starts return to view (6,6), original starts center near the friendly leader.
   Escape/window close: quit. Pause/outcome stop rules, not navigation/drawing.
-- After the game ends the end screen appears; any mouse click or key except
-  Escape continues (key repeats are ignored), Escape still quits.
+- After the game ends the end screen appears; a left click on its requester
+  button (as `_check_cancel(button,0)`) or, as a host convenience, any key
+  except Escape continues (key repeats are ignored), Escape still quits.
 
 The opponent independently settles, grows, explores, merges and fights. Flatten
 plots to encourage settlement, wait for population/mana, and lower the four
@@ -939,10 +944,54 @@ Continuing (see Controls):
 - synthetic scenarios are no conquest: the selected scenario restarts.
 
 Each start re-derives `_level_number`/`_in_conquest` from the selected world and
-clears `_score`. Not ported: the `_requester` frame and button (a plain box and a
-host-placed button text stand in), the lord/mouth animation, speech and music,
-the `_show_world` name-entry loop after a conquest win, and the end screen in
-the diagnostic view.
+clears `_score`. The box is the original `_requester(d_screen,16,16,0x120,
+0xa6,button)` frame with its single button (asm:14340-14385). Port deviation:
+the conquest-win lines, shown on the lord screen after the click in the
+original (x 8, y 0xb2/0xba), are shown before it on a cleared strip at y
+0x98/0xa0 so that they do not cover the button. Not ported: the lord/mouth
+animation, speech and music, the `_show_world` name-entry loop after a conquest
+win, and the end screen in the diagnostic view.
+
+## Requesters and options
+
+`_requester` (asm:9901-10270) is ported as `core_requester`: a frame of 16 px
+`_icon_data` tiles 12..23 (asm:21763-21927; title 12/13/14, sides 18/20/19,
+bottom 15/16/17, button 21/22../23) drawn with `_draw_icon` (asm:19184-19210),
+OK/CANCEL (`_end_ok`/`_end_cancel`, A4 0x84c6/0x84f4) placed and sized as in
+the original and labelled with the original font; `_check_cancel`
+(asm:12106-12153) hit-tests x..x2, y..y+16 inclusive. The original runs every
+requester as a blocking loop inside `_do_action`; the port keeps the requester
+state, stops `game_tick` while one is open, routes left presses to it at the
+pointer (`_mousex`/`_mousey`) and draws it over every frame (original view
+only; in the diagnostic view it is open but not drawn). `_tempo` is cleared
+when a requester opens rather than on every draw.
+
+- `_options` (`_do_action` y=7, asm:13617-13873; left button: your side, right:
+  the opponent; skipped while the other side's mailbox also asks for options):
+  `_option_text` (A4 0x8522). In a custom game (`_in_conquest` -1) entries
+  1..9 toggle the power bits of `_stats[side]+0xe`, the aggression and rate
+  sliders set `+0xc`/`+0x10` (shown as 10-value). OK keeps, CANCEL restores
+  the copy (the mailbox bytes excepted, which the original clears afterwards).
+  In a conquest game the settings are shown only.
+- `_game_options` (y=8, asm:12801-13350, `_game_text` A4 0x87ee): PLAY GAME /
+  PAINT MAP (`_paint_map`), GOOD / EVIL (`_player`, `_not_player`, the swapped
+  `_stats+6` human flags, `_pointer`), HUMAN VS AMIGA / AMIGA VS AMIGA
+  (`_stats+6`), ONE PLAYER (tick only, `_serial_off` is always 1), CUSTOM GAME
+  (`_in_conquest` -1), GAME OPTIONS, MOVE TO NEXT MAP / RESTART THIS MAP
+  (`_new_map`; a conquest start restarts the current world, which is what
+  `_setup_display` builds for both), SURRENDER (`_surender` = `_player`, the
+  next tick loses). Entries 0..8 are ignored in a conquest game. CANCEL
+  restores `_serial_off`, `_paint_map`, `_player`, its `_stats+6` and
+  `_in_conquest` as the original.
+- `_set_options` (GAME OPTIONS, asm:13362-13509, `_set_text` A4 0x8fc0) over
+  the setup screen: custom games toggle the `_game_mode` bits (water fatal,
+  swamps bottomless, cannot build, only build up, build near towns); CANCEL
+  restores `_game_mode`; it shows `LANDSCAPE NO <_start_seed>`.
+- Shown but inert: TWO PLAYERS (`_two_players`, serial), CONQUEST
+  (`_show_world` name entry), SAVE A GAME / LOAD A GAME (`_save_load`), MOVE TO
+  NEXT MAP / RESTART THIS MAP in a custom game (the custom map generator is
+  not ported), the two-player serial exchange after both dialogs, and the
+  message requester (y=2).
 
 ## Verification
 

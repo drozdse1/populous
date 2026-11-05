@@ -395,6 +395,23 @@ static void _move_explorer(void);
 static void _move_magnet_peeps(void);
 static void _move_mana(void);
 static void core_set_pointer(void);
+/* Open requester. The original runs each one as a blocking loop inside
+ * _do_action, so nothing else moves; the port keeps the state here, stops
+ * game_tick while kind is set and routes left presses to it. _set_options
+ * runs inside _game_options and returns to it. */
+enum { CORE_REQ_NONE, CORE_REQ_OPTIONS, CORE_REQ_GAME, CORE_REQ_SET };
+static struct {
+    int kind, side;
+    uint8_t saved_stats[46];                /* _options -56(A5) */
+    int16_t saved_serial, saved_paint, saved_player, saved_human, saved_conquest; /* _game_options -6..-14 */
+    int16_t saved_mode;                     /* _set_options -46 */
+} core_req;
+static void core_options_open(int side);
+static void core_game_options_open(void);
+static void core_requester_click(void);
+static void core_draw_requester(void);
+static void core_end_button_layout(int draw);
+static int core_check_cancel(const uint8_t *ok, const uint8_t *cancel);
 static void _where_do_i_go(void);
 static void _get_heading(void);
 static void _join_forces(void);
@@ -1766,6 +1783,16 @@ static void core_consume_terrain_mailboxes(void)
             else if (y == 3) core_war(owner);
             else if (y == 4) core_flood(owner);
             else if (y == 5) core_knight(owner);
+            /* y=7 asm:18607-18650: not while the other side's mailbox also
+             * holds options; our side shows _options(x ? player : not_player).
+             * y=8 asm:18729-18733: _new_map = 0, _game_options. The serial
+             * exchange that follows for two players is not ported. */
+            else if (y == 7 && owner == player && !core_req.kind) {
+                const uint8_t *other = A4_DISP(0x82b6 + (owner ? 0 : 1) * 46);
+                if (!(other[2] == 7 && other[0] == 14)) core_options_open(x ? player : not_player);
+            } else if (y == 8 && owner == player && !core_req.kind) {
+                A4_WORD(0x309a) = 0; core_game_options_open();
+            }
             break;
         default: break;
         }
@@ -2476,7 +2503,7 @@ static int game_reset_start(StartSelection selection)
 
 static void game_tick(void)
 {
-    if (pause || prg_quit || core_result) return;
+    if (pause || prg_quit || core_result || core_req.kind) return;
     game_turn = (int16_t)((uint16_t)game_turn + 1u);
     /* asm:740-750: a temporary view (_set_temp_view) lapses after 10 turns.
      * The original also lapses it while a button is held; the port has no
@@ -2860,30 +2887,416 @@ static void core_fill(int left, int top, int width, int height, int colour)
         if (x >= 0 && x < 320 && y >= 0 && y < 200) game_pixels[y*320+x] = (uint8_t)colour;
 }
 
-static void core_frame(int left, int top, int width, int height, int colour)
+/* _icon_data icons 12..23 (asm:21763-21927), the _requester tiles: per row
+ * the plane 0..3 words, 16 rows. Other icons are not exported. */
+static const uint16_t core_requester_icons[12][64] = {
+    {0xffff,0x0000,0xffff,0x0000,0xc000,0x0000,0xffff,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xdc2b,0x1000,0xefff,0x0000,0xdfff,0x17ff,0xe800,0x0000,0xdfd4,0x102b,0xe800,0x0000,0xdfff,0x13ff,0xe800,0x0000,0xde00,0x13ff,0xe800,0x0000,
+     0xde00,0x13ff,0xe8ff,0x0000,0xde00,0x13ff,0xe8ff,0x0000,0xd200,0x17ff,0xe8ff,0x0000,0xde00,0x13ff,0xe8ff,0x0000,0xd200,0x17ff,0xe8ff,0x0000,0xde00,0x13ff,0xe8ff,0x0000,0xd200,0x17ff,0xe8ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000},
+    {0xffff,0x0000,0xffff,0x0000,0x0000,0x0000,0xffff,0x0000,0xffff,0xffff,0x0000,0x0000,0xd42b,0x0000,0xffff,0x0000,0xffff,0xffff,0x0000,0x0000,0x2bd4,0xd42b,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0x0000,0xffff,0x0000,0x0000,
+     0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000},
+    {0xfffd,0x0001,0xfffe,0x0000,0x0002,0x0003,0xfffc,0x0000,0xfffb,0xfffc,0x0000,0x0000,0xd43b,0x001c,0xffe0,0x0000,0xfffb,0xffec,0x0000,0x0000,0x2bfb,0xd42c,0x0000,0x0000,0xfffb,0xffcc,0x0020,0x0000,0x00fb,0xffcc,0x0020,0x0000,
+     0x007b,0xff4c,0xffa0,0x0000,0x007b,0xff4c,0xffa0,0x0000,0x004b,0xff5c,0xffa0,0x0000,0x007b,0xff4c,0xffa0,0x0000,0x004b,0xff5c,0xffa0,0x0000,0x007b,0xff4c,0xffa0,0x0000,0x004b,0xff5c,0xffa0,0x0000,0x007b,0xff7c,0xff80,0x0000},
+    {0xdf00,0x1f00,0xe0ff,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xdfff,0x1fff,0xe000,0x0000,
+     0xdfff,0x1fff,0xe000,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xdfff,0x1fff,0xe000,0x0000,0xa000,0x3fff,0xc000,0x0000,0xbfff,0xc000,0x0000,0x0000},
+    {0x0000,0x0000,0xffff,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,
+     0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0x0000,0xffff,0x0000,0x0000,0xffff,0x0000,0x0000,0x0000},
+    {0x00fb,0x00fc,0xff00,0x0000,0xfffb,0xfffc,0x0000,0x0000,0xfffb,0xfffc,0x0000,0x0000,0xfffb,0xfffc,0x0000,0x0000,0xfffb,0xfffc,0x0000,0x0000,0xfffb,0xfffc,0x0000,0x0000,0xfffb,0xfffc,0x0000,0x0000,0xfffb,0xfffc,0x0000,0x0000,
+     0xfffb,0xfffc,0x0000,0x0000,0xfffb,0xfffc,0x0000,0x0000,0xfffb,0xfffc,0x0000,0x0000,0xfffb,0xfffc,0x0000,0x0000,0xfffb,0xfffc,0x0000,0x0000,0xfffb,0xfffc,0x0000,0x0000,0x0003,0xfffc,0x0000,0x0000,0xffff,0x0000,0x0000,0x0000},
+    {0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,
+     0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000,0xde00,0x1fff,0xe0ff,0x0000},
+    {0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,
+     0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000,0x007b,0xff7c,0xff80,0x0000},
+    {0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,
+     0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000},
+    {0x0000,0x0000,0xffff,0x0000,0xf800,0xffff,0x0000,0x0000,0xfbff,0xfdff,0x01ff,0x0200,0xfbff,0xfeff,0x02ff,0x0100,0xfb00,0xffff,0x03ff,0x0000,0xfb00,0xffff,0x03ff,0x0000,0xfb00,0xffff,0x03ff,0x0000,0xfb00,0xffff,0x03ff,0x0000,
+     0xfb00,0xffff,0x03ff,0x0000,0xfb00,0xffff,0x03ff,0x0000,0xfb00,0xffff,0x03ff,0x0000,0xfa00,0xff00,0x0300,0x0000,0xf800,0xfe00,0x0200,0x0000,0xfc00,0xfc00,0x03ff,0x0000,0x0000,0xffff,0x0000,0x0000,0xffff,0x0000,0x0000,0x0000},
+    {0x0000,0x0000,0xffff,0x0000,0x0000,0xffff,0x0000,0x0000,0xffff,0xffff,0xffff,0x0000,0xffff,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,
+     0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0xffff,0xffff,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0xffff,0x0000,0x0000,0xffff,0x0000,0x0000,0xffff,0x0000,0x0000,0x0000},
+    {0x0000,0x0000,0xffff,0x0000,0x003f,0xffff,0x0000,0x0000,0xff9f,0xffdf,0xffe0,0x0000,0xff1f,0xff9f,0xffa0,0x0000,0x001f,0xff1f,0xff20,0x0000,0x001f,0xff1f,0xff20,0x0000,0x001f,0xff1f,0xff20,0x0000,0x001f,0xff1f,0xff20,0x0000,
+     0x001f,0xff1f,0xff20,0x0000,0x001f,0xff1f,0xff20,0x0000,0x001f,0xff1f,0xff20,0x0000,0x001f,0x001f,0x0020,0x0000,0x001f,0x001f,0x0020,0x0000,0x001f,0x001f,0xffe0,0x0000,0x0000,0xffff,0x0000,0x0000,0xffff,0x0000,0x0000,0x0000},
+};
+
+/* _draw_icon asm:19184-19210: x in words (16 px), y in lines, the 4 plane
+ * words replace the screen words. */
+static void core_draw_icon(int x, int y, int icon)
 {
-    core_fill(left,top,width,1,colour); core_fill(left,top+height-1,width,1,colour);
-    core_fill(left,top,1,height,colour); core_fill(left+width-1,top,1,height,colour);
+    if (icon < 12 || icon > 23) return;
+    const uint16_t *data = core_requester_icons[icon-12];
+    for (int row = 0; row < 16; ++row) for (int bit = 0; bit < 16; ++bit) {
+        int px = x*16 + bit, py = y + row, colour = 0;
+        for (int plane = 0; plane < 4; ++plane) colour |= ((data[row*4+plane] >> (15-bit)) & 1) << plane;
+        if (px >= 0 && px < 320 && py >= 0 && py < 200) game_pixels[py*320+px] = (uint8_t)colour;
+    }
 }
 
-/* _end_game display asm:14317-14369. The original _requester frame and
- * button are not ported: a plain box at the requester rectangle (16,16,
- * 288x166) holds the rows at _end_text+16 and a host-placed button. A
- * conquest win adds _won_conquest's lines (x 8, y 0xb2/0xba, asm:14531-14582)
- * here, before the click, instead of on the lord screen. */
+/* Button/menu records as the original's 46-byte entries: word x, word y,
+ * word x2 (buttons) or width (menus), text at +6. */
+#define core_rec_w(r,o) (((A4Word *)((r)+(o)))->value)
+#define core_rec_text(r) ((char *)(r)+6)
+#define core_end_ok     A4_DISP(0x84c6)
+#define core_end_cancel A4_DISP(0x84f4)
+#define core_option_entry(i) A4_DISP(0x8522 + (i)*46)
+#define core_game_entry(i)   A4_DISP(0x87ee + (i)*46)
+#define core_set_entry(i)    A4_DISP(0x8fc0 + (i)*46)
+typedef struct { int16_t x, y, w; const char *text; } CoreMenuEntry;
+static void core_menu_install(uint8_t *table, const CoreMenuEntry *entries, int count)
+{
+    for (int i = 0; i < count; ++i, table += 46) {
+        core_rec_w(table,0) = entries[i].x; core_rec_w(table,2) = entries[i].y; core_rec_w(table,4) = entries[i].w;
+        memset(table+6, 0, 40); strcpy(core_rec_text(table), entries[i].text);
+    }
+}
+/* _end_ok/_end_cancel asm:24349-24362. */
+static void core_buttons_install(void)
+{
+    static const CoreMenuEntry buttons[] = {{0,0,0,"OK"},{0,0,0,"CANCEL"}};
+    core_menu_install(core_end_ok, buttons, 1); core_menu_install(core_end_cancel, buttons+1, 1);
+}
+
+/* _requester asm:9901-10270: a 16 px tile frame at x/16 (title 12,13,14;
+ * sides 18,20,19 every 16 lines; bottom 15,16,17), ok (and cancel) as
+ * 21,22..,23 button tiles in the bottom row. The buttons get x, y (the
+ * bottom row) and x2 = x + (strlen+4)*8; labels at x+16, y+3. The
+ * original clears _tempo on every call; the port clears it when a
+ * requester opens (core_requester_layout), and draws it every frame. */
+static void core_requester(int x, int y, int w, int h, uint8_t *ok, uint8_t *cancel, int draw)
+{
+    int left = x >> 4, tiles = w >> 4, half = (int)strlen(core_rec_text(ok)) >> 1, row, column;
+#define tile(c,r,i) do { if (draw) core_draw_icon(left+(c),(r),(i)); } while (0)
+    tile(0,y,12);
+    for (column = 1; column < tiles-1; ++column) tile(column,y,13);
+    tile(column,y,14);
+    for (row = y+16; row < y+h-16; row += 16) {
+        tile(0,row,18);
+        for (column = 1; column < tiles-1; ++column) tile(column,row,20);
+        tile(column,row,19);
+    }
+    tile(0,row,15);
+    column = 1; core_rec_w(ok,2) = (int16_t)row;
+    if (cancel) {
+        int length = (int)strlen(core_rec_text(cancel)) >> 1;
+        core_rec_w(ok,0) = (int16_t)((left+column) << 4); core_rec_w(cancel,2) = core_rec_w(ok,2);
+        tile(column,row,21); ++column;
+        for (int i = 0; i < half; ++i, ++column) tile(column,row,22);
+        tile(column,row,23); ++column;
+        if (draw) amiga_text(game_pixels, core_rec_w(ok,0)+16, row+3, core_rec_text(ok));
+        for (; column < tiles - length - 3; ++column) tile(column,row,16);
+        core_rec_w(cancel,0) = (int16_t)((left+column) << 4);
+        tile(column,row,21); ++column;
+        for (int i = 0; i < length; ++i, ++column) tile(column,row,22);
+        tile(column,row,23); ++column;
+        core_rec_w(cancel,4) = (int16_t)(core_rec_w(cancel,0) + ((int)strlen(core_rec_text(cancel))+4)*8);
+        if (draw) amiga_text(game_pixels, core_rec_w(cancel,0)+16, row+3, core_rec_text(cancel));
+    } else {
+        for (; column < (tiles>>1) - (half>>1) - 1; ++column) tile(column,row,16);
+        core_rec_w(ok,0) = (int16_t)((left+column) << 4);
+        tile(column,row,21); ++column;
+        for (int i = 0; i < half; ++i, ++column) tile(column,row,22);
+        tile(column,row,23); ++column;
+        for (; column < tiles-1; ++column) tile(column,row,16);
+    }
+    core_rec_w(ok,4) = (int16_t)(core_rec_w(ok,0) + ((int)strlen(core_rec_text(ok))+4)*8);
+    tile(column,row,17);
+#undef tile
+    if (draw) amiga_text(game_pixels, core_rec_w(ok,0)+16, row+3, core_rec_text(ok));
+}
+
+/* _check_cancel asm:12106-12153 at _mousex/_mousey: 1 inside ok, 2 inside
+ * cancel (x..x2, y..y+16 inclusive), else 0. The port calls it for a left
+ * press only, so the _left_button gate is the event itself. */
+static int core_check_cancel(const uint8_t *ok, const uint8_t *cancel)
+{
+    if (ok && mousex >= core_rec_w(ok,0) && mousex <= core_rec_w(ok,4) &&
+        mousey >= core_rec_w(ok,2) && mousey <= core_rec_w(ok,2)+16) return 1;
+    if (cancel && mousex >= core_rec_w(cancel,0) && mousex <= core_rec_w(cancel,4) &&
+        mousey >= core_rec_w(cancel,2) && mousey <= core_rec_w(cancel,2)+16) return 2;
+    return 0;
+}
+
+/* Menu hit test of _options/_game_options/_set_options: x+dx..x+w+dx,
+ * y+dy..y+dy+8 inclusive. */
+static int core_menu_hit(const uint8_t *entry, int dx, int dy)
+{
+    return mousex >= core_rec_w(entry,0)+dx && mousex <= core_rec_w(entry,0)+core_rec_w(entry,4)+dx &&
+           mousey >= core_rec_w(entry,2)+dy && mousey <= core_rec_w(entry,2)+dy+8;
+}
+
+/* _option_text asm:24363-24493 (A4 0x8522), _game_text asm:24494-24789
+ * (0x87ee), _set_text asm:24845-24914 (0x8fc0). 0x80/0x81 are the font's
+ * empty/ticked box, 0x84..0x86 the slider, 0x87 its marker. */
+static const CoreMenuEntry core_option_template[14] = {
+    {0x24,0x10,0x80,"OPTIONS FOR EVIL"},
+    {0x20,0x20,0x08,"\x80 CAN MODIFY LAND"},     {0x20,0x29,0x08,"\x80 CAN ATTACK TOWNS"},
+    {0x20,0x32,0x08,"\x80 CAN ATTACK LEADER"},   {0x20,0x3b,0x08,"\x80 CAN USE EARTHQUAKES"},
+    {0x20,0x43,0x08,"\x80 CAN USE SWAMP"},       {0x20,0x4c,0x08,"\x80 CAN USE KNIGHT"},
+    {0x20,0x55,0x08,"\x80 CAN USE VOLCANO"},     {0x20,0x5e,0x08,"\x80 CAN USE FLOOD"},
+    {0x20,0x67,0x08,"\x80 CAN USE ARMAGEDDON"},
+    {0x64,0x7a,0x20,"AGGRESSION"}, {0x48,0x83,0x68,"LOW\x84\x85\x85\x85\x85\x85\x85\x85\x85\x86HIGH"},
+    {0x78,0x8d,0x20,"RATE"},       {0x40,0x96,0x70,"SLOW\x84\x85\x85\x85\x85\x85\x85\x85\x85\x86""FAST"},
+};
+static const CoreMenuEntry core_game_template[17] = {
+    {0x70,0x10,0x48,"GAME SETUP"},
+    {0x10,0x24,0x08,"\x80 ONE PLAYER"},     {0x98,0x24,0x08,"\x80 TWO PLAYERS"},
+    {0x10,0x2e,0x08,"\x80 PLAY GAME"},      {0x98,0x2e,0x08,"\x80 PAINT MAP"},
+    {0x10,0x38,0x08,"\x80 GOOD"},           {0x98,0x38,0x08,"\x80 EVIL"},
+    {0x10,0x42,0x08,"\x80 HUMAN VS AMIGA"}, {0x98,0x42,0x08,"\x80 AMIGA VS AMIGA"},
+    {0x10,0x4c,0x08,"\x80 CONQUEST"},       {0x98,0x4c,0x08,"\x80 CUSTOM GAME"},
+    {0x50,0x5f,0x80,"\x80 GAME OPTIONS"},   {0x50,0x69,0x80,"\x80 SAVE A GAME"},
+    {0x50,0x73,0x80,"\x80 LOAD A GAME"},    {0x50,0x7d,0x80,"\x80 MOVE TO NEXT MAP"},
+    {0x50,0x87,0x80,"\x80 RESTART THIS MAP"}, {0x50,0x91,0x80,"\x80 SURRENDER THIS GAME"},
+};
+static const CoreMenuEntry core_set_template[11] = {
+    {0x30,0x19,0x76,"SET GAME OPTIONS"},
+    {0x10,0x28,0x08,"\x80 WATER IS HARMFUL"}, {0x10,0x28,0x08,"\x81 WATER IS FATAL"},
+    {0x10,0x32,0x08,"\x80 SWAMPS SHALLOW"},   {0x10,0x32,0x08,"\x81 SWAMPS BOTTOMLESS"},
+    {0x10,0x3c,0x08,"\x80 CAN BUILD"},        {0x10,0x3c,0x08,"\x81 CANNOT BUILD"},
+    {0x10,0x46,0x08,"\x80 BUILD UP AND DOWN"},{0x10,0x46,0x08,"\x81 ONLY BUILD UP"},
+    {0x10,0x50,0x08,"\x80 BUILD NEAR PEOPLE"},{0x10,0x50,0x08,"\x81 BUILD NEAR TOWNS"},
+};
+/* _blank asm:24915-24923: 28 '^' glyphs. */
+static const char core_blank[] = "^^^^^^^^^^^^^^^^^^^^^^^^^^^^";
+
+static uint8_t *core_stats(int side) { return A4_DISP(0x82b6 + side*46); }
+
+/* _options asm:13617-13660 window, then each pass of LAB_48228 (asm:13661-13740):
+ * entry 0 names the side, 1..9 tick the _stats+0xe power bits. */
+static void core_options_refresh(void)
+{
+    strcpy(core_rec_text(core_option_entry(0)) + 12, core_req.side ? "EVIL" : "GOOD");
+    for (int i = 1; i < 10; ++i)
+        core_rec_text(core_option_entry(i))[0] = (char)(0x80 + !!(core_rec_w(core_stats(core_req.side),0xe) & (1 << (i-1))));
+}
+static void core_requester_layout(void)
+{
+    if (core_req.kind == CORE_REQ_OPTIONS) core_requester(0x10,0x10,0x120,0xa6,core_end_ok,core_end_cancel,0);
+    else if (core_req.kind == CORE_REQ_GAME) core_requester(0x10,0x10,0x120,0xb0,core_end_ok,core_end_cancel,0);
+    else if (core_req.kind == CORE_REQ_SET) core_requester(0x20,0x18,0x100,0x70,core_end_ok,core_end_cancel,0);
+    if (core_req.kind) tempo = 0;
+}
+/* _options(side) asm:13617-13660: keep a copy of _stats[side], show the
+ * aggression (+0xc) and rate (+0x10) as 10-value. */
+static void core_options_open(int side)
+{
+    uint8_t *own = core_stats(side);
+    core_req.kind = CORE_REQ_OPTIONS; core_req.side = side;
+    memcpy(core_req.saved_stats, own, 46);
+    core_buttons_install(); core_menu_install(core_option_entry(0), core_option_template, 14);
+    core_requester_layout();
+    core_rec_w(own,0xc) = (int16_t)(10 - core_rec_w(own,0xc));
+    core_rec_w(own,0x10) = (int16_t)(10 - core_rec_w(own,0x10));
+    core_options_refresh();
+}
+/* _options click, asm:13741-13873: only a custom game (in_conquest -1)
+ * edits; entry 1..9 toggles bit i-1, the sliders take (mousex-(x+0x28 or
+ * 0x30))/8 if 0..9. Ok re-inverts, cancel restores the copy. The copy's
+ * first 3 bytes are the _do_action mailbox, which the original clears after
+ * the return (asm:18189-18215); the port cleared it already, so they stay. */
+static void core_options_click(void)
+{
+    uint8_t *own = core_stats(core_req.side);
+    int i = 1;
+    while (i < 14 && !core_menu_hit(core_option_entry(i),16,16)) ++i;
+    if (in_conquest == -1) {
+        if (i < 10) core_rec_w(own,0xe) ^= (int16_t)(1 << (i-1));
+        else if (i == 11 || i == 13) {
+            int value = (int16_t)(mousex - (core_rec_w(core_option_entry(i),0) + (i == 11 ? 0x28 : 0x30))) / 8;
+            if (value >= 0 && value <= 9) core_rec_w(own, i == 11 ? 0xc : 0x10) = (int16_t)value;
+        }
+    }
+    int result = core_check_cancel(core_end_ok, core_end_cancel);
+    if (!result) { core_options_refresh(); return; }
+    if (result == 2) memcpy(own+3, core_req.saved_stats+3, 43);
+    else {
+        core_rec_w(own,0xc) = (int16_t)(10 - core_rec_w(own,0xc));
+        core_rec_w(own,0x10) = (int16_t)(10 - core_rec_w(own,0x10));
+    }
+    core_req.kind = CORE_REQ_NONE; left_button = 2;  /* _return_to_game asm:13874-13885 */
+}
+
+/* _game_options asm:12801-12877: the saved values and the ticks. */
+static void core_game_options_open(void)
+{
+    core_req.kind = CORE_REQ_GAME;
+    core_req.saved_serial = serial_off; core_req.saved_paint = paint_map; core_req.saved_player = player;
+    core_req.saved_human = core_rec_w(core_stats(player),6); core_req.saved_conquest = in_conquest;
+    A4_WORD(0x3080) = 0;  /* _bring_up_two */
+    core_buttons_install(); core_menu_install(core_game_entry(0), core_game_template, 17);
+    static const int ticks[] = {1,2,3,4,5,6,7,8,9,10};
+    int16_t human = core_rec_w(core_stats(player),6);
+    int16_t values[] = {serial_off, !serial_off, !paint_map, paint_map, !player, player, !human, human,
+                        in_conquest != -1, in_conquest == -1};
+    for (int k = 0; k < 10; ++k) core_rec_text(core_game_entry(ticks[k]))[0] = (char)(0x80 + values[k]);
+    A4_WORD(0x3054) = 0;  /* _saved */
+    core_requester_layout();
+}
+static void core_game_tick(int on, int off)
+{
+    core_rec_text(core_game_entry(on))[0] = (char)0x81; core_rec_text(core_game_entry(off))[0] = (char)0x80;
+}
+/* GOOD/EVIL asm:12974-13113: swap the _stats+6 human flags into the new
+ * side; _set_tend_icons/_set_mode_icons and _pointer follow from state. */
+static void core_game_side(int side)
+{
+    int16_t other = core_rec_w(core_stats(not_player),6);
+    core_rec_w(core_stats(side),6) = core_rec_w(core_stats(player),6);
+    core_rec_w(core_stats(!side),6) = other;
+    player = (int16_t)side; not_player = player ? 0 : 1;
+    core_set_pointer();
+}
+static void core_set_options_open(void);
+/* Leaving _game_options: _return_to_game, then _do_action's _new_map
+ * (asm:18917-18932): _setup_display restarts the map. A conquest start
+ * restarts the current world (both 1 and ground_in+2 rebuild the same
+ * conquest level); the custom map generator is not ported, so with
+ * in_conquest -1 the request stays inert. */
+static void core_game_options_close(void)
+{
+    core_req.kind = CORE_REQ_NONE; left_button = 2;
+    if (A4_WORD(0x309a) && in_conquest != -1 && !game_reset_start(current_start))
+        fprintf(stderr, "Game options: map restart failed; keeping the current game.\n");
+}
+/* _game_options click, asm:12878-13350. In a conquest game entries 0..8
+ * are ignored. Inert here: TWO PLAYERS (_two_players, serial), CONQUEST
+ * (_show_world name entry), SAVE/LOAD (_save_load); ONE PLAYER only ticks,
+ * as _serial_off is always 1. */
+static void core_game_options_click(void)
+{
+    int i = 0;
+    while (i < 17 && !core_menu_hit(core_game_entry(i),16,16)) ++i;
+    if (i < 9 && in_conquest != -1) i = 0x13;
+    switch (i) {
+    case 1:
+        core_game_tick(1,2);
+        if (!serial_off) {
+            core_rec_w(core_stats(player),6) = 1;  /* CLR then MOVE #1, asm:12930-12935 */
+            core_game_tick(7,8); serial_off = 1;
+        }
+        break;
+    case 3: core_game_tick(3,4); paint_map = 0; break;
+    case 4: core_game_tick(4,3); paint_map = 1; break;
+    case 5: core_game_tick(5,6); core_game_side(0); break;
+    case 6: core_game_tick(6,5); core_game_side(1); break;
+    case 7:
+        core_game_tick(7,8); core_rec_w(core_stats(player),6) = 0;
+        if (serial_off) core_rec_w(core_stats(!player),6) = 1;
+        break;
+    case 8:
+        core_game_tick(8,7); core_rec_w(core_stats(player),6) = 1;
+        if (serial_off) core_rec_w(core_stats(!player),6) = 1;
+        break;
+    case 10: core_game_tick(10,9); in_conquest = -1; break;
+    case 11: core_set_options_open(); return;
+    case 14: A4_WORD(0x309a) = 1; core_game_options_close(); return;
+    case 15: A4_WORD(0x309a) = (int16_t)(ground_in + 2); core_game_options_close(); return;
+    case 16: A4_WORD(0x8258) = player; core_game_options_close(); return;  /* _surender */
+    default: break;
+    }
+    int result = core_check_cancel(core_end_ok, core_end_cancel);
+    if (!result) return;
+    if (result == 2) {
+        /* asm:13325-13350 */
+        serial_off = core_req.saved_serial; paint_map = core_req.saved_paint;
+        if (player != core_req.saved_player) player = core_req.saved_player;
+        not_player = player ? 0 : 1;
+        core_rec_w(core_stats(player),6) = core_req.saved_human;
+        in_conquest = core_req.saved_conquest;
+        core_set_pointer();
+    }
+    core_game_options_close();
+}
+
+/* _set_options asm:13362-13411. */
+static void core_set_options_open(void)
+{
+    core_req.kind = CORE_REQ_SET; core_req.saved_mode = game_mode;
+    core_menu_install(core_set_entry(0), core_set_template, 11);
+    core_requester_layout();
+}
+/* _set_options click, asm:13412-13509: custom games only; entries 1,3,..9
+ * toggle _game_mode bit i/2. Then back to _game_options (-4 = 1 redraws). */
+static void core_set_options_click(void)
+{
+    if (in_conquest == -1)
+        for (int i = 1; i < 10; i += 2)
+            if (core_menu_hit(core_set_entry(i),0x20,0x18)) { game_mode ^= (int16_t)(1 << (i >> 1)); break; }
+    int result = core_check_cancel(core_end_ok, core_end_cancel);
+    if (!result) return;
+    if (result == 2) game_mode = core_req.saved_mode;
+    left_button = 2; core_req.kind = CORE_REQ_GAME; core_requester_layout();
+}
+
+static void core_requester_click(void)
+{
+    if (core_req.kind == CORE_REQ_OPTIONS) core_options_click();
+    else if (core_req.kind == CORE_REQ_GAME) core_game_options_click();
+    else if (core_req.kind == CORE_REQ_SET) core_set_options_click();
+}
+
+static void core_draw_game_options(void)
+{
+    core_requester(0x10,0x10,0x120,0xb0,core_end_ok,core_end_cancel,1);
+    for (int i = 0; i < 17; ++i)   /* asm:12847-12872 */
+        amiga_text(game_pixels, core_rec_w(core_game_entry(i),0)+16, core_rec_w(core_game_entry(i),2)+16,
+                   core_rec_text(core_game_entry(i)));
+}
+/* Draw the open requester over the frame, as the original's d_screen. */
+static void core_draw_requester(void)
+{
+    if (core_req.kind == CORE_REQ_OPTIONS) {
+        core_requester(0x10,0x10,0x120,0xa6,core_end_ok,core_end_cancel,1);
+        uint8_t *own = core_stats(core_req.side);
+        static const char marker[] = "\x87";
+        for (int i = 0; i < 14; ++i) {   /* asm:13671-13740 */
+            uint8_t *entry = core_option_entry(i);
+            amiga_text(game_pixels, core_rec_w(entry,0)+16, core_rec_w(entry,2)+16, core_rec_text(entry));
+            if (i == 11) amiga_text(game_pixels, core_rec_w(own,0xc)*8 + core_rec_w(entry,0) + 0x28,
+                                    core_rec_w(entry,2)+16, marker);
+            if (i == 13) amiga_text(game_pixels, core_rec_w(own,0x10)*8 + core_rec_w(entry,0) + 0x30,
+                                    core_rec_w(entry,2)+16, marker);
+        }
+    } else if (core_req.kind == CORE_REQ_GAME) core_draw_game_options();
+    else if (core_req.kind == CORE_REQ_SET) {
+        /* _set_options draws over the game options screen. */
+        core_draw_game_options();
+        core_requester(0x20,0x18,0x100,0x70,core_end_ok,core_end_cancel,1);
+        amiga_text(game_pixels, core_rec_w(core_set_entry(0),0)+0x20, core_rec_w(core_set_entry(0),2)+0x18,
+                   core_rec_text(core_set_entry(0)));
+        int shown = 0;
+        for (int i = 0; i < 5; ++i) {   /* asm:13386-13410: the set choice of each pair */
+            shown = i*2 + ((game_mode & (1 << i)) ? 1 : 0) + 1;
+            uint8_t *entry = core_set_entry(shown);
+            amiga_text(game_pixels, core_rec_w(entry,0)+0x20, core_rec_w(entry,2)+0x18, core_blank);
+            amiga_text(game_pixels, core_rec_w(entry,0)+0x20, core_rec_w(entry,2)+0x18, core_rec_text(entry));
+        }
+        /* Landscape number, asm:13412-13437 (1993 addition): below the last pair. */
+        char landscape[32]; snprintf(landscape, sizeof landscape, "LANDSCAPE NO %d", (int)start_seed);
+        amiga_text(game_pixels, core_rec_w(core_set_entry(shown),0)+0x20, core_rec_w(core_set_entry(shown),2)+0x22, landscape);
+    }
+}
+
+/* _end_game display asm:14317-14385: _requester(d_screen,16,16,0x120,0xa6,
+ * button) with the -60(A5) button "TRY IT AGAIN" (lost conquest) or
+ * "NEW GAME", the rows at _end_text+16, then wait for a click on the
+ * button (_check_cancel(button,0)). Port deviation: a conquest win shows
+ * _won_conquest's lines (asm:14531-14582, x 8, y 0xb2/0xba on the lord
+ * screen after the click) before the click, moved up to y 0x98/0xa0 on a
+ * cleared strip inside the frame so that they do not cover the button. */
+static uint8_t core_end_button[46];
+static void core_end_button_layout(int draw)
+{
+    memset(core_end_button, 0, sizeof core_end_button);
+    strcpy(core_rec_text(core_end_button), core_result == 2 && core_conquest_game() ? "TRY IT AGAIN" : "NEW GAME");
+    core_requester(16,16,0x120,0xa6,core_end_button,NULL,draw);
+}
 static void core_draw_end_screen(void)
 {
-    core_fill(16,16,288,166,0); core_frame(16,16,288,166,15);
+    core_end_button_layout(1);
     for (int r = 0; r < 7; ++r)
         amiga_text(game_pixels, A4_WORD(0x8e7e + r*46) + 16, A4_WORD(0x8e80 + r*46) + 16, core_end_row(r));
-    const char *button = core_result == 2 && core_conquest_game() ? "TRY IT AGAIN" : "NEW GAME";
-    int width = (int)strlen(button) * 8, left = (16 + (288 - width) / 2) & ~7;
-    core_frame(left-4,148,width+8,16,15);
-    amiga_text(game_pixels, left, 152, button);
     if (core_end_conquest[0][0]) {
-        core_fill(0,176,320,20,0);
-        amiga_text(game_pixels, 8, 0xb2, core_end_conquest[0]);
-        amiga_text(game_pixels, 8, 0xba, core_end_conquest[1]);
+        core_fill(0,0x96,320,20,0);
+        amiga_text(game_pixels, 8, 0x98, core_end_conquest[0]);
+        amiga_text(game_pixels, 8, 0xa0, core_end_conquest[1]);
     }
 }
 
@@ -3097,6 +3510,7 @@ static void draw_original(int view_x, int view_y)
         game_pixels[my*320+mx]=(uint8_t)colour;
     }
     if (core_end_shown && core_result) core_draw_end_screen();
+    core_draw_requester();
     for (size_t pixel=0; pixel<sizeof game_pixels; ++pixel)
         prg_screen->chunky_buffer[pixel]=prg_screen->palette[game_pixels[pixel]];
     /* Port HUD (not in the original, whose screen ends at y 200): 7 lines of
@@ -3609,6 +4023,7 @@ static void game_handle_event(const SDL_Event *event)
     if (event->type == SDL_KEYDOWN) {
         SDL_Keycode key = event->key.keysym.sym;
         if (key == SDLK_ESCAPE) { prg_quit = 1; return; }
+        if (core_req.kind) return;   /* the requester loops read only the mouse */
         /* _end_game waits for the requester (asm:14370-14385): any other key. */
         if (core_end_shown && core_result) { if (!event->key.repeat) core_leave_end(); return; }
         if (!event->key.repeat) {
@@ -3650,15 +4065,23 @@ static void game_handle_event(const SDL_Event *event)
             big_mousex = mousex;
             big_mousey = mousey;
             /* continue_3EC20 asm:963-975 also interrogates while hovering. */
-            if (!event->motion.state && !diagnostic_view) core_interogate(mousex,mousey,0);
+            if (!event->motion.state && !diagnostic_view && !core_req.kind) core_interogate(mousex,mousey,0);
         }
     }
-    if (event->type == SDL_MOUSEBUTTONDOWN && core_end_shown && core_result) { core_leave_end(); return; }
     if (event->type == SDL_MOUSEBUTTONDOWN && prg_screen) {
         int width,height; SDL_GetWindowSize(prg_screen->window,&width,&height);
         if (width <= 0 || height <= 0 || event->button.x < 0 || event->button.y < 0 ||
             event->button.x >= width || event->button.y >= height) return;
         int sx = (int64_t)event->button.x*320/width, sy = (int64_t)event->button.y*256/height;
+        /* Requesters take the left press at the pointer (_left_button,
+         * _mousex/_mousey); _end_game continues only on its button. */
+        if (core_req.kind || (core_end_shown && core_result)) {
+            if (event->button.button != SDL_BUTTON_LEFT) return;
+            mousex = (int16_t)sx; mousey = (int16_t)sy;
+            if (core_req.kind) core_requester_click();
+            else { core_end_button_layout(0); if (core_check_cancel(core_end_button,NULL)) core_leave_end(); }
+            return;
+        }
         int column,row;
         if (!diagnostic_view && sy<64 && sx>=1 && sx<=127) {
             column=sy+(sx-64)/2; row=sy-(sx-64)/2;

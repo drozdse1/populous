@@ -227,9 +227,9 @@ Belege: `populous_c_port/populous_prg.c:1030-1062`, `:1509-1543`;
 
 ## P2 - Originalbedienung und Grafik vervollstaendigen
 
-- [ ] **Teilweise:** Toolbar anklickbar (alle `_zoom_map`-Icons, asm:1700-2451). Erledigt: Abfragemodus (`_interogate`) mit Schild (`_show_the_shield`, ohne Flaggen-/Waffen-Icons mangels `_icon_data`) und dauerhafte Icon-Hervorhebung (`_toggle_icon`) fuer Tendenz, Modus, Musik, FX und Pause. Offen: Options-/Spieloptionen-/Nachrichten-Requester (`_do_action` 7/8/2), kurze Tastendruck-Blitze der Power-/View-Icons.
+- [ ] **Teilweise:** Toolbar anklickbar (alle `_zoom_map`-Icons, asm:1700-2451). Erledigt: Abfragemodus (`_interogate`) mit Schild (`_show_the_shield`, ohne Flaggen-/Waffen-Icons mangels `_icon_data`) und dauerhafte Icon-Hervorhebung (`_toggle_icon`) fuer Tendenz, Modus, Musik, FX und Pause. Options- und Spieloptionen-Requester (`_do_action` 7/8) oeffnen die originalen Dialoge. Offen: Nachrichten-Requester (`_do_action` 2), kurze Tastendruck-Blitze der Power-/View-Icons.
 - [ ] **Teilweise:** Originale Manaanzeige erledigt (`_move_mana` asm:3164-3244: Sprite 69 auf der Manaskala nach `_mana_values`, reine Praesentation). Offen: weitere Bewohner-/Siedlungs-Informationsanzeigen.
-- [ ] **Fehlt:** Requester, Optionen, Namens-/Texteingabe und originale Dialog-/Rueckkehrpfade.
+- [ ] **Teilweise:** Requester und Optionen. Erledigt: `_requester` (Rahmen aus `_icon_data` 12..23, OK/CANCEL), `_check_cancel`, `_options` (Machtbits, Aggression, Rate), `_game_options` (Spiel/Karte malen, Gut/Boese, Mensch/Amiga, Custom Game, naechste Karte/Neustart fuer Eroberungswelten, Aufgeben), `_set_options` (`_game_mode`-Bits); Simulation pausiert, Eingabe geht an den Requester. Offen (angezeigt, aber wirkungslos): Zwei Spieler/Seriell, Eroberung (`_show_world`), Speichern/Laden, naechste Karte/Neustart im Custom Game (Kartengenerator fehlt), Nachrichten-Requester, Namens-/Texteingabe (`_get_name`), Requester in der Diagnoseansicht.
 - [ ] **Fehlt:** Originalschrift dekodieren und verwenden; eingebettetes `_font_data` und separates Launcher-`font.dat` vergleichen, nicht ungeprueft gleichsetzen.
 - [ ] **Teilweise:** Originaler Mauszeiger erledigt (`_pointer` A4 0x84b6 wie im Original gesetzt, `_a_sprite`-Frames aus `_sprite_to_amiga` asm:16783-16830, Hotspot oben links nach `_move_pointer` asm:19928-19972; Ersatzkreuz entfernt). Abweichung: nach Sumpfziel bleibt der Port-Magnet samt Zeiger. Offen: weitere Auswahl-/Zielanzeigen.
 - [x] Port-HUD (keine Originalfunktion, y 200..255) nutzt die Originalschrift ueber `amiga_text`, 40 Spalten x 7 Zeilen; Ersatzschrift `hud_text` entfernt.
@@ -272,7 +272,7 @@ Belege: `populous_c_port/populous_init.c:265-290`, `:363-378`;
 - [x] **Erledigt:** Ergebnisstatistik (`_end_text`-Zeilen), originale Punkteberechnung inkl. Serial-Bonus, Endbildschirm mit Originalschrift (`font.dat` = `_font_data`).
 - [x] **Erledigt:** Levelcodes `_code`/`_decode`, `GENESIS`, CLI `--code NAME`.
 - [x] **Erledigt:** Fortschritt nach Sieg (`_won_conquest`: naechster Level, Obergrenze 2470, Umlauf auf 0), Wiederholung nach Niederlage, Neustart bei synthetischen Szenarien.
-- [ ] **Fehlt:** `_requester`-Rahmen/Knopf, Lord-/Mund-Animation, Sprache/Musik, Namenseingabe `_show_world` nach dem Sieg, Endbildschirm in der Diagnoseansicht.
+- [ ] **Fehlt:** Lord-/Mund-Animation, Sprache/Musik, Namenseingabe `_show_world` nach dem Sieg, Endbildschirm in der Diagnoseansicht.
 - [ ] **Pruefen:** Gleichzeitige Ausloeschung und Aufgabe gegen Referenzlaeufe; Punktestand gegen einen echten Amiga-Lauf; alle originalen Spiel-/Optionsmodi.
 
 **Abhaengigkeiten:** Original-UI (Requester), Audio, Lord-Bilder.

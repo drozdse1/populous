@@ -6170,8 +6170,9 @@ static void test_toolbar_icons(void)
     system_click(0,3,SDL_BUTTON_LEFT); assert(!A4_WORD(0x8250));
     A4_WORD(0x9a1a)=1; system_click(1,3,SDL_BUTTON_LEFT); assert(pause==1 && !A4_WORD(0x9a1a));
     core_result=1; system_click(1,3,SDL_BUTTON_LEFT); assert(pause==0); core_result=0;
-    /* Options, game options and message post their _do_action codes; the
-     * port's consumer leaves those requesters inert and clears the mailbox. */
+    /* Options, game options and message post their _do_action codes. The
+     * consumer now opens _options (y=7) and _game_options (y=8), see
+     * test_requesters; the message requester (y=2) stays inert. */
     static const int requests[][4]={{0,0,7,1},{1,1,8,0},{2,2,2,0}};
     for (int k=0;k<3;++k) {
         toolbar_fixture();
@@ -6181,7 +6182,10 @@ static void test_toolbar_icons(void)
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         core_consume_terrain_mailboxes();
         memset(before+(mailbox-prg_a4_area),0,3);
-        assert(a4_same(before));
+        assert(!mailbox[0]);
+        if (k<2) assert(core_req.kind==(k ? CORE_REQ_GAME : CORE_REQ_OPTIONS) && (k || core_req.side==player));
+        else assert(!core_req.kind && a4_same(before));
+        core_req.kind=CORE_REQ_NONE;
         toolbar_fixture(); pause=1;
         system_click(requests[k][0],requests[k][1],SDL_BUTTON_LEFT);
         assert(!A4_DISP(0x82b6)[0]);
@@ -11771,6 +11775,35 @@ static void test_pointer_hud_mana(void)
     _closeall(); SDL_Quit();
 }
 
+/* Pixel (x,y) of requester icon 12..23 (_icon_data, plane words per row). */
+static int icon_pixel(int icon, int x, int y)
+{
+    int colour = 0;
+    for (int plane = 0; plane < 4; ++plane) colour |= ((core_requester_icons[icon-12][y*4+plane] >> (15-x)) & 1) << plane;
+    return colour;
+}
+/* The whole 16x16 tile at (x,y) is icon. */
+static void assert_tile(int x, int y, int icon)
+{
+    for (int row = 0; row < 16; ++row) for (int column = 0; column < 16; ++column)
+        assert(game_pixels[(y+row)*320+x+column] == icon_pixel(icon, column, row));
+}
+
+/* Left press at screen pixel (x,y) in a 960x768 window. */
+static void screen_click(int x, int y, int button)
+{
+    SDL_SetWindowSize(prg_screen->window,960,768);
+    SDL_Event click={.type=SDL_MOUSEBUTTONDOWN};
+    click.button.button=(uint8_t)button; click.button.x=x*3+1; click.button.y=y*3+1;
+    game_handle_event(&click);
+}
+/* The _end_game button: click its centre (core_end_button_layout). */
+static void end_button_click(void)
+{
+    core_end_button_layout(0);
+    screen_click((core_rec_w(core_end_button,0)+core_rec_w(core_end_button,4))/2, core_rec_w(core_end_button,2)+8, SDL_BUTTON_LEFT);
+}
+
 static void end_kill(int owner)
 {
     for (int p = 0; p < no_peeps; ++p) if (peep_owner(p) == owner) set_peep_word(p,4,0);
@@ -11778,6 +11811,184 @@ static void end_kill(int owner)
     assert(!core_end_shown);
     if (core_result && !core_end_shown) core_enter_end();   /* as _animate */
     assert(core_result == (owner == player ? 2 : 1) && core_end_shown);
+}
+
+/* State outside the requester tables (_end_ok/_end_cancel, _option_text,
+ * _game_text, _set_text) and _tempo matches before. */
+static int a4_same_but_tables(const uint8_t *before)
+{
+    static uint8_t copy[sizeof prg_a4_area]; memcpy(copy,before,sizeof copy);
+    static const int ranges[][2]={{0x84c6,2*46},{0x8522,14*46},{0x87ee,17*46},{0x8fc0,11*46},{0x824e,2}};
+    for (int k=0;k<5;++k) {
+        size_t at=(size_t)(A4_DISP(ranges[k][0])-prg_a4_area);
+        memcpy(copy+at,prg_a4_area+at,(size_t)ranges[k][1]);
+    }
+    return a4_same(copy);
+}
+/* Clicks move _mousex/_mousey; take them over into before. */
+static void keep_mouse(uint8_t *before)
+{
+    memcpy(before+(A4_DISP(0x99aa)-prg_a4_area),A4_DISP(0x99aa),2);
+    memcpy(before+(A4_DISP(0xae6e)-prg_a4_area),A4_DISP(0xae6e),2);
+}
+static void entry_click(const uint8_t *entry, int dx, int dy)
+{
+    screen_click(core_rec_w(entry,0)+dx+1, core_rec_w(entry,2)+dy+1, SDL_BUTTON_LEFT);
+}
+static void ok_click(void) { screen_click(core_rec_w(core_end_ok,0)+4, core_rec_w(core_end_ok,2)+8, SDL_BUTTON_LEFT); }
+static void cancel_click(void) { screen_click(core_rec_w(core_end_cancel,0)+4, core_rec_w(core_end_cancel,2)+8, SDL_BUTTON_LEFT); }
+
+/* _requester/_check_cancel/_options/_game_options/_set_options. */
+static void test_requesters(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    /* Opening through the toolbar icon: _do_action y=7, x = left button. */
+    toolbar_fixture(); tempo=5;
+    system_click(0,0,SDL_BUTTON_LEFT);
+    int16_t turn=game_turn; game_tick();
+    assert(core_req.kind==CORE_REQ_OPTIONS && core_req.side==player && game_turn==turn+1 && !tempo);
+    assert(!A4_DISP(0x82b6)[0]);
+    /* Geometry: _requester(16,16,0x120,0xa6,ok,cancel). */
+    assert(core_rec_w(core_end_ok,0)==32 && core_rec_w(core_end_ok,2)==176 && core_rec_w(core_end_ok,4)==80);
+    assert(core_rec_w(core_end_cancel,0)==208 && core_rec_w(core_end_cancel,2)==176 && core_rec_w(core_end_cancel,4)==288);
+    draw_original(xoff,yoff);
+    assert_tile(16,16,12); assert_tile(160,16,13); assert_tile(288,16,14);
+    assert_tile(16,32,18); assert_tile(288,32,19);
+    assert_tile(16,176,15); assert_tile(32,176,21); assert_tile(64,176,23); assert_tile(80,176,16);
+    assert_tile(192,176,16); assert_tile(208,176,21); assert_tile(272,176,23); assert_tile(288,176,17);
+    for (int x=48;x<64;++x) for (int y=176;y<179;++y) assert(game_pixels[y*320+x]==icon_pixel(22,x&15,y-176));
+    /* _check_cancel edges: x..x2, y..y+16 inclusive. */
+    static const int hits[][3]={{32,176,1},{80,192,1},{81,180,0},{31,180,0},{50,175,0},{50,193,0},
+                                {208,176,2},{288,192,2},{207,180,0},{289,180,0}};
+    for (size_t k=0;k<sizeof hits/sizeof *hits;++k) {
+        mousex=(int16_t)hits[k][0]; mousey=(int16_t)hits[k][1];
+        assert(core_check_cancel(core_end_ok,core_end_cancel)==hits[k][2]);
+    }
+    mousex=50; mousey=180; assert(core_check_cancel(core_end_ok,NULL)==1);
+    mousex=220; assert(!core_check_cancel(core_end_ok,NULL) && !core_check_cancel(NULL,NULL));
+    /* Paused: no tick, keys inert, other buttons and clicks off the buttons
+     * leave everything as it is. */
+    uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+    for (int k=0;k<3;++k) game_tick();
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_SPACE; game_handle_event(&key);
+    key.key.keysym.sym=SDLK_q; game_handle_event(&key);
+    screen_click(100,100,SDL_BUTTON_LEFT); screen_click(40,184,SDL_BUTTON_RIGHT);
+    grid_click(3,3,SDL_BUTTON_LEFT); grid_click(6,0,SDL_BUTTON_LEFT);
+    keep_mouse(before);
+    assert(a4_same(before) && core_req.kind==CORE_REQ_OPTIONS && !pause && !core_tool);
+    /* A conquest game shows the options without edits. */
+    entry_click(core_option_entry(1),16,16); keep_mouse(before); assert(a4_same(before));
+    ok_click(); assert(!core_req.kind && left_button==2);
+    /* The other side through the right button; not while its mailbox
+     * also holds the options request (asm:18607-18629). */
+    toolbar_fixture(); system_click(0,0,SDL_BUTTON_RIGHT); core_consume_terrain_mailboxes();
+    assert(core_req.kind==CORE_REQ_OPTIONS && core_req.side==not_player);
+    assert(!strcmp(core_rec_text(core_option_entry(0)),"OPTIONS FOR EVIL"));
+    core_req.kind=CORE_REQ_NONE;
+    toolbar_fixture(); system_click(0,0,SDL_BUTTON_LEFT);
+    A4_DISP(0x82b6+46)[0]=14; A4_DISP(0x82b6+46)[2]=7;
+    core_consume_terrain_mailboxes(); assert(!core_req.kind);
+    /* Custom game: each power bit, the sliders, then OK stores 10-value. */
+    for (int bit=0;bit<9;++bit) {
+        toolbar_fixture(); in_conquest=-1;
+        uint8_t *own=A4_DISP(0x82b6); core_rec_w(own,0xe)=0x15;
+        core_options_open(0);
+        assert(core_rec_text(core_option_entry(bit+1))[0]==(char)(0x80+!!(0x15&(1<<bit))));
+        assert(!strcmp(core_rec_text(core_option_entry(0)),"OPTIONS FOR GOOD"));
+        entry_click(core_option_entry(bit+1),16,16);
+        assert(core_rec_w(own,0xe)==(0x15^(1<<bit)) && core_req.kind==CORE_REQ_OPTIONS);
+        assert(core_rec_text(core_option_entry(bit+1))[0]==(char)(0x80+!(0x15&(1<<bit))));
+        ok_click(); assert(!core_req.kind && core_rec_w(own,0xe)==(0x15^(1<<bit)));
+    }
+    toolbar_fixture(); in_conquest=-1;
+    uint8_t *own=A4_DISP(0x82b6+46); core_rec_w(own,0xc)=2; core_rec_w(own,0x10)=7;
+    core_options_open(1);
+    assert(core_rec_w(own,0xc)==8 && core_rec_w(own,0x10)==3);
+    const uint8_t *slider=core_option_entry(11);
+    screen_click(core_rec_w(slider,0)+0x28+5*8+3,core_rec_w(slider,2)+18,SDL_BUTTON_LEFT);
+    assert(core_rec_w(own,0xc)==5);
+    screen_click(core_rec_w(slider,0)+0x28+10*8+3,core_rec_w(slider,2)+18,SDL_BUTTON_LEFT);
+    assert(core_rec_w(own,0xc)==5);   /* 10 is out of 0..9 */
+    screen_click(core_rec_w(slider,0)+0x28-3,core_rec_w(slider,2)+18,SDL_BUTTON_LEFT);
+    assert(core_rec_w(own,0xc)==0);   /* DIVS truncates -3/8 to 0 */
+    slider=core_option_entry(13);
+    screen_click(core_rec_w(slider,0)+0x30+9*8,core_rec_w(slider,2)+18,SDL_BUTTON_LEFT);
+    assert(core_rec_w(own,0x10)==9);
+    ok_click(); assert(core_rec_w(own,0xc)==10 && core_rec_w(own,0x10)==1);
+    /* Cancel restores the copy (_return_to_game sets _left_button 2). */
+    toolbar_fixture(); in_conquest=-1; tempo=0; left_button=2; memcpy(before,prg_a4_area,sizeof before);
+    core_options_open(0);
+    entry_click(core_option_entry(3),16,16);
+    screen_click(core_rec_w(core_option_entry(11),0)+0x28+1,core_rec_w(core_option_entry(11),2)+18,SDL_BUTTON_LEFT);
+    keep_mouse(before); assert(!a4_same_but_tables(before));
+    cancel_click(); keep_mouse(before); assert(!core_req.kind && a4_same_but_tables(before));
+
+    /* _game_options via the toolbar (y=8): _new_map cleared, ticks set. */
+    toolbar_fixture(); A4_WORD(0x309a)=3; system_click(1,1,SDL_BUTTON_LEFT); game_tick();
+    assert(core_req.kind==CORE_REQ_GAME && !A4_WORD(0x309a) && !A4_WORD(0x3080));
+    assert(core_rec_w(core_end_ok,2)==176 && core_rec_w(core_end_cancel,0)==208);
+    assert(core_rec_text(core_game_entry(1))[0]==(char)0x81 && core_rec_text(core_game_entry(3))[0]==(char)0x81 &&
+           core_rec_text(core_game_entry(4))[0]==(char)0x80 && core_rec_text(core_game_entry(9))[0]==(char)0x81 &&
+           core_rec_text(core_game_entry(10))[0]==(char)0x80);
+    draw_original(xoff,yoff); assert_tile(16,16,12); assert_tile(288,176,17);
+    /* Conquest: entries 0..8 are ignored. */
+    left_button=2; memcpy(before,prg_a4_area,sizeof before);
+    for (int i=1;i<9;++i) entry_click(core_game_entry(i),16,16);
+    keep_mouse(before); assert(a4_same(before) && core_req.kind==CORE_REQ_GAME);
+    /* CUSTOM GAME sets in_conquest -1; cancel restores everything. */
+    entry_click(core_game_entry(10),16,16); assert(in_conquest==-1);
+    entry_click(core_game_entry(4),16,16); assert(paint_map==1);
+    entry_click(core_game_entry(6),16,16); assert(player==1 && not_player==0);
+    entry_click(core_game_entry(8),16,16);
+    cancel_click(); keep_mouse(before); assert(!core_req.kind && a4_same_but_tables(before));
+    /* Each custom entry and OK. */
+    toolbar_fixture(); in_conquest=-1; core_rec_w(core_stats(0),6)=0; core_rec_w(core_stats(1),6)=1;
+    core_game_options_open();
+    entry_click(core_game_entry(4),16,16); assert(paint_map==1 && core_rec_text(core_game_entry(4))[0]==(char)0x81);
+    entry_click(core_game_entry(3),16,16); assert(paint_map==0 && core_rec_text(core_game_entry(4))[0]==(char)0x80);
+    entry_click(core_game_entry(6),16,16);
+    assert(player==1 && not_player==0 && core_rec_w(core_stats(1),6)==0 && core_rec_w(core_stats(0),6)==1 && pointer==4);
+    entry_click(core_game_entry(5),16,16);
+    assert(player==0 && not_player==1 && core_rec_w(core_stats(0),6)==0 && core_rec_w(core_stats(1),6)==1 && pointer==1);
+    entry_click(core_game_entry(8),16,16); assert(core_rec_w(core_stats(0),6)==1 && core_rec_w(core_stats(1),6)==1);
+    entry_click(core_game_entry(7),16,16); assert(core_rec_w(core_stats(0),6)==0 && core_rec_w(core_stats(1),6)==1);
+    /* Inert: TWO PLAYERS, CONQUEST, SAVE, LOAD. */
+    memcpy(before,prg_a4_area,sizeof before);
+    entry_click(core_game_entry(2),16,16); entry_click(core_game_entry(9),16,16);
+    entry_click(core_game_entry(12),16,16); entry_click(core_game_entry(13),16,16);
+    keep_mouse(before); assert(a4_same(before) && core_req.kind==CORE_REQ_GAME);
+    entry_click(core_game_entry(1),16,16); assert(serial_off==1 && core_rec_text(core_game_entry(1))[0]==(char)0x81);
+    /* GAME OPTIONS: _set_options over the setup screen, toggles _game_mode. */
+    entry_click(core_game_entry(11),16,16);
+    assert(core_req.kind==CORE_REQ_SET && core_rec_w(core_end_ok,0)==48 && core_rec_w(core_end_ok,2)==120 &&
+           core_rec_w(core_end_ok,4)==96 && core_rec_w(core_end_cancel,0)==192 && core_rec_w(core_end_cancel,4)==272);
+    draw_original(xoff,yoff); assert_tile(32,24,12); assert_tile(272,24,14); assert_tile(32,120,15); assert_tile(272,120,17);
+    assert_tile(16,16,12);   /* the setup frame stays around it */
+    game_mode=0;
+    for (int bit=0;bit<5;++bit) { entry_click(core_set_entry(bit*2+1),0x20,0x18); assert(game_mode==((2<<bit)-1)); }
+    ok_click(); assert(core_req.kind==CORE_REQ_GAME && game_mode==0x1f && core_rec_w(core_end_ok,0)==32);
+    entry_click(core_game_entry(11),16,16); entry_click(core_set_entry(5),0x20,0x18); assert(game_mode==0x1b);
+    cancel_click(); assert(core_req.kind==CORE_REQ_GAME && game_mode==0x1f);
+    ok_click(); assert(!core_req.kind && paint_map==0 && player==0 && in_conquest==-1 && game_mode==0x1f);
+    /* Conquest: _set_options shows but does not toggle. */
+    toolbar_fixture(); core_game_options_open(); entry_click(core_game_entry(11),16,16);
+    int16_t modes=game_mode; entry_click(core_set_entry(1),0x20,0x18); assert(game_mode==modes);
+    ok_click(); ok_click(); assert(!core_req.kind);
+    /* SURRENDER: _surender = player, the next tick loses. */
+    toolbar_fixture(); core_game_options_open(); entry_click(core_game_entry(16),16,16);
+    assert(!core_req.kind && A4_WORD(0x8258)==player);
+    game_tick(); assert(core_result==2);
+    /* RESTART / NEXT MAP: _setup_display rebuilds the conquest world. */
+    for (int entry=14;entry<16;++entry) {
+        toolbar_fixture(); for (int k=0;k<5;++k) game_tick();
+        core_game_options_open(); entry_click(core_game_entry(entry),16,16);
+        assert(!core_req.kind && !game_turn && !core_result);
+        /* A custom game cannot be generated: inert. */
+        toolbar_fixture(); for (int k=0;k<5;++k) game_tick(); in_conquest=-1;
+        core_game_options_open(); entry_click(core_game_entry(entry),16,16);
+        assert(!core_req.kind && game_turn==5 && A4_WORD(0x309a)==(entry==14 ? 1 : ground_in+2));
+    }
+    _closeall(); SDL_Quit();
 }
 
 /* Result -> stats once -> click/key -> next world (asm:14386-14402, 14460-14491). */
@@ -11808,16 +12019,26 @@ static void test_end_transition(void)
     game_handle_event(&key);
     assert(!core_result && !core_end_shown && current_start.kind == START_ORIGINAL && current_start.number == next/5);
     assert(A4_WORD(0xae7e) == next && in_conquest == next && A4_LONG(0xae72) == 10 && !A4_WORD(0x82bc));
-    /* Conquest loss: the same world again, by mouse click. */
+    /* Conquest loss: the same world again, by a click on the requester
+     * button (_check_cancel(button,0), asm:14370-14385); a click elsewhere
+     * or with another button keeps the end screen. */
     end_kill(player);
     assert(!strcmp(core_end_row(0), "GAME LOST") && core_end_next == -1 && !core_end_conquest[0][0]);
-    game_handle_event(&click);
+    game_handle_event(&click); assert(core_result && core_end_shown);
+    core_end_button_layout(0);
+    assert(!strcmp(core_rec_text(core_end_button), "TRY IT AGAIN") && core_rec_w(core_end_button,0) == 96 &&
+           core_rec_w(core_end_button,2) == 176 && core_rec_w(core_end_button,4) == 224);
+    screen_click(95,184,SDL_BUTTON_LEFT); screen_click(225,184,SDL_BUTTON_LEFT);
+    screen_click(160,175,SDL_BUTTON_LEFT); screen_click(160,193,SDL_BUTTON_LEFT);
+    screen_click(160,184,SDL_BUTTON_RIGHT);
+    assert(core_result && core_end_shown);
+    end_button_click();
     assert(!core_result && current_start.number == next/5 && A4_WORD(0xae7e) == next);
     /* The last world wraps to 0 (asm:14482-14491). */
     assert(game_reset_start((StartSelection){START_ORIGINAL, 494}));
     end_kill(1);
     assert(core_end_next == 0 && core_end_finished && strstr(core_end_conquest[0], "EVIL"));
-    game_handle_event(&click);
+    end_button_click();
     assert(current_start.kind == START_ORIGINAL && !current_start.number && !A4_WORD(0xae7e));
     /* Synthetic scenarios are not conquest: restart them. */
     assert(game_reset(3));
@@ -11829,23 +12050,33 @@ static void test_end_transition(void)
     core_result = 1; memcpy(stopped, prg_a4_area, sizeof stopped);
     game_handle_event(&key); game_handle_event(&click);
     assert(core_result == 1 && !memcmp(stopped, prg_a4_area, sizeof stopped));
-    /* End screen pixels: the box and the font text appear only with the result. */
+    /* End screen pixels: the _requester frame, its button and the font text
+     * appear only with the result. */
     assert(game_reset_start((StartSelection){START_ORIGINAL, 2}));
     draw_original(xoff, yoff);
     uint8_t playing[sizeof game_pixels]; memcpy(playing, game_pixels, sizeof playing);
     end_kill(1);
     draw_original(xoff, yoff);
+    /* "GAME WON" at _end_text (0x70,0x0a)+16 over the title tiles (icon 13, then 20 below y 32):
+     * per plane (tile & mask) | glyph. */
     int text = 0;
     for (int y = 26; y < 34; ++y) for (int x = 128; x < 192; ++x) {
-        /* "GAME WON" at _end_text (0x70,0x0a)+16 over the cleared box: glyph A colours. */
-        const uint8_t *g = asm_glyph_A + (y-26)*5; int b = 7 - (x & 7), colour = 0;
-        if (x >= 128+32 && x < 128+40) continue;   /* the space */
-        for (int plane = 0; plane < 4; ++plane) colour |= ((g[1+plane] >> b) & 1) << plane;
+        const uint8_t *g = asm_glyph_A + (y-26)*5; int b = 7 - (x & 7), colour = 0, tile = y < 32 ? icon_pixel(13, x & 15, y-16) : icon_pixel(20, x & 15, y-32);
+        if (x >= 128+32 && x < 128+40) { assert(game_pixels[y*320+x] == tile); continue; }   /* the space glyph keeps the tile */
+        for (int plane = 0; plane < 4; ++plane)
+            colour |= ((((tile >> plane) & (g[0] >> b)) | (g[1+plane] >> b)) & 1) << plane;
         assert(game_pixels[y*320+x] == colour);
-        text |= colour;
+        text |= colour != tile;
     }
     assert(text && memcmp(playing, game_pixels, sizeof playing));
-    assert(game_pixels[16*320+16] == 15 && game_pixels[20*320+20] == 0);
+    /* Corners and edges of the 16,16,0x120,0xa6 frame; "NEW GAME" button
+     * tiles 21,22..,23 at x 112..207 (x2 = 112+(8+4)*8) on the bottom row y 176. */
+    assert_tile(16,16,12); assert_tile(32,16,13); assert_tile(288,16,14);
+    assert_tile(16,128,18); assert_tile(48,128,20); assert_tile(288,128,19);
+    assert_tile(16,176,15); assert_tile(96,176,16); assert_tile(288,176,17);
+    assert_tile(112,176,21); assert_tile(192,176,23); assert_tile(208,176,16);
+    for (int y = 176; y < 179; ++y) for (int x = 128; x < 192; ++x) assert(game_pixels[y*320+x] == icon_pixel(22, x & 15, y-176));
+    assert(core_rec_w(core_end_button,0) == 112 && core_rec_w(core_end_button,4) == 208);
     char path[512]; snprintf(path, sizeof path, "%s/font.dat", test_data_directory); assert(!unlink(path));
     snprintf(path, sizeof path, "%s/level.dat", test_data_directory); assert(!unlink(path));
     assert(game_reset(0) && !game_font_loaded);
@@ -12180,6 +12411,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_original_reset();
     test_start_reset();
     test_end_transition();
+    test_requesters();
     test_original_graphics_output();
     test_toolbar_icon_highlight();
     test_query_and_shield();
