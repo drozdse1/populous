@@ -167,7 +167,8 @@ pass and its terminal check; finished matches discard old commands. The separate
 controller/divisor latch does not gate command execution. Raw raises use original
 recursive bounds and local map rebuilding, not the UI sculpt helper; war makes
 them free, while normal execution charges the original word-sized build cost,
-including 10 mana for a saturated vertex. Diagnostic `P` is not editor permission.
+including 10 mana for a saturated vertex. Editor mode (`_paint_map`) skips the
+mana admission and the payment like war (see "Editor mode").
 Nonwar submerged rescue uses this consumer too; other command opcodes and
 remaining AI producers are separate work.
 Starts restore controllers 0/1, divisors 1/selected speed and latches 1/0.
@@ -845,18 +846,54 @@ An ordinary walker dies on swamp at its next completed eight-frame walking cycle
 before navigation and walking loss. Shallow swamp returns to block 15; bottomless
 swamp (game-mode bit 1) remains. This is not water/drowning. Frame 53 already comes
 from LAND; the original effect code 66 plays its drumkit sound (see "Sound").
-Editor free casting is deliberately absent: `P` remains diagnostic display state
-and never bypasses costs or permissions. The toolbar swamp icon arms targeting
-(and, as in the original, also in editor mode). Editor free casting and computer
-swamp selection remain separate TODOs.
+In editor mode (`_paint_map`, see "Editor mode") the cast skips the mana,
+war, pause and permission gates and costs nothing (asm:8297); the 50 score is
+still awarded. The toolbar icon and `s` arm targeting in editor mode
+regardless of mana and permission (asm:2031). Computer swamp selection remains
+a TODO.
+
+## Editor mode (`_paint_map`)
+
+The original free/paint mode is entered with PAINT MAP and left with PLAY GAME
+in the Game Setup requester (`_game_options` asm:13044-13056; OK keeps it,
+CANCEL restores the opened value, asm:13326). START GAME on the world screen
+clears it (asm:12769); it is part of saved games. There is no host key for it
+(the former diagnostic `p` toggle is gone). While it is set:
+
+- `_animate` (asm:676-738) runs neither `_do_funny` nor `_move_peeps`: people
+  stand still, `_game_turn` does not advance and no end of game is detected.
+  Mailboxes are still executed.
+- Every power prologue skips the mana, war, pause and permission tests and the
+  payment: `_do_raise_point`/`_do_lower_point` (asm:7104-7126, 7189-7219),
+  `_do_flood`, `_do_quake`, `_do_volcano`, `_do_swamp`, `_do_knight` (after its
+  leader test) and `_do_war` (asm:7569, 7865, 8048, 8297, 8404, 8484). Scores
+  are still added, except Armageddon's. `_do_magnet` has no bypass.
+- Map clicks sculpt without `_ok_to_build` and the game-mode build limits
+  (`_sculpt` asm:7307-7312, 7417-7438): left raises, right lowers, free.
+- `_paint_the_map` (asm:15123-15274) posts at `_cur_x`/`_cur_y`, the vertex
+  under the pointer: F1/F2 place a friendly/enemy walker (Shift: leader,
+  replacing the current one), F3 cycles a tree, F4 a rock (below height 7, from
+  `_last_tree`/`_last_rock`), F5 deletes rock, object and occupant, F6/F7 double
+  plus 500 below 100000 (Shift halves) the good/evil mana, F8 mirrors the
+  landscape (`_rotate_all_map`), Delete clears all land and people
+  (`_clear_all_map`), 1..9 select landscape 0..8 (`_do_action` y=13). These are
+  executed by `_get_message` opcodes 7..13 and `_do_action` y=9..13
+  (asm:18017-18183, 18943-18999). Outside editor mode the keys keep their
+  normal bindings (digits 1..3 still set the tendency).
+- Port limits: only landscapes 0..3 exist, so keys 5..9 keep the current
+  landscape (the original sets `_ground_in` and tries to load a custom one);
+  byte coordinates outside the 64x64 map are dropped instead of writing past
+  `_map_who`; paused games do not consume the posted commands until unpaused,
+  as for all mailbox commands in the port.
 
 ## Earthquake power
 
 `Q` is a port-specific immediate binding for the original viewport-origin command,
 not a clicked target. It uses the current camera origin (0..56), requires active
 permission `0x08` and at least 2500 mana, and is rejected during pause, war or a
-finished match. Keyboard repeats do not cast again; diagnostic `P` is not a free
-editor mode. An accepted cast charges 2500 and awards the player-caster 25 score.
+finished match. Keyboard repeats do not cast again. An accepted cast charges 2500
+and awards the player-caster 25 score; in editor mode the gates and the charge
+are skipped, the score is not (asm:7865).
 
 Two sequential 9x9 vertex passes run column first, row second. Zero heights consume
 no randomness; nonzero heights draw `%5` (0 unchanged, 1 raise, 2..4 lower).
@@ -873,7 +910,7 @@ frames show the pre-quake terrain. Ticks are frozen during the synchronous loop;
 each frame is presented and waits about one vblank (20 ms). Without a screen or
 assets (headless rule tests) the shake is skipped; rules are identical either way.
 Effect 76 rumbles during the shake and is cut afterwards (`_kill_effect(2,4)`,
-asm:8037-8040). Editor bypass remains a TODO; the toolbar icon posts opcode 3.
+asm:8037-8040). The toolbar icon posts opcode 3.
 
 ## Flood power
 
@@ -890,15 +927,17 @@ change during casting. The first subsequent resident update marks newly submerge
 non-combat residents wet and removes their town footprint without population loss;
 water loss or fatal removal follows on the next wet update. These rules still use
 the port's immediate movement model and battle-water exemption, not full original
-drowning/tick parity. Effect 74 plays (see "Sound"); editor bypass
-and AI power selection remain deferred; the toolbar icon posts opcode 14/4. `P` never makes it free.
+drowning/tick parity. Effect 74 plays (see "Sound"); AI power selection remains
+deferred; the toolbar icon posts opcode 14/4. In editor mode it is free of gates
+and cost, still scoring 250 (asm:7569).
 
 ## Volcano power
 
 `V` casts immediately at the viewport origin, not the mouse. Gameplay admission
 requires active permission `0x40`, at least 10000 mana and no pause/war/finished
 match. It charges 10000, awards the player-caster 100 score and records effect 75.
-There is no diagnostic/editor bypass, clicked-target mode or automatic crater.
+Editor mode skips the gates and the charge, not the score (asm:8048). There is
+no clicked-target mode or automatic crater.
 
 Five nested vertex-square passes consume 165 draws, raising on residues 1, 2 or
 4 modulo 5. The following 8x8 lava scan consumes 64 further draws for a valid
@@ -911,14 +950,15 @@ stale owner-0 leader references are rejected before payment as a host-safety gua
 Only actual height changes expand dirty bounds; lava writes do not. The original
 clamped bounds rectangle is rebuilt rather than unconditionally rebuilding the
 whole footprint. No residents or occupancy are changed directly by casting.
-The toolbar icon posts opcode 6. Effect 75 plays; editor mode and exact queued-command timing remain open.
+The toolbar icon posts opcode 6. Effect 75 plays; exact queued-command timing remains open.
 
 ## Knight power
 
 `K` immediately converts the current living friendly leader using active
 permission `0x20` and the original 7500-mana cost. Pause, war, a finished match,
-quit or an invalid leader reject the action without spending mana. Diagnostics
-are not an editor bypass; keyboard repeats are ignored.
+quit or an invalid leader reject the action without spending mana; keyboard
+repeats are ignored. In editor mode a leader is still required, but the mana,
+war, pause and permission gates and the charge are skipped (asm:8404).
 
 The cast sets the leader's byte-20 marker to 1, selects an enemy through the
 original heading algorithm, leaves the magnet at that resident's position,
@@ -952,11 +992,12 @@ Casting does not instantly move people, alter terrain, evacuate towns or recente
 magnets. Subsequent ticks perform the migrated war targets, town evacuation,
 ordinary navigation, deferred water assistance and combat. Manual terrain and
 magnet mouse actions are locked during war; camera, pause, reset and quit remain
-available. Armed swamp/tool selection is retained. There is no editor bypass.
+available. Armed swamp/tool selection is retained. In editor mode Armageddon
+skips gates, charge and the 5000 score (asm:8484-8516).
 
 This is gameplay integration, not complete original-game parity (the toolbar
 icon posts opcode 14/3 outside editor mode):
-editor/AI activation (effect 73 plays), other special figures, phased water behavior and original end-game
+AI activation (effect 73 plays), other special figures, phased water behavior and original end-game
 accounting beyond `good_pop` remain open. In the controlled cast-through-SDL
 island test, either caster activates war, a route is raised, combat starts at
 tick 41 and the stronger blue party wins at tick 43 (2963/0 population), identically
@@ -1014,7 +1055,7 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
   the original mailbox command, executed on the next tick; volcano and quake use
   the current viewport. Swamp arms map targeting like `s`. Costs, permissions
   and war are checked by the power routines; paused or finished games ignore
-  the icons. In editor mode (`p`) the Armageddon icon posts nothing.
+  the icons. In editor mode the Armageddon icon posts nothing.
 - Other lower-left toolbar icons (`_zoom_map` asm:1838-2395), left or right button:
   - Arrow pad: scroll one cell; its centre shield recentres on the viewed figure.
   - Tendency icons: settle, join, fight and go to magnet, posted as mailbox
@@ -1056,7 +1097,7 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
   left-click targets, then the previous terrain/magnet tool returns.
 - Arrows/numpad: scroll by world cells. Click the upper-left diamond minimap to
   recenter anywhere (also while paused); its white outline marks the viewport.
-  `d`: explicit top-down diagnostic view; `p`: dots in that diagnostic view only.
+  `d`: explicit top-down diagnostic view (in editor mode it shows people as dots).
   Space: pause. `r`: reset the selected start and original graphics; synthetic
   starts return to view (6,6), original starts center near the friendly leader.
   Escape/window close: quit. Pause/outcome stop rules, not navigation/drawing.

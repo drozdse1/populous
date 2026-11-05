@@ -189,17 +189,19 @@ Belege: `populous_c_port/populous_prg.c:803-915`, `:1509-1549`;
 - [ ] **Teilweise:** Heben/Senken und Magnet gegen alle Originalzulassungen, Kosten, Ziele und Zustandsbedingungen abgleichen.
 - [x] Gameplay-Erdbeben auf aktuellem Viewport: 2500 Mana, aktive Freigabe 0x08, zwei spaltenweise 9x9-Durchlaeufe mit bedingtem RNG, rekursivem Heben/Senken und lokaler Kartenableitung; Port-Taste Q.
 - [x] Originales Erdbeben-Zittern: 20 synchrone reine Terrainbilder (-4/-1 Zeilen, ohne Figuren, vor der Terrainaenderung), asm:7895-7925.
-- [ ] **Teilweise:** Erdbeben-Sound und Editor-Freimodus migrieren (Toolbar-Icon und Zittern erledigt).
+- [ ] **Teilweise:** Erdbeben-Sound migrieren (Toolbar-Icon, Zittern und Editor-Freimodus erledigt).
 - [x] Gameplay-Vulkan: 10000 Mana, Freigabe 0x40, 100 Spielerpunkte, 165 verschachtelte Hoehenziehungen plus 64 Lavaziehungen, Originalschutz fuer zweimal denselben blauen Anfuehrer und beide Magnetziele; Port-Taste V auf Viewportursprung.
-- [ ] **Teilweise:** Vulkan-Audio, Editor und Original-Nachrichtenzeitpunkt migrieren; Original-Lava erweitert Dirty-Bounds nicht und wird nicht pauschal als Krater/Bewohnerschaden umgedeutet.
+- [ ] **Teilweise:** Vulkan-Audio und Original-Nachrichtenzeitpunkt migrieren (Editor-Freimodus erledigt); Original-Lava erweitert Dirty-Bounds nicht und wird nicht pauschal als Krater/Bewohnerschaden umgedeutet.
 - [x] Gameplay-Sumpfkraft: aktive Freigabe, 5000 Mana, 30 Versuche/60 RNG-Ziehungen, Punkte, Block 53 und einmalige Zielwahl ueber Port-Taste S. Originale Vertex-minus-eins-Bytekoordinaten erhalten; Bounds vor Kartenlesezugriff pruefen.
-- [ ] **Teilweise:** Sumpf in Editor-Freimodus und Computer-KI integrieren (Toolbar-Icon erledigt); Audio fehlt. Diagnose-P darf keine kostenfreien Kraefte freischalten; War-Abbruch behaelt die bewaffnete Zielwahl wie im Original.
+- [ ] **Teilweise:** Sumpf in Computer-KI integrieren (Toolbar-Icon und Editor-Freimodus erledigt); Audio fehlt. War-Abbruch behaelt die bewaffnete Zielwahl wie im Original.
 - [x] Gameplay-Ritter: aktiver Anfuehrer, Freigabe 0x20, 7500 Mana, 150 Spielerpunkte, originale Heading-Zielwahl und Markierung; Port-Taste K. Navigation, Sonderkampfabschluss und kanonische Sprites sind angebunden.
-- [ ] **Teilweise:** Ritter-Audio, Editor-/KI-Ausloesung und vollstaendige Bewegungs-/Kampfparitaet vervollstaendigen.
+- [ ] **Teilweise:** Ritter-Audio, KI-Ausloesung und vollstaendige Bewegungs-/Kampfparitaet vervollstaendigen.
 - [x] Gameplay-Flut: aktive Freigabe 0x80, 40000 Mana, 250 Spielerpunkte, globale einmalige Absenkung positiver Hoehen und vollstaendige Kartenableitung ohne RNG; Port-Taste F.
-- [ ] **Teilweise:** Originale Folge-Tick-/Ertrinkensparitaet (insbesondere Kaempfe), Flut-Audio, KI und Editor-Freimodus migrieren.
+- [ ] **Teilweise:** Originale Folge-Tick-/Ertrinkensparitaet (insbesondere Kaempfe), Flut-Audio und KI migrieren (Editor-Freimodus erledigt).
 - [x] Gameplay-Armageddon: Freigabe 0x0100, 80000 Mana, 5000 Spielerpunkte, Metadaten aller belegten Datensatzplaetze leeren und Krieg aktivieren; Port-Taste A. Erneute bezahlte Ausloesung im Krieg erlaubt; Folgen erst in Bewohnerticks, manuelle Terrain-/Magneteingabe im Krieg gesperrt.
-- [ ] **Teilweise:** Armageddon-Audio, Editor-/KI-Ausloesung und originale Sonderfiguren-/Ertrinkens-/Endabrechnungsparitaet vervollstaendigen.
+- [ ] **Teilweise:** Armageddon-Audio, KI-Ausloesung und originale Sonderfiguren-/Ertrinkens-/Endabrechnungsparitaet vervollstaendigen.
+- [x] Editor-/Freimodus `_paint_map` wie im Original: Ein/Aus ueber PAINT MAP / PLAY GAME im Game-Setup (asm:13044-13056, CANCEL stellt wieder her, START GAME loescht); alle Kraft-Prologe (Heben/Senken, Flut, Erdbeben, Vulkan, Sumpf, Ritter nach Anfuehrertest, Armageddon) ueberspringen Mana-, Krieg-, Pause- und Freigabepruefung sowie die Kosten (Punkte bleiben, ausser Armageddon); Magnet ohne Bypass. `_animate` friert Bewohner, `_game_turn` und Spielende ein; Kartenklicks formen ohne Baubeschraenkung und kostenlos; `_paint_the_map`-Tasten F1-F8, Entf und 1-9 (Figuren/Anfuehrer setzen, Baum/Fels, Loeschen, Mana, Spiegeln, Land loeschen, Landschaft) ueber `_get_message` 7..13 und `_do_action` y=9..13. Diagnose-Taste P entfernt.
+- [ ] **Teilweise:** Editor: Landschaften 4..8 (Tasten 5-9, eigene Landschaften) fehlen im Port; Kartenpunkte im Editor nur in der Diagnoseansicht.
 - [ ] **Fehlt:** Fuer jede Kraft die gesamte Wirkungskette integrieren: Auswahl, Freigabe, Mana/Punkte, Weltveraenderung, Bewohnerfolgen, Animation und spaeter Audio. Ein grafischer Effekt allein erfuellt den Punkt nicht.
 - [ ] **Pruefen:** Originale Tendenz-/Befehlsmodi und Aktionsnachrichten vollstaendig zuordnen; dies bildet auch die spaetere Multiplayer-Grundlage.
 

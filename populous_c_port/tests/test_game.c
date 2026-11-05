@@ -5744,6 +5744,7 @@ static void test_swamp_cast(void)
     /* Catch wrong gate boundaries, editor bypass and mutation on rejection. */
     for (int side=0;side<2;++side) for (int gate=0;gate<11;++gate)
     for (int paint=0;paint<2;++paint) {
+        if (paint && gate>=6 && gate<=9) continue;   /* asm:8297 bypass, test_paint_map_powers */
         swamp_fixture(); paint_map=paint;
         int owner=side,column=20,row=20;
         if (gate==0) owner=-1;
@@ -5766,7 +5767,7 @@ static void test_swamp_cast(void)
         swamp_fixture(); player=local; paint_map=paint;
         A4_LONG(0x9a02+owner*16)=mana;
         assert(core_swamp(owner,255,255,swamp_random));
-        assert(core_mana(owner)==mana-5000 && swamp_draws==60);
+        assert(core_mana(owner)==(paint ? mana : mana-5000) && swamp_draws==60);   /* asm:8297 */
         assert(A4_LONG(0xae72)==(owner==local ? 50u : 0u));
         for (int cell=0;cell<4096;++cell) assert(map_blk[cell]==15);
     }
@@ -5931,13 +5932,17 @@ static void test_swamp_input(void)
             assert(core_vertex(20,20)==1 && core_mana(0)==5000 && A4_LONG(0xae72)==50);
         } else assert(core_vertex(20,20)==2 && core_mana(0)==9986);
     }
-    /* Repeats/missing spell cannot arm; P never permits a free cast. */
+    /* Repeats/missing spell cannot arm outside the editor. With _paint_map
+     * the missing spell still arms (asm:2031) and casts free; the plain click
+     * raises free (asm:7189,7206). */
     for (int paint=0;paint<2;++paint) for (int missing=0;missing<2;++missing) {
         assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,640,512);
         paint_map=paint; A4_LONG(0x9a02)=6000; A4_WORD(0x82c4)=missing ? 1 : 0x11;
         key.key.repeat=!missing; game_handle_event(&key); key.key.repeat=0;
         iso_click_vertex(20,20,SDL_BUTTON_LEFT);
-        assert(core_vertex(20,20)==2 && core_mana(0)==5986 && A4_LONG(0xae72)==0);
+        if (!paint) assert(core_vertex(20,20)==2 && core_mana(0)==5986 && A4_LONG(0xae72)==0);
+        else if (!missing) assert(core_vertex(20,20)==2 && core_mana(0)==6000 && A4_LONG(0xae72)==0);
+        else assert(core_vertex(20,20)==1 && core_mana(0)==6000 && A4_LONG(0xae72)==50 && !core_swamp_selected);
     }
     /* HUD/toolbar/minimap clicks don't consume an armed target. Pause and
      * outcomes retain their existing click guard; S itself may select. */
@@ -6338,6 +6343,7 @@ static void test_quake_cast(void)
 {
     for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint)
     for (int gate=0;gate<13;++gate) {
+        if (paint && gate>=6 && gate<=9) continue;   /* asm:7865 bypass, test_paint_map_powers */
         quake_fixture(1); paint_map=paint;
         int side=owner,x=20,y=30;
         if (gate==0) side=-1;
@@ -6360,7 +6366,7 @@ static void test_quake_cast(void)
         quake_fixture(height); player=local; paint_map=paint;
         A4_LONG(0x9a02+owner*16)=2500; A4_LONG(0xae72)=17;
         assert(core_quake(owner,20,30,quake_random));
-        assert(core_mana(owner)==0 && core_mana(1-owner)==10000);
+        assert(core_mana(owner)==(paint ? 2500 : 0) && core_mana(1-owner)==10000);   /* asm:7865 */
         assert(A4_LONG(0xae72)==(owner==local ? 42u : 17u) && A4_WORD(0x2fac)==76);
         assert(quake_draws==(height ? 162u : 0u) && seed==321 && A4_WORD(0x2f88)==123);
         assert(A4_WORD(0x2f8a)==20 && A4_WORD(0x2f8c)==20);
@@ -6425,7 +6431,7 @@ static void test_quake_input(void)
     assert(SDL_Init(SDL_INIT_VIDEO)==0);
     SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_q;
     /* Q executes immediately at the viewport, not at the mouse or S target.
-     * Exact-cost admission and P must not become an editor bypass. */
+     * Exact-cost admission; _paint_map makes it free (asm:7865). */
     for (int diagnostic=0;diagnostic<2;++diagnostic) for (int tool=0;tool<2;++tool)
     for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint) {
         assert(game_reset(0)); diagnostic_view=diagnostic; core_tool=tool;
@@ -6435,7 +6441,7 @@ static void test_quake_input(void)
         A4_LONG(0x9a02+owner*16)=2500; A4_WORD(0x82c4+owner*46)=8;
         uint16_t old_seed=seed;
         game_handle_event(&key);
-        assert(core_mana(owner)==0 && A4_LONG(0xae72)==25 && A4_WORD(0x2fac)==76);
+        assert(core_mana(owner)==(paint ? 2500 : 0) && A4_LONG(0xae72)==25 && A4_WORD(0x2fac)==76);
         assert(seed==old_seed && core_swamp_selected && core_tool==tool);
         assert(A4_WORD(0x2f8a)==20 && A4_WORD(0x2f8e)==30);
         assert(xoff==20 && yoff==30);
@@ -6462,6 +6468,7 @@ static void test_quake_input(void)
     /* Every rejected key preserves the entire emulated state and armed tool. */
     for (int diagnostic=0;diagnostic<2;++diagnostic) for (int paint=0;paint<2;++paint)
     for (int gate=0;gate<9;++gate) {
+        if (paint && (gate==1 || gate==2 || gate==6 || gate==7)) continue;
         assert(game_reset(0)); diagnostic_view=diagnostic; paint_map=paint;
         xoff=20; yoff=30; core_tool=1; core_swamp_selected=1;
         A4_LONG(0x9a02)=2500; A4_WORD(0x82c4)=8;
@@ -6511,6 +6518,7 @@ static void test_flood_cast(void)
     /* Admission must be transactional, including P, either side, and RNG. */
     for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint)
     for (int gate=0;gate<9;++gate) {
+        if (paint && gate>=2 && gate<=5) continue;   /* asm:7569 bypass, test_paint_map_powers */
         flood_fixture(2); paint_map=paint;
         int side=owner;
         if (gate==0) side=-1;
@@ -6532,7 +6540,8 @@ static void test_flood_cast(void)
         flood_fixture(height); player=local; paint_map=paint;
         A4_LONG(0x9a02+owner*16)=40000+extra; A4_LONG(0xae72)=17;
         assert(core_flood(owner));
-        assert(core_mana(owner)==extra && core_mana(1-owner)==40000);
+        /* _paint_map: no payment, still the score (asm:7569-7604). */
+        assert(core_mana(owner)==(paint ? 40000+extra : extra) && core_mana(1-owner)==40000);
         assert(A4_LONG(0xae72)==(owner==local ? 267u : 17u));
         assert(A4_WORD(0x2fac)==74 && seed==321 && A4_WORD(0x2f88)==123);
         assert(A4_WORD(0x2f8a)==7 && A4_WORD(0x2f8c)==13);
@@ -6679,6 +6688,7 @@ static void test_flood_input(void)
     }
     for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint)
     for (int gate=0;gate<10;++gate) {
+        if (paint && ((gate>=1 && gate<=2) || gate==6 || gate==7)) continue;
         flood_fixture(2); player=owner; paint_map=paint;
         core_tool=core_swamp_selected=1; xoff=56; yoff=0; mousex=319; mousey=255;
         if (gate==0) key.key.repeat=1;
@@ -6736,6 +6746,7 @@ static void test_volcano_cast(void)
 {
     for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint)
     for (int gate=0;gate<19;++gate) {
+        if (paint && gate>=6 && gate<=9) continue;   /* asm:8048 bypass, test_paint_map_powers */
         volcano_fixture(0); paint_map=paint;
         int side=owner,x=20,y=30;
         if (gate==0) side=-1;
@@ -6768,7 +6779,7 @@ static void test_volcano_cast(void)
         A4_LONG(0x9a02+owner*16)=10000+extra; A4_LONG(0xae72)=17;
         for (int draw=0;draw<165;++draw) volcano_values[draw]=height ? 1 : draw%2 ? 3 : 0;
         assert(core_volcano(owner,20,30,volcano_random));
-        assert(core_mana(owner)==extra && core_mana(1-owner)==10000);
+        assert(core_mana(owner)==(paint ? 10000+extra : extra) && core_mana(1-owner)==10000);   /* asm:8048 */
         assert(A4_LONG(0xae72)==(owner==local ? 117u : 17u));
         assert(volcano_draws==229 && seed==321 && A4_WORD(0x2f88)==123 && A4_WORD(0x2fac)==75);
         assert(A4_WORD(0x2f8a)==20 && A4_WORD(0x2f8c)==20);
@@ -6875,13 +6886,14 @@ static void test_volcano_input(void)
         uint16_t expected_seed=321;
         for (int draw=0;draw<229;++draw) expected_seed=(expected_seed*0x24a1u+0x24dfu)&0x7fff;
         game_handle_event(&key);
-        assert(core_mana(owner)==0 && seed==expected_seed && A4_LONG(0xae72)==100);
+        assert(core_mana(owner)==(paint ? 10000 : 0) && seed==expected_seed && A4_LONG(0xae72)==100);
         assert(A4_WORD(0x2fac)==75 && core_swamp_selected==1 && core_tool==tool);
         assert(xoff==(view ? 40 : 10) && yoff==(view ? 40 : 20));
         assert(mousex==319 && mousey==255 && core_vertex(xoff+4,yoff+4)>0);
         assert(core_vertex(view ? 14 : 44,view ? 24 : 44)==0);
     }
     for (int gate=0;gate<11;++gate) for (int paint=0;paint<2;++paint) {
+        if (paint && ((gate>=1 && gate<=2) || gate==6 || gate==7)) continue;
         volcano_fixture(0); paint_map=paint; xoff=20; yoff=30;
         core_tool=core_swamp_selected=1;
         if (gate==0) key.key.repeat=1;
@@ -7198,8 +7210,9 @@ static void test_terrain_mailbox_raise(void)
         A4_WORD(0x82c4+owner*46)=0;
         A4_LONG(0x848a)=20; A4_LONG(0x9a02+owner*16)=admitted ? 20 : UINT32_MAX;
         terrain_mailbox_write(owner,1,20,30); game_tick();
-        assert(core_vertex(20,30)==1+(war || admitted));
-        assert(core_mana(owner)==(admitted ? (war ? 20 : 6) : -1));
+        /* _paint_map, like _war, skips admission and payment (asm:7189,7206). */
+        assert(core_vertex(20,30)==1+(war || admitted || paint));
+        assert(core_mana(owner)==(admitted ? (war || paint ? 20 : 6) : -1));
         assert(paint_map==paint && diagnostic_view==diagnostic && mode==3);
         assert(core_tool==1 && core_swamp_selected==1);
         assert_mailbox_empty();
@@ -7809,6 +7822,7 @@ static void test_armageddon_cast(void)
      * confusing the low byte build permission with the high byte war bit. */
     for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint)
     for (int gate=0;gate<13;++gate) {
+        if (paint && gate>=2 && gate<=6) continue;   /* asm:8484 bypass, test_paint_map_powers */
         armageddon_fixture(); paint_map=paint; int side=owner;
         if (gate==0) side=-1;
         if (gate==1) side=2;
@@ -7845,8 +7859,9 @@ static void test_armageddon_cast(void)
         }
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(core_war(owner));
-        assert(core_mana(owner)==0 && core_mana(1-owner)==80000);
-        assert(A4_LONG(0xae72)==(owner==local ? 5017u : 17u));
+        /* _paint_map jumps past payment and score (asm:8484-8516). */
+        assert(core_mana(owner)==(paint ? 80000 : 0) && core_mana(1-owner)==80000);
+        assert(A4_LONG(0xae72)==(owner==local && !paint ? 5017u : 17u));
         assert(A4_WORD(0x2fac)==73 && A4_WORD(0xae80)==1);
         for (int person=0;person<no_peeps;++person)
             for (int byte=14;byte<18;++byte) assert(!peeps[person*22+byte]);
@@ -9147,7 +9162,7 @@ static void knight_expected(uint8_t *expected, int owner, uint32_t heading)
 {
     uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
     int subject=core_leader(owner)-1, position=peep_word(subject,8);
-    A4_LONG(0x9a02+owner*16)-=A4_LONG(0x849a);
+    if (!paint_map) A4_LONG(0x9a02+owner*16)-=A4_LONG(0x849a);   /* asm:8404 */
     if (owner==player) A4_LONG(0xae72)+=150;
     peeps[subject*22+20]=1; memcpy(peeps+subject*22+14,&heading,4);
     core_target(owner)=position; A4_WORD(owner ? 0xae76 : 0xae78)=position;
@@ -9165,6 +9180,8 @@ static void test_knight_guards(void)
     const int invalid_position[]={INT16_MIN,-1,4096,INT16_MAX};
     for (int owner=0; owner<2; ++owner) for (int paint=0; paint<2; ++paint)
     for (int diagnostic=0; diagnostic<2; ++diagnostic) for (int gate=0; gate<41; ++gate) {
+        /* _paint_map skips pause/war/mana/permission (asm:8404): test_paint_map_powers. */
+        if (paint && ((gate>=25 && gate<=27) || gate>=32)) continue;
         knight_fixture(owner); paint_map=paint; diagnostic_view=diagnostic;
         int side=owner;
         if (gate<5) side=invalid_owner[gate];
@@ -13064,6 +13081,212 @@ leave:
     _closeall(); SDL_Quit();
 }
 
+/* _paint_map (editor/free mode): each power prologue skips the mana, _war,
+ * _pause and permission gates and the payment (asm:7104-7206, 7569, 7865,
+ * 8048, 8297, 8404, 8484); _do_magnet has no bypass. Cleared, the very same
+ * state is rejected without any A4 change. */
+static void paint_starve(int owner)
+{
+    A4_LONG(0x9a02+owner*16)=0; A4_WORD(0x82c4+owner*46)=0;
+    pause=1; A4_WORD(0xae80)=1;
+}
+static void test_paint_map_powers(void)
+{
+    for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint) {
+        uint8_t before[sizeof prg_a4_area];
+        /* Quake: score stays (asm:7899-7904). */
+        quake_fixture(1); paint_starve(owner); A4_LONG(0xae72)=0; paint_map=paint;
+        memcpy(before,prg_a4_area,sizeof before);
+        assert(core_quake(owner,20,30,quake_random)==paint);
+        if (paint) assert(core_mana(owner)==0 && A4_LONG(0xae72)==(owner==player ? 25u : 0u) && A4_WORD(0x2fac)==76);
+        else assert(a4_same(before) && !quake_draws);
+        /* Volcano: score stays (asm:8077-8083). */
+        volcano_fixture(0); paint_starve(owner); A4_LONG(0xae72)=0; paint_map=paint;
+        memcpy(before,prg_a4_area,sizeof before);
+        assert(core_volcano(owner,20,30,volcano_random)==paint);
+        if (paint) assert(core_mana(owner)==0 && A4_LONG(0xae72)==(owner==player ? 100u : 0u) && volcano_draws==229);
+        else assert(a4_same(before) && !volcano_draws);
+        /* Swamp: score stays (asm:8326-8332). */
+        swamp_fixture(); paint_starve(owner); A4_LONG(0xae72)=0; paint_map=paint;
+        memcpy(before,prg_a4_area,sizeof before);
+        assert(core_swamp(owner,20,20,swamp_random)==paint);
+        if (paint) assert(core_mana(owner)==0 && A4_LONG(0xae72)==(owner==player ? 50u : 0u) && swamp_draws==60);
+        else assert(a4_same(before) && !swamp_draws);
+        /* Flood: score stays (asm:7598-7604). */
+        flood_fixture(2); paint_starve(owner); A4_LONG(0xae72)=0; paint_map=paint;
+        memcpy(before,prg_a4_area,sizeof before);
+        assert(core_flood(owner)==paint);
+        if (paint) assert(core_mana(owner)==0 && A4_LONG(0xae72)==(owner==player ? 250u : 0u) && core_vertex(10,10)==1);
+        else assert(a4_same(before));
+        /* Knight: still needs a leader (asm:8394-8402), score stays. */
+        knight_fixture(owner); paint_starve(owner); A4_LONG(0xae72)=0; paint_map=paint;
+        memcpy(before,prg_a4_area,sizeof before);
+        assert(core_knight(owner)==paint);
+        if (paint) assert(core_mana(owner)==0 && !core_leader(owner) && A4_LONG(0xae72)==(owner==player ? 150u : 0u));
+        else assert(a4_same(before));
+        knight_fixture(owner); paint_starve(owner); paint_map=1; core_leader(owner)=0;
+        memcpy(before,prg_a4_area,sizeof before);
+        assert(!core_knight(owner) && a4_same(before));
+        /* Armageddon: no payment and no score (asm:8484-8516). */
+        armageddon_fixture(); paint_starve(owner); A4_WORD(0xae80)=0; A4_LONG(0xae72)=0; paint_map=paint;
+        memcpy(before,prg_a4_area,sizeof before);
+        assert(core_war(owner)==paint);
+        if (paint) assert(core_mana(owner)==0 && !A4_LONG(0xae72) && A4_WORD(0xae80)==1 && A4_WORD(0x2fac)==73);
+        else assert(a4_same(before));
+        /* Raise/lower: admission and cost skipped (asm:7104-7126,7189-7219). */
+        quake_fixture(1); A4_LONG(0x848a)=10; A4_LONG(0x9a02+owner*16)=3; paint_map=paint;
+        memcpy(before,prg_a4_area,sizeof before);
+        assert(core_raw_raise(owner,20,30)==paint);
+        if (paint) assert(core_vertex(20,30)==2 && core_mana(owner)==3);
+        else assert(a4_same(before));
+        quake_fixture(1); A4_LONG(0x848a)=10; A4_LONG(0x9a02+owner*16)=3; paint_map=paint;
+        memcpy(before,prg_a4_area,sizeof before);
+        core_do_lower_point(owner,20,30);
+        if (paint) assert(core_vertex(20,30)==0 && core_mana(owner)==3);
+        else { assert(core_vertex(20,30)==1 && core_mana(owner)==3); }
+        /* Admitted with paint clear, the original price is still paid. */
+        quake_fixture(1); A4_LONG(0x848a)=10; A4_LONG(0x9a02+owner*16)=100; paint_map=0;
+        assert(core_raw_raise(owner,20,30) && core_mana(owner)==100-(int32_t)(A4_WORD(0x2f88)*4+10));
+        /* _do_magnet (asm:6769-6800) has no editor bypass. */
+        armageddon_fixture(); A4_LONG(0x848e)=100; A4_LONG(0x9a02+owner*16)=99; core_leader(owner)=1;
+        A4_WORD(0xae80)=0; paint_map=paint;
+        memcpy(before,prg_a4_area,sizeof before);
+        assert(!core_do_magnet(owner,5,5) && a4_same(before));
+    }
+    paint_map=0;
+}
+
+static void paint_key(SDL_Keycode sym, int shift)
+{
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=sym;
+    key.key.keysym.mod=shift ? KMOD_LSHIFT : KMOD_NONE;
+    game_handle_event(&key);
+}
+/* _animate asm:676-738 freezes people; _paint_the_map asm:15123-15274 posts
+ * the editor opcodes that _get_message (asm:18017-18183) and _do_action
+ * y=9..13 (asm:18943-18999) execute. */
+static void test_paint_map_editor(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    /* No _move_peeps: _game_turn, peeps and the outcome stay put. */
+    for (int paint=0;paint<2;++paint) {
+        assert(game_reset(0)); paint_map=paint;
+        int16_t turn=game_turn; uint8_t people[208*22]; memcpy(people,peeps,sizeof people);
+        for (int tick=0;tick<8;++tick) game_tick();
+        assert(game_turn==(int16_t)(turn+(paint ? 0 : 8)));
+        if (paint) assert(!memcmp(people,peeps,sizeof people));
+        assert(game_reset(0)); paint_map=paint;
+        for (int person=0;person<no_peeps;++person) set_peep_word(person,4,0);
+        no_peeps=0; game_tick();
+        assert(core_result==(paint ? 0 : 2));
+    }
+    /* Outside the editor the keys post nothing (digits keep the host tendency). */
+    assert(game_reset(0)); paint_map=0; A4_WORD(0x3028)=10; A4_WORD(0x3026)=12;
+    paint_key(SDLK_F1,0); paint_key(SDLK_F8,0); paint_key(SDLK_DELETE,0);
+    assert(!A4_DISP(0x82b6)[0] && !A4_DISP(0x82b6)[1] && !A4_DISP(0x82b6)[2]);
+    paint_key(SDLK_2,0); assert(core_tendency(0)==2 && !A4_DISP(0x82b6)[0]);
+    /* F1/F2 men, Shift leaders, at _cur_x/_cur_y; repeats are ignored. */
+    assert(game_reset(0)); paint_map=1; A4_WORD(0x825c)=0x32; A4_WORD(0x825e)=0x2f;
+    A4_WORD(0x3028)=10; A4_WORD(0x3026)=12;
+    int cell=12*64+10, count=no_peeps;
+    map_who[cell]=0; map_alt[cell]=2; map_blk[cell]=15; map_bk2[cell]=0;
+    paint_key(SDLK_F1,0);
+    assert(A4_DISP(0x82b6)[0]==7 && A4_DISP(0x82b6)[1]==10 && A4_DISP(0x82b6)[2]==12);
+    game_tick();
+    assert(no_peeps==count+1 && map_who[cell]==count+1 && peep_owner(count)==0);
+    assert(peeps[count*22]==2 && peep_word(count,4)==45 && peep_word(count,8)==cell && !peep_word(count,12));
+    { SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_F2; key.key.repeat=1;
+      game_handle_event(&key); assert(!A4_DISP(0x82b6)[0]); }
+    paint_key(SDLK_F2,0); game_tick(); assert(no_peeps==count+2 && peep_owner(count+1)==1);
+    /* Without a leader Shift-F1 takes a new slot; with one the leader's
+     * slot is reused (_zero_population), the old square released. */
+    core_leader(0)=0; A4_WORD(0x3028)=11;
+    paint_key(SDLK_F1,1); assert(A4_DISP(0x82b6)[0]==9); game_tick();
+    int leader=core_leader(0);
+    assert(no_peeps==count+3 && leader==count+3 && peep_word(leader-1,8)==12*64+11);
+    A4_WORD(0x3028)=13; paint_key(SDLK_F1,1); game_tick();
+    assert(no_peeps==count+3 && core_leader(0)==leader && peep_word(leader-1,8)==12*64+13);
+    assert(map_who[12*64+13]==leader && map_who[12*64+11]!=leader);
+    A4_WORD(0x3028)=14; core_leader(1)=0;
+    paint_key(SDLK_F2,1); assert(A4_DISP(0x82b6)[0]==10); game_tick();
+    assert(core_leader(1)==count+4 && peep_word(count+3,8)==12*64+14 && peep_owner(count+3)==1);
+    /* F3 trees, F4 rocks cycle from _last_tree/_last_rock; not at height 7. */
+    A4_WORD(0x3028)=10;
+    paint_key(SDLK_F3,0); game_tick(); assert(map_bk2[cell]==0x32);
+    paint_key(SDLK_F3,0); game_tick(); assert(map_bk2[cell]==0x33);
+    paint_key(SDLK_F3,0); game_tick(); paint_key(SDLK_F3,0); game_tick();
+    assert(map_bk2[cell]==0x32 && A4_WORD(0x825c)==0x32);
+    paint_key(SDLK_F4,0); game_tick(); assert(map_blk[cell]==0x2f);
+    paint_key(SDLK_F4,0); game_tick(); assert(map_blk[cell]==0x30 && A4_WORD(0x825e)==0x30);
+    map_alt[cell+1]=7; map_bk2[cell+1]=0; A4_WORD(0x3028)=11;
+    paint_key(SDLK_F3,0); game_tick(); assert(!map_bk2[cell+1]);
+    /* F5: the rock becomes grass, objects and the occupant go. */
+    A4_WORD(0x3028)=10; int occupant=map_who[cell]-1;
+    assert(occupant>=0);
+    paint_key(SDLK_F5,0); game_tick();
+    assert(map_blk[cell]!=0x30 && !map_bk2[cell] && !map_who[cell] && peep_word(occupant,4)==0);
+    /* F6/F7: x2+500 below 100000, Shift halves (DIVS). */
+    A4_LONG(0x9a02)=1000; A4_LONG(0x9a12)=99999;
+    paint_key(SDLK_F6,0); game_tick(); assert(A4_LONG(0x9a02)==2500);
+    paint_key(SDLK_F6,1); game_tick(); assert(A4_LONG(0x9a02)==1250);
+    paint_key(SDLK_F7,0); game_tick(); assert(A4_LONG(0x9a12)==200498);
+    paint_key(SDLK_F7,0); game_tick(); assert(A4_LONG(0x9a12)==200498);
+    A4_LONG(0x9a12)=(uint32_t)-7; paint_key(SDLK_F7,1); game_tick(); assert((int32_t)A4_LONG(0x9a12)==-3);
+    /* F8 mirrors: both halves take the higher height, trees copy over. */
+    for (int i=0;i<4225;++i) A4_WORD(0xae86+i*2)=1;   /* land: _make_map keeps objects */
+    A4_WORD(0xae86+5*2)=4; A4_WORD(0xae86+(0x1080-7)*2)=3;
+    memset(map_bk2,0,4096); map_bk2[100]=51; map_bk2[0xfff-200]=55; map_bk2[300]=42;
+    paint_key(SDLK_F8,0); game_tick();
+    assert(A4_WORD(0xae86+(0x1080-5)*2)==4 && A4_WORD(0xae86+5*2)==4);
+    assert(A4_WORD(0xae86+7*2)==3 && A4_WORD(0xae86+(0x1080-7)*2)==3);
+    assert(map_bk2[0xfff-100]==51 && map_bk2[200]==55 && !map_bk2[0xfff-300]);
+    /* 1..4 load landscapes 0..3; 5..9 are not available in the port. */
+    paint_key(SDLK_2,0); assert(A4_DISP(0x82b6)[0]==14 && A4_DISP(0x82b6)[1]==1 && A4_DISP(0x82b6)[2]==13);
+    game_tick(); assert(ground_in==1 && game_assets);
+    paint_key(SDLK_7,0); game_tick(); assert(ground_in==1);
+    paint_key(SDLK_1,0); game_tick(); assert(ground_in==0);
+    /* DEL clears the whole land and every person. */
+    paint_key(SDLK_DELETE,0); game_tick();
+    assert(no_peeps==0 && !core_leader(0) && !core_leader(1));
+    for (int i=0;i<4225;++i) assert(!A4_WORD(0xae86+i*2));
+    for (int i=0;i<4096;++i) assert(!map_who[i] && !map_blk[i] && !map_bk2[i]);
+    paint_map=0; _closeall(); SDL_Quit();
+}
+
+/* Entry/exit: GAME SETUP PAINT MAP / PLAY GAME (asm:13044-13056), kept on
+ * OK and restored on CANCEL (asm:13326); START GAME clears it (asm:12769). */
+static void test_paint_map_options(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    toolbar_fixture(); in_conquest=-1; paint_map=0;
+    core_game_options_open(); assert(core_rec_text(core_game_entry(4))[0]==(char)0x80);
+    entry_click(core_game_entry(4),16,16); assert(paint_map==1);
+    ok_click(); assert(!core_req.kind && paint_map==1);
+    /* In the editor Q is free and the click sculpt ignores the build limits. */
+    A4_LONG(0x9a02)=0; A4_WORD(0x82c4)=0; game_mode=GAME_MODE_NO_BUILD;
+    xoff=20; yoff=30; memset(A4_DISP(0x82b6),0,3);
+    paint_key(SDLK_q,0); assert(A4_WORD(0x2fac)==76 && core_mana(0)==0);
+    for (int i=0;i<4225;++i) A4_WORD(0xae86+i*2)=1;
+    SDL_SetWindowSize(prg_screen->window,640,512); iso_click_vertex(24,34,SDL_BUTTON_LEFT);
+    assert(core_vertex(24,34)==2 && core_mana(0)==0);
+    assert(A4_WORD(0x3028)==24 && A4_WORD(0x3026)==34);
+    SDL_SetWindowSize(prg_screen->window,640,512); iso_click_vertex(24,34,SDL_BUTTON_RIGHT); assert(core_vertex(24,34)==1 && core_mana(0)==0);
+    /* Reopened, PLAY GAME leaves the editor. */
+    core_game_options_open(); assert(core_rec_text(core_game_entry(4))[0]==(char)0x81);
+    entry_click(core_game_entry(3),16,16); assert(paint_map==0);
+    ok_click(); assert(!core_req.kind && paint_map==0);
+    A4_WORD(0x2fac)=0; paint_key(SDLK_q,0); assert(!A4_WORD(0x2fac));
+    SDL_SetWindowSize(prg_screen->window,640,512); iso_click_vertex(24,34,SDL_BUTTON_LEFT); assert(core_vertex(24,34)==1);
+    /* CANCEL restores the value it was opened with. */
+    core_game_options_open(); entry_click(core_game_entry(4),16,16); assert(paint_map==1);
+    cancel_click(); assert(!core_req.kind && paint_map==0);
+    paint_map=1; core_game_options_open(); entry_click(core_game_entry(3),16,16);
+    cancel_click(); assert(paint_map==1);
+    /* The host P key is not an editor switch. */
+    paint_map=0; paint_key(SDLK_p,0); assert(!paint_map);
+    _closeall(); SDL_Quit();
+}
+
 int main(int argc, char **argv)
 {
     /* Hermetic save drawer; test_save_load uses its own temporary one. */
@@ -13356,6 +13579,7 @@ int main(int argc, char **argv)
     test_armageddon_input_smoke(); test_armageddon_cast(); test_armageddon_delayed(); test_armageddon_islands();
     test_war_terrain();
     test_terrain_mailbox();
+    test_paint_map_powers(); test_paint_map_editor(); test_paint_map_options();
     test_magnet();
     test_war_state();
     test_remnant_timer(); test_remnant_occupancy_and_state();

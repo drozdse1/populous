@@ -1757,20 +1757,20 @@ static int original_raise_point(int column, int row)
     return core_vertex(column, row);
 }
 
-/* _do_raise_point asm:7180-7246, gameplay path only. Diagnostic P is not
- * the original editor: it never bypasses admission or payment. */
+/* _do_raise_point asm:7180-7246: _paint_map (asm:7189,7206) or _war skips
+ * both the mana admission and the payment. */
 static int core_raw_raise(int owner, int column, int row)
 {
     if (owner < 0 || owner > 1 || column < 0 || column > 64 || row < 0 || row > 64)
         return 0;
     /* Convert the signed long comparison without out-of-range signed casts. */
     uint32_t mana = A4_LONG(0x9a02 + owner * 16), threshold = A4_LONG(0x848a);
-    if (!A4_WORD(0xae80) && (mana ^ 0x80000000u) < (threshold ^ 0x80000000u)) return 0;
+    if (!paint_map && !A4_WORD(0xae80) && (mana ^ 0x80000000u) < (threshold ^ 0x80000000u)) return 0;
     A4_WORD(0x2f8a) = A4_WORD(0x2f8c) = column;
     A4_WORD(0x2f8e) = A4_WORD(0x2f90) = row;
     A4_WORD(0x2f88) = 0;
     original_raise_point(column, row);
-    if (!A4_WORD(0xae80)) {
+    if (!paint_map && !A4_WORD(0xae80)) {
         unsigned word_cost = ((uint16_t)A4_WORD(0x2f88) * 4u + 10u) & 0xffffu;
         int32_t cost = word_cost < 0x8000u ? (int32_t)word_cost : (int32_t)word_cost - 65536;
         /* SUB.L wraps in 32 bits. Unlike core_sculpt/core_add_mana, no host cap. */
@@ -1804,6 +1804,118 @@ static void core_do_lower_point(int owner, int column, int row)
     if ((int16_t)A4_WORD(0x2f90) > 63) A4_WORD(0x2f90) = 63;
     core_make_map_region(A4_WORD(0x2f8a)-1, A4_WORD(0x2f8e)-1, A4_WORD(0x2f8c), A4_WORD(0x2f90));
 }
+/* _place_people(side,x,y,leader) asm:6982-7087: a new leader replaces the
+ * current one (_zero_population), else the next free slot. Byte map
+ * coordinates past 63 would write outside _map_who; the port drops them. */
+static void core_place_people(int side, int x, int y, int leader)
+{
+    if (no_peeps >= 208 || side < 0 || side > 1 || x < 0 || x > 63 || y < 0 || y > 63) return;
+    int person, magnet = core_leader(side);
+    if (leader && magnet > 0 && magnet <= no_peeps) { person = magnet-1; core_remove(person); }
+    else person = no_peeps++;
+    int cell = y*64+x;
+    set_peep_word(person,6,0); set_peep_word(person,4,45); set_peep_word(person,8,cell);
+    map_who[cell] = person+1;
+    peeps[person*22+1] = (uint8_t)side; peeps[person*22] = 2;
+    set_peep_word(person,12,255); peeps[person*22+2] = 1;
+    set_peep_word(person,10,0); peeps[person*22+3] = 1;
+    memset(peeps+person*22+14,0,4);
+    if (leader) core_leader(side) = person+1;
+    set_peep_word(person,12,0);   /* _set_frame on frame 255, asm:5728-5743 */
+}
+/* _rotate_all_map asm:6823-6922: "mirror the landscape". Both halves of
+ * _alt take the higher (signed) height, trees 50..55 are copied across. */
+static void core_rotate_all_map(void)
+{
+    for (int i = 0; i < 0x1080/2; ++i) {
+        int mirror = 0xae86+(0x1080-i)*2;
+        if (A4_WORD(0xae86+i*2) < A4_WORD(mirror)) A4_WORD(0xae86+i*2) = A4_WORD(mirror);
+        A4_WORD(mirror) = A4_WORD(0xae86+i*2);
+    }
+    for (int i = 0; i < 0xfff/2; ++i) {
+        if (map_bk2[i] >= 50 && map_bk2[i] <= 55) map_bk2[0xfff-i] = map_bk2[i];
+        else if (map_bk2[0xfff-i] >= 50 && map_bk2[0xfff-i] <= 55) map_bk2[i] = map_bk2[0xfff-i];
+    }
+    _make_map();
+}
+/* _clear_all_map asm:6926-6978: flat sea, no objects, no people. */
+static void core_clear_all_map(void)
+{
+    for (int i = 0; i < 0x1081; ++i) {
+        A4_WORD(0xae86+i*2) = 0;
+        if (i < 0x1000) map_who[i] = map_bk2[i] = map_blk[i] = 0;
+    }
+    for (int person = 0; person < no_peeps; ++person) core_remove(person);
+    no_peeps = 0;
+    _make_map();
+}
+static int core_load_ground(int terrain);
+/* _paint_the_map asm:15123-15274, editor keys into the _player mailbox at
+ * _cur_x/_cur_y (low bytes): F1/F2 man (Shift: leader) for either side,
+ * F3 tree, F4 rock, F5 delete, F6/F7 mana (x = _shift), F8 mirror, DEL
+ * clear, 1..9 terrain (16-(inkey-0xed))/2 = digit-1. raw is the Amiga key. */
+static int core_paint_the_map(int raw, int shifted)
+{
+    if (!paint_map || player < 0 || player > 1) return 0;
+    uint8_t *box = A4_DISP(0x82b6 + player*46);
+    box[1] = (uint8_t)A4_WORD(0x3028); box[2] = (uint8_t)A4_WORD(0x3026);
+    switch (raw) {
+    case 0x50: box[0] = shifted ? 9 : 7; return 1;
+    case 0x51: box[0] = shifted ? 10 : 8; return 1;
+    case 0x52: box[0] = 11; return 1;
+    case 0x53: box[0] = 12; return 1;
+    case 0x54: box[0] = 13; return 1;
+    case 0x55: box[0] = 14; box[1] = (uint8_t)shifted; box[2] = 9; return 1;
+    case 0x56: box[0] = 14; box[1] = (uint8_t)shifted; box[2] = 10; return 1;
+    case 0x57: box[0] = 14; box[2] = 11; return 1;
+    case 0x46: box[0] = 14; box[2] = 12; return 1;
+    default:
+        if (raw >= 1 && raw <= 9) { box[0] = 14; box[1] = (uint8_t)(raw-1); box[2] = 13; return 1; }
+        return 0;
+    }
+}
+/* _get_message opcodes 11/12 asm:18049-18122: cycle a tree (bk2 50..52) or
+ * rock (blk 47..49) on a cell below height 7, starting from the last one. */
+static void core_paint_cycle(int x, int y, int rock)
+{
+    if (x < 0 || x > 63 || y < 0 || y > 63) return;
+    int cell = y*64+x, low = rock ? 47 : 50, high = low+2;
+    if (map_alt[cell] >= 7) return;
+    uint8_t *slot = rock ? &map_blk[cell] : &map_bk2[cell];
+    int value = *slot;
+    if (value < low || value > high) value = A4_WORD(rock ? 0x825e : 0x825c);
+    else if (value == high) value = low;
+    else ++value;
+    A4_WORD(rock ? 0x825e : 0x825c) = (int16_t)value;
+    *slot = (uint8_t)value;
+}
+/* Opcode 13 asm:18123-18183: a rock becomes grass, then objects and the
+ * occupant go. */
+static void core_paint_delete(int x, int y)
+{
+    if (x < 0 || x > 63 || y < 0 || y > 63) return;
+    int cell = y*64+x;
+    if (map_blk[cell] >= 47 && map_blk[cell] <= 49) {
+        map_blk[cell] = 15;
+        core_make_map_region(x,y,x+1 > 63 ? 63 : x+1,y+1 > 63 ? 63 : y+1);
+    }
+    map_bk2[cell] = 0;
+    if (map_who[cell]) {
+        int person = map_who[cell]-1;
+        if (person < no_peeps) core_remove(person);
+        map_bk2[cell] = 0;
+        map_who[cell] = 0;
+    }
+}
+/* _do_action y=9/10 asm:18943-18976: x (= _shift) halves the blue/red mana
+ * (DIVS), else below 100000 it doubles plus 500. */
+static void core_paint_mana(int owner, int halve)
+{
+    int32_t mana = (int32_t)A4_LONG(0x9a02+owner*16);
+    if (halve) mana /= 2;
+    else if (mana < 100000) mana = mana*2+500;
+    A4_LONG(0x9a02+owner*16) = (uint32_t)mana;
+}
 /* _clear_send asm:18234-18254: only command/x/y, never the controller state. */
 static void core_clear_terrain_mailboxes(void)
 {
@@ -1832,8 +1944,7 @@ static void core_consume_terrain_mailboxes(void)
             if ((uint16_t)game_turn % divisor == 0) A4_WORD(0x82be + displacement) = 0;
         }
         int x = A4_DISP(0x82b7 + displacement)[0], y = A4_DISP(0x82b8 + displacement)[0];
-        /* Jump table asm:18200-18216. 7..13 (place people, tree, rock,
-         * clear cell) have no producer here and stay unconsumed. */
+        /* Jump table asm:18200-18216; 7..13 come from _paint_the_map. */
         switch (A4_DISP(0x82b6 + displacement)[0]) {
         case 1: core_raw_raise(owner, x, y); break;
         case 2: core_do_lower_point(owner, x, y); break;
@@ -1841,12 +1952,24 @@ static void core_consume_terrain_mailboxes(void)
         case 4: core_swamp(owner, x, y, ___newrand); break;
         case 5: core_do_magnet(owner, x, y); break;
         case 6: core_volcano(owner, x, y, ___newrand); break;
+        case 7: core_place_people(0, x, y, 0); break;
+        case 8: core_place_people(1, x, y, 0); break;
+        case 9: core_place_people(0, x, y, 1); break;
+        case 10: core_place_people(1, x, y, 1); break;
+        case 11: core_paint_cycle(x, y, 0); break;
+        case 12: core_paint_cycle(x, y, 1); break;
+        case 13: core_paint_delete(x, y); break;
         case 14:
             /* _do_action asm:18406-19032, switch on y; these cases return 0. */
             if (y == 1) core_tendency(owner) = (int16_t)x; /* _set_tend_icons is UI only */
             else if (y == 3) core_war(owner);
             else if (y == 4) core_flood(owner);
             else if (y == 5) core_knight(owner);
+            else if (y == 9) core_paint_mana(0, x);
+            else if (y == 10) core_paint_mana(1, x);
+            else if (y == 11) core_rotate_all_map();
+            else if (y == 12) core_clear_all_map();
+            else if (y == 13) core_load_ground(x);
             /* y=7 asm:18607-18650: not while the other side's mailbox also
              * holds options; our side shows _options(x ? player : not_player).
              * y=8 asm:18729-18733: _new_map = 0, _game_options. The serial
@@ -1912,15 +2035,17 @@ static int original_lower_point(int column, int row)
     return core_vertex(column, row);
 }
 
-/* _do_flood asm:7567-7648, gameplay only: P is diagnostic, not editor.
- * The signed BLE guard leaves negative heights unchanged. This is not a
+/* _do_flood asm:7567-7648: _paint_map (asm:7569) skips the mana, _war,
+ * _pause and permission gates and the payment, not the score. The signed BLE guard leaves negative heights unchanged. This is not a
  * recursive lower/sculpt operation; water and town consequences wait for tick. */
 static int core_flood(int owner)
 {
-    if (owner < 0 || owner > 1 || pause || A4_WORD(0xae80) || core_result ||
-        core_mana(owner) < (int32_t)A4_LONG(0x84a2) ||
-        !(A4_WORD(0x82c4+owner*46)&0x80)) return 0;
-    A4_LONG(0x9a02+owner*16) -= A4_LONG(0x84a2);
+    if (owner < 0 || owner > 1 || core_result) return 0;
+    if (!paint_map) {
+        if (pause || A4_WORD(0xae80) || core_mana(owner) < (int32_t)A4_LONG(0x84a2) ||
+            !(A4_WORD(0x82c4+owner*46)&0x80)) return 0;
+        A4_LONG(0x9a02+owner*16) -= A4_LONG(0x84a2);
+    }
     if (owner == player) A4_LONG(0xae72) += 250;
     A4_WORD(0x2fac) = 74;
     for (int index = 0; index < 4225; ++index)
@@ -1929,11 +2054,14 @@ static int core_flood(int owner)
     return 1;
 }
 
-/* _do_knight asm:8392-8478. Diagnostic views never grant editor powers. */
+/* _do_knight asm:8392-8478: the leader test comes first; _paint_map
+ * (asm:8404) then skips the mana, _war, _pause and permission gates and the
+ * payment, not the score. */
 static int core_knight(int owner)
 {
     if (owner < 0 || owner > 1 || no_peeps < 0 || no_peeps > 208 ||
-        pause || A4_WORD(0xae80) || core_result || prg_quit) return 0;
+        core_result || prg_quit) return 0;
+    if (!paint_map && (pause || A4_WORD(0xae80))) return 0;
     int leader=core_leader(owner);
     if (leader < 1 || leader > no_peeps) return 0;
     int subject=leader-1, position=peep_word(subject,8);
@@ -1941,9 +2069,11 @@ static int core_knight(int owner)
         position < 0 || position >= 4096) return 0;
     uint32_t mana=A4_LONG(0x9a02+owner*16), cost=A4_LONG(0x849a);
     /* Signed CMP.L admission, unsigned SUB.L/ADD.L wrap, as in core_war. */
-    if ((mana ^ 0x80000000u) < (cost ^ 0x80000000u) ||
-        !(A4_WORD(0x82c4+owner*46)&0x20)) return 0;
-    A4_LONG(0x9a02+owner*16)=mana-cost;
+    if (!paint_map) {
+        if ((mana ^ 0x80000000u) < (cost ^ 0x80000000u) ||
+            !(A4_WORD(0x82c4+owner*46)&0x20)) return 0;
+        A4_LONG(0x9a02+owner*16)=mana-cost;
+    }
     if (owner == player) A4_LONG(0xae72)+=150;
     peeps[subject*22+20]=1;
     core_get_heading(subject);
@@ -1954,18 +2084,21 @@ static int core_knight(int owner)
     return 1;
 }
 
-/* _do_war asm:8482-8530, gameplay only: diagnostic P is not editor mode. */
+/* _do_war asm:8482-8530: _paint_map (asm:8484) jumps past the gates, the
+ * payment and the score straight to the peep clear. */
 static int core_war(int owner)
 {
     if (owner < 0 || owner > 1 || no_peeps < 0 || no_peeps > 208 ||
-        pause || core_result || prg_quit) return 0;
-    uint32_t mana = A4_LONG(0x9a02+owner*16), cost = A4_LONG(0x84a6);
-    /* Signed CMP.L without an out-of-range signed conversion. BTST targets
-     * the high byte of the original big-endian permission word. */
-    if ((mana ^ 0x80000000u) < (cost ^ 0x80000000u) ||
-        !(A4_WORD(0x82c4+owner*46)&0x100)) return 0;
-    A4_LONG(0x9a02+owner*16) = mana-cost;
-    if (owner == player) A4_LONG(0xae72) += 5000;
+        core_result || prg_quit) return 0;
+    if (!paint_map) {
+        uint32_t mana = A4_LONG(0x9a02+owner*16), cost = A4_LONG(0x84a6);
+        /* Signed CMP.L without an out-of-range signed conversion. BTST targets
+         * the high byte of the original big-endian permission word. */
+        if (pause || (mana ^ 0x80000000u) < (cost ^ 0x80000000u) ||
+            !(A4_WORD(0x82c4+owner*46)&0x100)) return 0;
+        A4_LONG(0x9a02+owner*16) = mana-cost;
+        if (owner == player) A4_LONG(0xae72) += 5000;
+    }
     for (int person = 0; person < no_peeps; ++person)
         memset(peeps+person*22+14,0,4);
     A4_WORD(0x2fac) = 73;
@@ -2108,14 +2241,17 @@ static void core_quake_shake(void)
     }
     core_shake_dy = 0;
 }
-/* _do_quake asm:7863-8042, gameplay only (P is not the editor). */
+/* _do_quake asm:7863-8042: _paint_map (asm:7865) skips the mana, _war,
+ * _pause and permission gates and the payment, not the score. */
 static int core_quake(int owner, int column, int row, WorldRandom random)
 {
     if (owner < 0 || owner > 1 || column < 0 || column > 56 || row < 0 || row > 56 ||
-        pause || A4_WORD(0xae80) || core_result ||
-        core_mana(owner) < (int32_t)A4_LONG(0x8492) ||
-        !(A4_WORD(0x82c4+owner*46)&8)) return 0;
-    A4_LONG(0x9a02+owner*16) -= A4_LONG(0x8492);
+        core_result) return 0;
+    if (!paint_map) {
+        if (pause || A4_WORD(0xae80) || core_mana(owner) < (int32_t)A4_LONG(0x8492) ||
+            !(A4_WORD(0x82c4+owner*46)&8)) return 0;
+        A4_LONG(0x9a02+owner*16) -= A4_LONG(0x8492);
+    }
     A4_WORD(0x2f8a) = A4_WORD(0x2f8c) = column;
     A4_WORD(0x2f8e) = A4_WORD(0x2f90) = row;
     A4_WORD(0x2fac) = 76;
@@ -2138,13 +2274,14 @@ static int core_quake(int owner, int column, int row, WorldRandom random)
     core_kill_effect(2,4);   /* asm:8037-8040: cut the rumble */
     return 1;
 }
-/* _do_volcano asm:8046-8267, gameplay only: P is not the editor. */
+/* _do_volcano asm:8046-8267: _paint_map (asm:8048) skips the mana, _war,
+ * _pause and permission gates and the payment, not the score. */
 static int core_volcano(int owner, int column, int row, WorldRandom random)
 {
     if (owner < 0 || owner > 1 || column < 0 || column > 56 || row < 0 || row > 56 ||
-        pause || A4_WORD(0xae80) || core_result ||
-        core_mana(owner) < (int32_t)A4_LONG(0x849e) ||
-        !(A4_WORD(0x82c4+owner*46)&0x40)) return 0;
+        core_result) return 0;
+    if (!paint_map && (pause || A4_WORD(0xae80) || core_mana(owner) < (int32_t)A4_LONG(0x849e) ||
+        !(A4_WORD(0x82c4+owner*46)&0x40))) return 0;
     /* asm:8141-8157 reads blue twice. Zero protects cell zero, not no cell.
      * Reject unsupported stale references before payment or terrain mutation. */
     int leader = core_leader(0), protected_cell = 0;
@@ -2154,7 +2291,7 @@ static int core_volcano(int owner, int column, int row, WorldRandom random)
         protected_cell = peep_word(leader-1,8);
         if (protected_cell < 0 || protected_cell >= 4096) return 0;
     }
-    A4_LONG(0x9a02+owner*16) -= A4_LONG(0x849e);
+    if (!paint_map) A4_LONG(0x9a02+owner*16) -= A4_LONG(0x849e);
     if (owner == player) A4_LONG(0xae72) += 100;
     A4_WORD(0x2f8a) = A4_WORD(0x2f8c) = column;
     A4_WORD(0x2f8e) = A4_WORD(0x2f90) = row;
@@ -2185,15 +2322,17 @@ static int core_volcano(int owner, int column, int row, WorldRandom random)
     return 1;
 }
 
-/* _do_swamp asm:8295-8387, gameplay only: P is not the original editor.
- * Byte target coordinates can be outside the map; still consume all 60 draws. */
+/* _do_swamp asm:8295-8387: _paint_map (asm:8297) skips the mana, _war,
+ * _pause and permission gates and the payment, not the score. Byte target coordinates can be outside the map; still consume all 60 draws. */
 static int core_swamp(int owner, int column, int row, WorldRandom random)
 {
     if (owner < 0 || owner > 1 || column < 0 || column > 255 || row < 0 || row > 255 ||
-        pause || A4_WORD(0xae80) || core_result ||
-        core_mana(owner) < (int32_t)A4_LONG(0x8496) ||
-        !(A4_WORD(0x82c4+owner*46)&0x10)) return 0;
-    A4_LONG(0x9a02+owner*16) -= A4_LONG(0x8496);
+        core_result) return 0;
+    if (!paint_map) {
+        if (pause || A4_WORD(0xae80) || core_mana(owner) < (int32_t)A4_LONG(0x8496) ||
+            !(A4_WORD(0x82c4+owner*46)&0x10)) return 0;
+        A4_LONG(0x9a02+owner*16) -= A4_LONG(0x8496);
+    }
     if (owner == player) A4_LONG(0xae72) += 50;
     for (int attempt = 0; attempt < 30; ++attempt) {
         int x = column + random()%7 - 3;
@@ -2861,6 +3000,14 @@ static int game_reset_start(StartSelection selection)
 static void game_tick(void)
 {
     if (pause || prg_quit || core_result || core_req.kind) return;
+    /* _animate asm:676-738: with _paint_map set neither _do_funny nor
+     * _move_peeps runs (people stand still, _game_turn stays, no end-game
+     * check); the frame only plots the peeps. Mailboxes are still read. */
+    if (paint_map) {
+        if (view_timer && !--view_timer) view_who = old_view_who;
+        core_consume_terrain_mailboxes();
+        return;
+    }
     game_turn = (int16_t)((uint16_t)game_turn + 1u);
     /* asm:740-750: a temporary view (_set_temp_view) lapses after 10 turns.
      * The original also lapses it while a button is held; the port has no
@@ -2942,6 +3089,7 @@ static void _main(void)
         }
     }
 
+    A4_WORD(0x825c) = 0x32; A4_WORD(0x825e) = 0x2f;   /* _last_tree/_last_rock data, asm:24149-24152 */
     /* start_of_game from WB/cli (the $42 path or atoi of arg) */
     if (0 /* argc path */) {
         start_of_game = 0; /* ___atoi */
@@ -3851,6 +3999,36 @@ static int core_load_game(const char *name)
         core_land = (CustomLand){start_seed, 0, ground_in};
     } else if (current_start.kind != START_SYNTHETIC && in_conquest >= 0 && in_conquest / 5 < LEVEL_COUNT)
         current_start = (StartSelection){START_ORIGINAL, in_conquest / 5};
+    return 1;
+}
+
+/* _do_action y=13 asm:18983-18999: _ground_in = x, ___load_ground(x,1),
+ * redraw. The port has LAND rules and graphics only for 0..3 (keys 1..4);
+ * 4..8 ("custom", keys 5..9) keep the current landscape. */
+static int core_load_ground(int terrain)
+{
+    if (terrain < 0 || terrain > 3) {
+        fprintf(stderr, "Paint map: landscape %d is not available.\n", terrain);
+        return 0;
+    }
+    char error[256];
+    const char *asset_directory = getenv("POPULOUS_ASSET_DIR");
+    if (!asset_directory) asset_directory = POPULOUS_DEFAULT_ASSET_DIR;
+    char default_data[4096];
+    if ((size_t)snprintf(default_data, sizeof default_data, "%s/raw", asset_directory) >= sizeof default_data) return 0;
+    const char *directory = getenv("POPULOUS_DATA_DIR");
+    if (!directory) directory = default_data;
+    LandRules rules;
+    if (!land_rules_load(directory, (unsigned)terrain, &rules, error, sizeof error)) {
+        fprintf(stderr, "Paint map: LAND data: %s\n", error);
+        return 0;
+    }
+    GraphicsAssets *assets = graphics_load(asset_directory, (unsigned)terrain, rules.sprite_set, error, sizeof error);
+    if (!assets) { fprintf(stderr, "Paint map: graphics: %s\n", error); return 0; }
+    ground_in = (int16_t)terrain;
+    core_install_land(&rules);
+    graphics_free(game_assets);
+    game_assets = assets;
     return 1;
 }
 
@@ -5191,8 +5369,12 @@ static void game_handle_event(const SDL_Event *event)
         /* _end_game waits for the requester (asm:14370-14385): any other key. */
         if (core_end_shown && core_result) { if (!event->key.repeat) core_leave_end(); return; }
         if (!event->key.repeat) {
+            /* _animate asm:917: unhandled keys go to _paint_the_map, which
+             * acts only with _paint_map set (Amiga raw codes). */
+            int raw = key >= SDLK_F1 && key <= SDLK_F8 ? 0x50 + (int)(key - SDLK_F1) :
+                      key == SDLK_DELETE ? 0x46 : key >= SDLK_1 && key <= SDLK_9 ? (int)(key - SDLK_0) : -1;
+            if (raw >= 0 && core_paint_the_map(raw, (event->key.keysym.mod & KMOD_SHIFT) != 0)) return;
             if (key == SDLK_SPACE) pause = !pause;
-            if (key == SDLK_p) paint_map = !paint_map;
             if (key == SDLK_d) { diagnostic_view = !diagnostic_view; xoff = yoff = diagnostic_view ? 0 : 6; }
             if (key == SDLK_r && !game_reset_start(current_start))
             fprintf(stderr, "Reset failed; keeping the current game.\n");
@@ -5206,8 +5388,8 @@ static void game_handle_event(const SDL_Event *event)
             if (key == SDLK_a) _do_war();
             /* Host S mapping for source selection asm:2021-2042 (> cost). */
             if (key == SDLK_s && player >= 0 && player <= 1 &&
-                core_mana(player) > (int32_t)A4_LONG(0x8496) &&
-                (A4_WORD(0x82c4+player*46)&0x10)) { core_swamp_selected = 1; core_set_pointer(); }
+                ((core_mana(player) > (int32_t)A4_LONG(0x8496) &&
+                  (A4_WORD(0x82c4+player*46)&0x10)) || paint_map)) { core_swamp_selected = 1; core_set_pointer(); }
         }
         if ((key == SDLK_LEFT || key == SDLK_KP_4 || key == SDLK_KP_7 || key == SDLK_KP_1) && xoff > 0) --xoff;
         if ((key == SDLK_RIGHT || key == SDLK_KP_6 || key == SDLK_KP_9 || key == SDLK_KP_3) && xoff < 56) ++xoff;
@@ -5228,6 +5410,12 @@ static void game_handle_event(const SDL_Event *event)
             mousey = (int16_t)((int64_t)y * prg_screen->height / height);
             big_mousex = mousex;
             big_mousey = mousey;
+            /* _sculpt asm:7406-7416 keeps _cur_x/_cur_y on the vertex under
+             * the pointer; _paint_the_map posts there. */
+            int column, row;
+            if (!diagnostic_view && !core_req.kind && game_pick(mousex,mousey,&column,&row)) {
+                A4_WORD(0x3028) = (int16_t)column; A4_WORD(0x3026) = (int16_t)row;
+            }
             /* continue_3EC20 asm:963-975 also interrogates while hovering. */
             if (!event->motion.state && !diagnostic_view && !core_req.kind && !core_lord.shown) core_interogate(mousex,mousey,0);
         }
@@ -5293,6 +5481,13 @@ static void game_handle_event(const SDL_Event *event)
             if (event->button.button == SDL_BUTTON_LEFT && core_leader(0) && core_mana(0)>=200) {
                 core_add_mana(0,-200); core_target(0)=row*64+column; core_tendency(0)=0;
             }
+        } else if (paint_map && (event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT)) {
+            /* _sculpt asm:7307-7312,7417-7438: the editor skips _ok_to_build
+             * and the game-mode build limits; the raise/lower opcodes then
+             * run free (_do_raise_point/_do_lower_point). */
+            A4_WORD(0x3028) = (int16_t)column; A4_WORD(0x3026) = (int16_t)row;
+            if (event->button.button == SDL_BUTTON_LEFT) core_raw_raise(player,column,row);
+            else if (column <= 64 && row <= 64) core_do_lower_point(player,column,row);
         } else if (event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT)
             core_sculpt(0,column,row,event->button.button == SDL_BUTTON_LEFT ? 1 : -1);
     }
