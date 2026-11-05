@@ -211,11 +211,11 @@ static void core_queue_terrain_raise(int owner, int position)
     if (owner < 0 || owner > 1 || position < 0 || position >= 4096) return;
     int displacement = owner * 46;
     if (!war_flag &&
-        (A4_WORD(0x82bc + displacement) != 1 || (game_mode&GAME_MODE_NO_BUILD))) return;
-    A4_DISP(0x82b6 + displacement)[0] = 1;
-    A4_DISP(0x82b7 + displacement)[0] = position & 63;
-    A4_DISP(0x82b8 + displacement)[0] = position / 64;
-    A4_WORD(0x82be + displacement) = 1;
+        (stats_build_mode(displacement / 46) != 1 || (game_mode&GAME_MODE_NO_BUILD))) return;
+    stats_bytes(displacement / 46)[0] = 1;
+    (stats_bytes(displacement / 46) + 1)[0] = position & 63;
+    (stats_bytes(displacement / 46) + 2)[0] = position / 64;
+    stats_build_latch(displacement / 46) = 1;
 }
 /* _move_magnet_peeps asm:4912-5465. Existing host headings override magnets;
  * invalid opaque references retain their bytes and use only a bounded magnet. */
@@ -822,7 +822,7 @@ static void core_settle_tick(int person)
     }
     /* asm:3766-3817: town levelling while this owner's latch is clear. Flat
      * cells keep the result in peep +20 and skip an unchanged, unflagged frame. */
-    if (owner < 2 && !A4_WORD(0x82be + owner*46)) {
+    if (owner < 2 && !stats_build_latch(owner)) {
         if (!map_alt[position]) {
             if (!peeps[person*22+20] || peep_word(person,12) != old_frame || life_water_flag)
                 peeps[person*22+20] = core_make_level(position,owner);
@@ -832,10 +832,10 @@ static void core_settle_tick(int person)
     if (!((uint16_t)game_turn&7)) {
         int level = peep_word(person,12)-32;
         /* asm:3818-3862: local split limits, never reframe or reindex economy. */
-        if (peep_word(person,12) == 42 && A4_WORD(0x82bc+owner*46) == 1 &&
-            peep_word(person,4) > 305 && !A4_WORD(0x82be + owner*46)) {
+        if (peep_word(person,12) == 42 && stats_build_mode(owner) == 1 &&
+            peep_word(person,4) > 305 && !stats_build_latch(owner)) {
             capacity = 305;
-            A4_WORD(0x82be + owner*46) = 1;
+            stats_build_latch(owner) = 1;
         }
         uint16_t cheat = (uint16_t)A4_WORD(0x2fb4);
         if (cheat && (uint16_t)owner == (uint16_t)(cheat-1u)) capacity = 50;
@@ -878,7 +878,7 @@ static int core_sculpt(int owner, int column, int row, int direction)
     if (owner < 0 || owner > 1 || pause || core_result || war_flag || column < 0 || column > 64 || row < 0 || row > 64 ||
         (direction != 1 && direction != -1) || (game_mode&GAME_MODE_NO_BUILD) ||
         (direction < 0 && (game_mode&GAME_MODE_BUILD_ONLY_UP)) || core_mana(owner) < 10 ||
-        !(A4_WORD(0x82c4+owner*46)&1)) return 0;
+        !(stats_power_mask(owner)&1)) return 0;
     int original = core_vertex(column,row), target_height = original+direction;
     if (target_height < 0 || target_height > 8) return 0;
     if ((game_mode&GAME_MODE_BUILD_NEAR_TOWNS) && original > 0) {
@@ -1013,7 +1013,7 @@ static void core_do_lower_point(int owner, int column, int row)
 /* _clear_send asm:18234-18254: only command/x/y, never the controller state. */
 static void core_clear_terrain_mailboxes(void)
 {
-    for (int owner = 0; owner < 2; ++owner) memset(A4_DISP(0x82b6 + owner * 46), 0, 3);
+    for (int owner = 0; owner < 2; ++owner) memset(stats_bytes(owner), 0, 3);
 }
 
 /* _get_message asm:17929-17995,18218-18229. No serial/editor/UI producers yet.
@@ -1029,18 +1029,18 @@ static void core_consume_terrain_mailboxes(void)
 {
     for (int owner = 0; owner < 2; ++owner) {
         int displacement = owner * 46;
-        if (A4_WORD(0x82bc + displacement) == 1) {
-            unsigned divisor = (uint16_t)A4_WORD(0x82c6 + displacement);
+        if (stats_build_mode(displacement / 46) == 1) {
+            unsigned divisor = (uint16_t)stats_build_period(displacement / 46);
             if (!divisor) {
                 fprintf(stderr, "Terrain mailbox owner %d: zero cadence divisor; command discarded, latch preserved\n", owner);
                 continue;
             }
-            if ((uint16_t)game_turn % divisor == 0) A4_WORD(0x82be + displacement) = 0;
+            if ((uint16_t)game_turn % divisor == 0) stats_build_latch(displacement / 46) = 0;
         }
-        int x = A4_DISP(0x82b7 + displacement)[0], y = A4_DISP(0x82b8 + displacement)[0];
+        int x = (stats_bytes(displacement / 46) + 1)[0], y = (stats_bytes(displacement / 46) + 2)[0];
         /* Jump table asm:18200-18216. 7..13 (place people, tree, rock,
          * clear cell) have no producer here and stay unconsumed. */
-        switch (A4_DISP(0x82b6 + displacement)[0]) {
+        switch (stats_bytes(displacement / 46)[0]) {
         case 1: core_raw_raise(owner, x, y); break;
         case 2: core_do_lower_point(owner, x, y); break;
         case 3: core_quake(owner, x, y, ___newrand); break;
@@ -1125,7 +1125,7 @@ static int core_flood(int owner)
 {
     if (owner < 0 || owner > 1 || pause || war_flag || core_result ||
         core_mana(owner) < (int32_t)mana_flood_cost ||
-        !(A4_WORD(0x82c4+owner*46)&0x80)) return 0;
+        !(stats_power_mask(owner)&0x80)) return 0;
     core_mana_long(owner) -= mana_flood_cost;
     if (owner == player) score_long += 250;
     A4_WORD(0x2fac) = 74;
@@ -1148,7 +1148,7 @@ static int core_knight(int owner)
     uint32_t mana=core_mana_long(owner), cost=A4_LONG(0x849a);
     /* Signed CMP.L admission, unsigned SUB.L/ADD.L wrap, as in core_war. */
     if ((mana ^ 0x80000000u) < (cost ^ 0x80000000u) ||
-        !(A4_WORD(0x82c4+owner*46)&0x20)) return 0;
+        !(stats_power_mask(owner)&0x20)) return 0;
     core_mana_long(owner)=mana-cost;
     if (owner == player) score_long+=150;
     peeps[subject*22+20]=1;
@@ -1169,7 +1169,7 @@ static int core_war(int owner)
     /* Signed CMP.L without an out-of-range signed conversion. BTST targets
      * the high byte of the original big-endian permission word. */
     if ((mana ^ 0x80000000u) < (cost ^ 0x80000000u) ||
-        !(A4_WORD(0x82c4+owner*46)&0x100)) return 0;
+        !(stats_power_mask(owner)&0x100)) return 0;
     core_mana_long(owner) = mana-cost;
     if (owner == player) score_long += 5000;
     for (int person = 0; person < no_peeps; ++person)
@@ -1320,7 +1320,7 @@ static int core_quake(int owner, int column, int row, WorldRandom random)
     if (owner < 0 || owner > 1 || column < 0 || column > 56 || row < 0 || row > 56 ||
         pause || war_flag || core_result ||
         core_mana(owner) < (int32_t)A4_LONG(0x8492) ||
-        !(A4_WORD(0x82c4+owner*46)&8)) return 0;
+        !(stats_power_mask(owner)&8)) return 0;
     core_mana_long(owner) -= A4_LONG(0x8492);
     raise_min_col = raise_max_col = column;
     raise_min_row = raise_max_row = row;
@@ -1350,7 +1350,7 @@ static int core_volcano(int owner, int column, int row, WorldRandom random)
     if (owner < 0 || owner > 1 || column < 0 || column > 56 || row < 0 || row > 56 ||
         pause || war_flag || core_result ||
         core_mana(owner) < (int32_t)A4_LONG(0x849e) ||
-        !(A4_WORD(0x82c4+owner*46)&0x40)) return 0;
+        !(stats_power_mask(owner)&0x40)) return 0;
     /* asm:8141-8157 reads blue twice. Zero protects cell zero, not no cell.
      * Reject unsupported stale references before payment or terrain mutation. */
     int leader = core_leader(0), protected_cell = 0;
@@ -1398,7 +1398,7 @@ static int core_swamp(int owner, int column, int row, WorldRandom random)
     if (owner < 0 || owner > 1 || column < 0 || column > 255 || row < 0 || row > 255 ||
         pause || war_flag || core_result ||
         core_mana(owner) < (int32_t)A4_LONG(0x8496) ||
-        !(A4_WORD(0x82c4+owner*46)&0x10)) return 0;
+        !(stats_power_mask(owner)&0x10)) return 0;
     core_mana_long(owner) -= A4_LONG(0x8496);
     if (owner == player) score_long += 50;
     for (int attempt = 0; attempt < 30; ++attempt) {

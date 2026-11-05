@@ -126,6 +126,18 @@ typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
 #define serial_off       A4_WORD(0x8254)
 #define not_player       A4_WORD(0x825a)
 #define stats            (A4_DISP(0x82b6))
+
+/* Per-owner _stats record (46 bytes) starting at 0x82b6 (good) / 0x82e4 (bad). */
+#define stats_base(owner)            (0x82b6 + (owner) * 46)
+#define stats_bytes(owner)           (A4_DISP(stats_base(owner)))
+#define stats_cmd_byte(owner)        (stats_bytes(owner)[0])
+#define stats_cmd_x(owner)           (stats_bytes(owner)[1])
+#define stats_cmd_y(owner)           (stats_bytes(owner)[2])
+#define stats_build_mode(owner)      A4_WORD(stats_base(owner) + 0x06) /* 0x82bc */
+#define stats_build_latch(owner)     A4_WORD(stats_base(owner) + 0x08) /* 0x82be */
+#define stats_power_mask(owner)      A4_WORD(0x82c4 + (owner) * 46)
+#define stats_build_period(owner)    A4_WORD(0x82c6 + (owner) * 46)
+
 #define inkey            (*(uint8_t *)A4_DISP(0xae6c))
 #define bitfield_51645   (*(uint8_t *)A4_DISP(0x8257))
 #define GfxBase_prg      A4_LONG(0x99a4)

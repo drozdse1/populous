@@ -44,8 +44,8 @@ static void _move_peeps(void)
     /* asm:3254-3270: the computer player acts on last pass's pointers while
      * its latch is clear; the latch is re-read between the two calls. */
     for (int owner = 0; owner < 2; ++owner) {
-        if (!A4_WORD(0x82be + owner*46)) core_set_devil_magnet(owner);
-        if (!A4_WORD(0x82be + owner*46)) core_devil_effect(owner);
+        if (!stats_build_latch(owner)) core_set_devil_magnet(owner);
+        if (!stats_build_latch(owner)) core_devil_effect(owner);
     }
     /* asm:3271-3335: per-pass AI bookkeeping, including the good_pop reset. */
     for (int owner = 0; owner < 2; ++owner) {
@@ -185,7 +185,7 @@ static void _move_peeps(void)
              * (host slot+1 encoding), then terrain flattening. */
             int owner = peep_owner(person);
             if (!A4_LONG(0x82dc+(owner ? 0 : 1)*46)) A4_LONG(0x82dc+(owner ? 0 : 1)*46) = (uint32_t)(person+1);
-            if (!A4_WORD(0x82be + owner*46)) core_one_block_flat(position,owner);
+            if (!stats_build_latch(owner)) core_one_block_flat(position,owner);
             core_move(person);
             /* asm:4100-4117: drop a stale +0x12 cell, then this path's loss. */
             if (peep_word(person,18) &&
