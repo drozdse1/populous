@@ -628,8 +628,11 @@ used the diagnostic renderer; a fresh independent graphics review is separate.
 
 ## Build and run
 
-Requires GCC-compatible C11, GNU make, SDL2 development files (`sdl2-config`), and
-`timeout` for the test targets. A display is needed for interactive use.
+Requires a GCC- or Clang-compatible C11 compiler (`cc` by default; override with
+`make CC=...`), GNU make, and SDL2 development files (found via `sdl2-config`, or
+`pkg-config sdl2` as fallback). The test targets use `timeout` or `gtimeout` when
+available and otherwise run without a time limit. A display is needed for
+interactive use.
 
 ```sh
 make -C populous_c_port
@@ -639,6 +642,23 @@ make -C populous_c_port
 make -C populous_c_port test
 make -C populous_c_port test-sanitize
 ```
+
+### macOS (Apple Silicon and Intel)
+
+Untested by the maintainers so far; the Makefile detects Darwin and Homebrew SDL2.
+
+```sh
+xcode-select --install                 # Apple clang + make
+brew install sdl2 pkg-config coreutils # coreutils is optional (gtimeout for tests)
+make -C populous_c_port
+POPULOUS_ASSET_DIR="$PWD/binaries/populous-extracted" ./populous_c_port/populous_init_port
+make -C populous_c_port test
+```
+
+The asset path is baked in at build time as `../binaries/populous-extracted`
+relative to `populous_c_port/`; `POPULOUS_ASSET_DIR` overrides it at run time.
+macOS ships GNU make 3.81, which is sufficient; `brew install make` provides
+`gmake` if needed. ASan/UBSan (`make test-sanitize`) work with Apple clang.
 
 Without arguments the original launcher screens run first (see "Launcher and
 intro"); its choice selects the start. Every argument bypasses the launcher and
