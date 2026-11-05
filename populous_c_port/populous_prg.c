@@ -436,6 +436,10 @@ static void core_world_layout(int draw);
 static void core_world_click(void);
 static void core_draw_world(void);
 static void core_end_button_layout(int draw);
+static int core_lord_open(int old_level, int level, int finished);
+static void core_lord_leave(void);
+static void core_lord_vblank(void);
+static void core_draw_lord(void);
 static int core_check_cancel(const uint8_t *ok, const uint8_t *cancel);
 static void _where_do_i_go(void);
 static void _get_heading(void);
@@ -2307,7 +2311,17 @@ static const struct { int16_t x, y, w; const char *text; } core_end_template[7] 
 };
 #define core_end_row(r) ((char *)A4_DISP(0x8e84 + (r)*46))
 static int core_end_shown, core_end_next, core_end_finished;
-static char core_end_conquest[2][48];
+/* _won_conquest lord screen, asm:14503-14765. The original loops inside
+ * _won_conquest, so the game stays frozen (core_result is kept) until the
+ * click. w_screen is core_lord.screen, _map_steps' mouth copy is
+ * core_lord.mouths (the port keeps the A4 _map_steps intact). */
+static struct {
+    int shown, finished, rank, wait;
+    int16_t c, f, d, saved_music, saved_effect;   /* -120,-108,-110,-116,-118(A5) */
+    int mouths_loaded;
+    uint16_t palette[16];                         /* _tcmap[0..15] */
+    uint8_t screen[320*200], mouths[0x13b0];
+} core_lord;
 
 /* ___long_asc/___word_asc asm:21046-21110: signed decimal, no padding. */
 static void core_long_asc(char *out, int32_t value) { sprintf(out, "%ld", (long)value); }
@@ -2444,31 +2458,30 @@ static void core_conquest_text(int old_level, int level, int finished, char line
 static int core_conquest_game(void) { return current_start.kind == START_ORIGINAL && in_conquest != -1; }
 
 /* _end_game entry: stats once after the result appears. A conquest win
- * precomputes _won_conquest's next world, shown before the click. */
+ * precomputes _won_conquest's next world from the final score. */
 static void core_enter_end(void)
 {
     int won = core_result == 1;
     int32_t score = core_end_stats(won);
     core_end_shown = 1; core_end_next = -1; core_end_finished = 0;
-    core_end_conquest[0][0] = core_end_conquest[1][0] = 0;
-    if (won && core_conquest_game()) {
+    if (won && core_conquest_game())
         core_end_next = core_next_level(A4_WORD(0xae7e), score, &core_end_finished);
-        core_conquest_text(A4_WORD(0xae7e), core_end_next, core_end_finished, core_end_conquest);
-    }
 }
 
 /* After the click (asm:14386-14402): won conquest -> _level_number and
- * _message = the next world's code (asm:14492-14501), then _show_world
- * until != -1 (asm:14766-14772); a lost conquest keeps in_conquest, i.e.
- * the same world; non-conquest -> restart the current start. */
+ * _message = the next world's code (asm:14492-14501), the lord screen
+ * (core_lord_open), then _show_world until != -1 (asm:14766-14772); a
+ * lost conquest keeps in_conquest, i.e. the same world; non-conquest ->
+ * restart the current start. */
 static int core_leave_end(void)
 {
     if (!core_end_shown) return 0;
     A4_WORD(0x82bc + player*46) = 0;
     if (core_end_next >= 0) {
+        int old = A4_WORD(0xae7e);
         A4_WORD(0xae7e) = (int16_t)core_end_next;
         core_code(core_message, core_code_rand(core_end_next));
-        core_world_open(CORE_WORLD_WON);
+        if (!core_lord_open(old, core_end_next, core_end_finished)) core_world_open(CORE_WORLD_WON);
         return 1;
     }
     StartSelection next = current_start;
@@ -2492,7 +2505,7 @@ static void _animate(void)
         Uint32 now = SDL_GetTicks();
         int catch_up = 0;
         /* 50 Hz vertical blank sound interrupt (asm:19620-19672). */
-        while ((Sint32)(now-next_vbi) >= 0 && catch_up++ < 10) { core_vbi_audio(); next_vbi += 20; }
+        while ((Sint32)(now-next_vbi) >= 0 && catch_up++ < 10) { core_vbi_audio(); core_lord_vblank(); next_vbi += 20; }
         if ((Sint32)(now-next_vbi) >= 0) next_vbi = now+20;
         catch_up = 0;
         while ((Sint32)(now-next_tick) >= 0 && catch_up++ < 5) {
@@ -2683,6 +2696,8 @@ static void game_tick(void)
 
 static void game_render(void)
 {
+    ensure_prg_screen();
+    if (core_lord.shown && prg_screen) { core_draw_lord(); amiga_present(prg_screen); return; }
     ___draw_it(yoff, xoff);
     if (prg_screen) amiga_present(prg_screen);
 }
@@ -3040,12 +3055,6 @@ static void amiga_text(uint8_t *pixels, int x, int y, const char *text)
         }
         ++at;
     }
-}
-
-static void core_fill(int left, int top, int width, int height, int colour)
-{
-    for (int y = top; y < top+height; ++y) for (int x = left; x < left+width; ++x)
-        if (x >= 0 && x < 320 && y >= 0 && y < 200) game_pixels[y*320+x] = (uint8_t)colour;
 }
 
 /* _icon_data icons 12..23 (asm:21763-21927), the _requester tiles: per row
@@ -3442,10 +3451,7 @@ static void core_draw_requester(void)
 /* _end_game display asm:14317-14385: _requester(d_screen,16,16,0x120,0xa6,
  * button) with the -60(A5) button "TRY IT AGAIN" (lost conquest) or
  * "NEW GAME", the rows at _end_text+16, then wait for a click on the
- * button (_check_cancel(button,0)). Port deviation: a conquest win shows
- * _won_conquest's lines (asm:14531-14582, x 8, y 0xb2/0xba on the lord
- * screen after the click) before the click, moved up to y 0x98/0xa0 on a
- * cleared strip inside the frame so that they do not cover the button. */
+ * button (_check_cancel(button,0)). */
 static uint8_t core_end_button[46];
 static void core_end_button_layout(int draw)
 {
@@ -3458,11 +3464,155 @@ static void core_draw_end_screen(void)
     core_end_button_layout(1);
     for (int r = 0; r < 7; ++r)
         amiga_text(game_pixels, A4_WORD(0x8e7e + r*46) + 16, A4_WORD(0x8e80 + r*46) + 16, core_end_row(r));
-    if (core_end_conquest[0][0]) {
-        core_fill(0,0x96,320,20,0);
-        amiga_text(game_pixels, 8, 0x98, core_end_conquest[0]);
-        amiga_text(game_pixels, 8, 0xa0, core_end_conquest[1]);
+}
+
+/* _end_words asm:24783-24785, _words asm:24786-24788 (two per rank, -1 none). */
+static const int16_t core_end_words[5] = {0,1,3,5,6};
+static const int16_t core_words[20] = {9,-1,5,-1,3,-1,7,-1,1,8,2,-1,1,2,9,6,1,6,3,6};
+/* The original's working directory: POPULOUS_DATA_DIR, else <assets>/raw. */
+static FILE *core_open_raw(const char *name)
+{
+    const char *directory = getenv("POPULOUS_DATA_DIR"), *assets = getenv("POPULOUS_ASSET_DIR");
+    char path[4160];
+    if (directory) snprintf(path,sizeof path,"%s/%s",directory,name);
+    else snprintf(path,sizeof path,"%s/raw/%s",assets ? assets : POPULOUS_DEFAULT_ASSET_DIR,name);
+    return fopen(path,"rb");
+}
+/* _read_lord asm:16631-16663: 0x7d00 bytes of four plane-major planes
+ * (8000 bytes, 40 per row, MSB left) into _w_screen, then 0x20 bytes =
+ * 16 BE16 RGB12 words into _tcmap. The original fails only on Open; the
+ * port also rejects a short file instead of keeping stale w_screen data. */
+static int core_read_lord(void)
+{
+    FILE *file = core_open_raw("lord.pic");
+    if (!file) return 0;
+    static uint8_t data[0x7d00 + 0x20];
+    int ok = fread(data,1,sizeof data,file) == sizeof data;
+    fclose(file);
+    if (!ok) return 0;
+    for (int pixel = 0; pixel < 320*200; ++pixel) {
+        int colour = 0;
+        for (int plane = 0; plane < 4; ++plane)
+            colour |= ((data[plane*8000 + pixel/8] >> (7 - pixel%8)) & 1) << plane;
+        core_lord.screen[pixel] = (uint8_t)colour;
     }
+    for (int i = 0; i < 16; ++i) core_lord.palette[i] = (uint16_t)(data[0x7d00+i*2] << 8 | data[0x7d01+i*2]);
+    return 1;
+}
+/* _read_mouth asm:16668-16690: 0x13b0 bytes, no failure path. Without the
+ * file the port skips _draw_mouth (the original would copy stale _map_steps). */
+static void core_read_mouth(void)
+{
+    FILE *file = core_open_raw("mouths.pic");
+    core_lord.mouths_loaded = file && fread(core_lord.mouths,1,sizeof core_lord.mouths,file) == sizeof core_lord.mouths;
+    if (file) fclose(file);
+}
+/* _draw_mouth(screen,x,y,rows,frame) asm:19894-19922: x in bytes; frame
+ * 0x348 bytes of rows of 6 bytes (48 pixels) per plane 0..3, each row
+ * replacing all four planes (plane stride 0x1f40). */
+static void core_draw_mouth(int x, int y, int rows, int frame)
+{
+    if (!core_lord.mouths_loaded || frame < 0 || (frame+1)*0x348 > (int)sizeof core_lord.mouths) return;
+    const uint8_t *m = core_lord.mouths + frame*0x348;
+    for (int r = 0; r < rows && y+r < 200; ++r) for (int px = 0; px < 48 && x*8+px < 320; ++px) {
+        int colour = 0;
+        for (int plane = 0; plane < 4; ++plane) colour |= ((m[r*24 + plane*6 + px/8] >> (7 - px%8)) & 1) << plane;
+        core_lord.screen[(y+r)*320 + x*8 + px] = (uint8_t)colour;
+    }
+}
+/* One pass of the loop before its four _waittof, LAB_48DCE-LAB_48EF2. */
+static void core_lord_speak(void)
+{
+    if (core_lord.finished) {
+        if (core_lord.c >= 10 && core_lord.c <= 14) {
+            if (core_check_effect(2)) { core_PlaySound(core_end_words[core_lord.c-10],2); ++core_lord.c; }
+            return;
+        }
+        if (core_lord.c > 200) core_lord.c = 0;
+        if (core_lord.c == 16) core_draw_mouth(0x10,0x4b,0x23,5);
+    } else if (core_lord.c >= 10 && core_lord.c <= 12) {
+        if (core_lord.c == 10) { core_PlaySound(0,2); ++core_lord.c; }
+        else if (core_check_effect(2)) {
+            int16_t word = core_words[core_lord.rank*2 + core_lord.c - 11];
+            if (word >= 0) core_PlaySound(word,2);
+            ++core_lord.c;
+        }
+        return;
+    } else if (core_lord.c > 250) core_lord.c = 0;
+    ++core_lord.c; core_lord.f = 0; core_lord.d = 1;
+}
+/* Per vertical blank: after four _waittof the mouth frame -108(A5) at
+ * byte 0x12, y 0x87, then while channel 2 talks it bounces 0..4
+ * (asm:14740-14757), and the next pass begins. */
+static void core_lord_vblank(void)
+{
+    if (!core_lord.shown || ++core_lord.wait < 4) return;
+    core_lord.wait = 0;
+    core_draw_mouth(0x12,0x87,0x23,core_lord.f);
+    if (!core_check_effect(2)) {
+        core_lord.f = (int16_t)(core_lord.f + core_lord.d);
+        if (core_lord.f >= 4 || core_lord.f <= 0) core_lord.d = (int16_t)-core_lord.d;
+    }
+    core_lord_speak();
+}
+/* asm:14503-14594: sound off, _read_lord (0: _level_number back, empty
+ * _message, asm:14762-14765), _read_mouth, gwords, the two text lines at
+ * x 8, y 0xb2/0xba (core_conquest_text), _tcmap 16..31 = _palette for the
+ * pointer (the port's prg_screen palette), _left_button 2. */
+static int core_lord_open(int old_level, int level, int finished)
+{
+    core_lord.saved_music = music_off; music_off = 0;
+    core_lord.saved_effect = effect_off; effect_off = 0;
+    core_kill_effect(0,4);
+    if (!core_read_lord()) {
+        A4_WORD(0xae7e) = (int16_t)(finished ? 0 : old_level);
+        core_message[0] = 0;
+        music_off = core_lord.saved_music; effect_off = core_lord.saved_effect;
+        return 0;
+    }
+    core_read_mouth();
+    core_free_all_sounds();
+    core_load_sound("gwords");
+    if (finished) old_level = 0;
+    seed = (uint16_t)old_level;   /* asm:14518 */
+    char line[2][48];
+    core_conquest_text(old_level, level, finished, line);
+    if (!finished && seed) ___newrand();
+    amiga_text(core_lord.screen, 8, 0xb2, line[0]);
+    amiga_text(core_lord.screen, 8, 0xba, line[1]);
+    core_lord.finished = finished; core_lord.rank = level / 250;
+    core_lord.c = core_lord.f = 0; core_lord.d = 1; core_lord.wait = 0;
+    core_lord.shown = 1; left_button = 2;
+    core_lord_speak();
+    return 1;
+}
+/* The click, LAB_48F4A asm:14740-14765: kill, gmusic1 back, the saved
+ * _music_off/_effect_off, then _show_world. */
+static void core_lord_leave(void)
+{
+    if (!core_lord.shown) return;
+    core_lord.shown = 0; left_button = 2;
+    core_kill_effect(0,4);
+    core_free_all_sounds();
+    core_load_sound("gmusic1");
+    music_off = core_lord.saved_music; effect_off = core_lord.saved_effect;
+    core_world_open(CORE_WORLD_WON);
+}
+/* _make_copper(4 planes)/_show_screen of w_screen with the lord _tcmap;
+ * the 200-line screen leaves the port HUD rows black but for one line. */
+static void core_draw_lord(void)
+{
+    uint32_t colours[16];
+    for (int i = 0; i < 16; ++i) {
+        uint16_t w = core_lord.palette[i];
+        colours[i] = 0xff000000u | (uint32_t)((w >> 8) & 15) * 17 << 16 | (uint32_t)((w >> 4) & 15) * 17 << 8 | (uint32_t)(w & 15) * 17;
+    }
+    for (int pixel = 0; pixel < 320*200; ++pixel) prg_screen->chunky_buffer[pixel] = colours[core_lord.screen[pixel] & 15];
+    static uint8_t hud[320*200];
+    memset(hud,0,320*56);
+    amiga_text(hud,0,0,"CLICK TO CONTINUE, ESC QUIT");
+    for (int pixel = 0; pixel < 320*56; ++pixel) prg_screen->chunky_buffer[200*320+pixel] = prg_screen->palette[hud[pixel]];
+    core_draw_pointer();
 }
 
 /* _show_world asm:12190-12773, run as a requester (CORE_REQ_WORLD): the
@@ -4411,7 +4561,7 @@ static void game_handle_event(const SDL_Event *event)
             else if (key >= 0 && key < 0x80) core_world_key((int)key);
             return;
         }
-        if (core_req.kind) return;   /* the requester loops read only the mouse */
+        if (core_req.kind || core_lord.shown) return;   /* the requester and lord loops read only the mouse */
         /* _end_game waits for the requester (asm:14370-14385): any other key. */
         if (core_end_shown && core_result) { if (!event->key.repeat) core_leave_end(); return; }
         if (!event->key.repeat) {
@@ -4453,7 +4603,7 @@ static void game_handle_event(const SDL_Event *event)
             big_mousex = mousex;
             big_mousey = mousey;
             /* continue_3EC20 asm:963-975 also interrogates while hovering. */
-            if (!event->motion.state && !diagnostic_view && !core_req.kind) core_interogate(mousex,mousey,0);
+            if (!event->motion.state && !diagnostic_view && !core_req.kind && !core_lord.shown) core_interogate(mousex,mousey,0);
         }
     }
     if (event->type == SDL_MOUSEBUTTONDOWN && prg_screen) {
@@ -4463,10 +4613,11 @@ static void game_handle_event(const SDL_Event *event)
         int sx = (int64_t)event->button.x*320/width, sy = (int64_t)event->button.y*256/height;
         /* Requesters take the left press at the pointer (_left_button,
          * _mousex/_mousey); _end_game continues only on its button. */
-        if (core_req.kind || (core_end_shown && core_result)) {
+        if (core_req.kind || core_lord.shown || (core_end_shown && core_result)) {
             if (event->button.button != SDL_BUTTON_LEFT) return;
             mousex = (int16_t)sx; mousey = (int16_t)sy;
-            if (core_req.kind) core_requester_click();
+            if (core_lord.shown) core_lord_leave();   /* _left_button cleared, asm:14503 loop */
+            else if (core_req.kind) core_requester_click();
             else { core_end_button_layout(0); if (core_check_cancel(core_end_button,NULL)) core_leave_end(); }
             return;
         }

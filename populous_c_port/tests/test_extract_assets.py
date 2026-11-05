@@ -256,6 +256,44 @@ class AssetTests(unittest.TestCase):
             self.assertEqual(values["sounds"]["gmusic1"]["drumkit"][0]["period"], 400)
             self.assertIn("gwords", manifest["missing"])
 
+    def test_mouth_frames_rows_planes_and_msb_first(self):
+        # _draw_mouth: frame*0x348, per row 6 bytes of plane 0, 1, 2, 3.
+        data = bytearray(5040)
+        data[0] = 0x80                      # frame 0 row 0 plane 0 pixel 0
+        data[18 + 5] = 0x01                 # frame 0 row 0 plane 3 pixel 47
+        data[840 + 2 * 24 + 6 + 2] = 0x40   # frame 1 row 2 plane 1 pixel 17
+        data[5 * 840 + 34 * 24 + 12] = 0xff  # frame 5 row 34 plane 2 pixels 0..7
+        frames = self.module.decode_mouths(bytes(data))
+        self.assertEqual(len(frames), 6)
+        self.assertTrue(all(len(frame) == 48 * 35 for frame in frames))
+        self.assertEqual((frames[0][0], frames[0][47], frames[0][1]), (1, 8, 0))
+        self.assertEqual((frames[1][2 * 48 + 17], frames[1][2 * 48 + 16]), (2, 0))
+        self.assertEqual(frames[5][34 * 48:34 * 48 + 9], bytes([4] * 8 + [0]))
+        self.assertEqual(sum(map(any, frames)), 3)
+        for size in (5039, 5041):
+            with self.assertRaises(ValueError):
+                self.module.decode_mouths(bytes(size))
+
+    def test_export_mouths_without_lord_palette(self):
+        payload = bytearray(5040)
+        payload[0] = 0xc0
+        image = make_file_disk(bytes(payload))
+        image[900 * 512 + 432:900 * 512 + 443] = b"\x0amouths.pic"
+        checksum(image, 900)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            adf = root / "source.adf"
+            adf.write_bytes(image)
+            manifest = self.module.export_assets(adf, root / "out")
+            entry = manifest["present"]["mouths.pic"]
+            self.assertEqual((entry["status"], entry["frame_count"], entry["frame_width"], entry["frame_height"]),
+                             ("verified", 6, 48, 35))
+            self.assertIn("lord.pic palette", entry["limitations"][0])
+            indices = (root / "out" / "pixels" / "mouths.pic.indices.u8").read_bytes()
+            self.assertEqual(indices[:3], bytes([1, 1, 0]))
+            self.assertEqual(len(indices), 6 * 48 * 35)
+            self.assertFalse((root / "out" / "graphics" / "mouths.pic.png").exists())
+
     def test_cli_unknown_picture_variant_keeps_raw_and_marks_unsupported(self):
         image = make_file_disk(b"unknown")
         image[900 * 512 + 433:900 * 512 + 441] = b"load.pic"

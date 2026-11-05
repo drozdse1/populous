@@ -481,8 +481,12 @@ The source-documented full pictures are `qaz.pic`, `demo.pic`, `lord.pic` (four
 planes) and `load.pic` (five planes), 320x200, plane-major. `lord.pic` and
 `load.pic` carry RGB12 palette words at the end. Unknown picture variants retain
 raw bytes and, when the plane layout is known, indices without inventing colours.
-`font.dat` and `mouths.pic` are preserved raw because this exporter does not
-verify their rendering formats. Level entries retain eight bytes and a BE16
+`mouths.pic` (5040 bytes) is six 48x35 mouth frames as `_read_mouth`/
+`_draw_mouth` use them (asm:16668-16690, 19894-19922): 0x348 bytes per frame,
+each row 6 bytes of plane 0, 1, 2, 3, MSB left; exported as frame-major indices
+and a 288x35 sheet in the `lord.pic` palette (the screen it is drawn on). Frame
+0 matches `lord.pic` pixel for pixel at byte 0x12, y 0x87, where the game draws
+it. `font.dat` is preserved raw (the port reads it as `_font_data`). Level entries retain eight bytes and a BE16
 word, not guessed semantic labels or campaign maps. These are static extractions,
 not complete animation reconstruction, copper effects or a complete Amiga renderer.
 The playable renderer consumes the exported indices and keep masks directly.
@@ -877,9 +881,10 @@ and the game continues silently.
 read, rest skipped), 104 drumkit entries (period, length, volume = priority,
 sample, repeat word), 12 sample lengths and 73046 bytes of PCM, plus a final
 word. The loader rejects any file not consumed exactly or with indices outside
-the original buffers. `gwords` (79076 bytes, 9 speech samples) is extracted and
-validated but unused: it is the `_won_conquest` lord speech (asm:14503-14765),
-whose lord/mouth sequence is not ported.
+the original buffers. `gwords` (79076 bytes, 104 drumkit entries, 9 speech
+samples; entries 0..9 are the words) is the `_won_conquest` lord speech: loaded
+in place of `gmusic1` while the lord screen is shown, played on channel 2 (see
+Game end), then `gmusic1` is loaded again (asm:14745-14756).
 
 What plays (all faithful to the 50 Hz vbi, asm:19620-19672):
 
@@ -960,6 +965,8 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
 - After the game ends the end screen appears; a left click on its requester
   button (as `_check_cancel(button,0)`) or, as a host convenience, any key
   except Escape continues (key repeats are ignored), Escape still quits.
+- After a conquest win the lord screen follows; any left click continues to
+  the world selection, Escape still quits.
 
 The opponent independently settles, grows, explores, merges and fights. Flatten
 plots to encourage settlement, wait for population/mana, and lower the four
@@ -990,21 +997,54 @@ Continuing (see Controls):
 
 - conquest win (an original `--level`/`--code` start): `_won_conquest`
   (asm:14460-14491) advances `_level_number` by `score/5000 + 1`, rounds up to
-  a multiple of 5 and caps at 2470; winning 2470 wraps to world 0. The box shows
-  `WELL DONE <rank> YOU CONQUERED` and `<old> NOW BATTLE AT <new code>` before
-  the click; after the click the world selection screen opens with `_message`
-  set to the next world's code (asm:14492-14501, 14766-14772), and START GAME
-  starts it through the normal reset;
+  a multiple of 5 and caps at 2470; winning 2470 wraps to world 0. After the
+  click the lord screen (below) is shown; after its click the world selection
+  screen opens with `_message` set to the next world's code (asm:14492-14501,
+  14766-14772), and START GAME starts it through the normal reset;
 - conquest loss: the same world again;
 - synthetic scenarios are no conquest: the selected scenario restarts.
 
 Each start re-derives `_level_number`/`_in_conquest` from the selected world and
 clears `_score`. The box is the original `_requester(d_screen,16,16,0x120,
-0xa6,button)` frame with its single button (asm:14340-14385). Port deviation:
-the conquest-win lines, shown on the lord screen after the click in the
-original (x 8, y 0xb2/0xba), are shown before it on a cleared strip at y
-0x98/0xa0 so that they do not cover the button. Not ported: the lord/mouth
-animation, speech and music, and the end screen in the diagnostic view.
+0xa6,button)` frame with its single button (asm:14340-14385), with only the
+original rows. Not ported: the end screen in the diagnostic view.
+
+### Lord screen
+
+`_won_conquest` (asm:14503-14765, `core_lord_*` in `populous_prg.c`) after a
+conquest win, the game frozen until a left click (Escape still quits; other
+keys and buttons are ignored, as the loop reads only `_left_button`):
+
+- `_music_off`/`_effect_off` saved and cleared (no music, heartbeat or effects),
+  `_kill_effect(0,4)`;
+- `_read_lord`: `lord.pic` from the data directory (`POPULOUS_DATA_DIR`, else
+  `<assets>/raw`): 0x7d00 bytes of four plane-major planes into the screen, 16
+  BE16 RGB12 words into `_tcmap[0..15]`. If it fails, `_level_number` returns to
+  the won world, `_message` is emptied (asm:14762-14765) and world selection
+  opens directly (showing GENESIS);
+- `_read_mouth` (`mouths.pic`), `gwords` loaded, `_seed` = old world (then
+  `___newrand` for its name);
+- at x 8, y 0xb2/0xba with `___text`: `WELL DONE <rank> YOU CONQUERED ` and
+  `<old world or GENESIS> NOW BATTLE AT <next>` (`_con_text` ranks by
+  next world/250, LAB_52224..5222C), or after 2470 `WELL DONE YOU HAVE
+  CONQUERED EVIL` / `THE BATTLE IS OVER BUT TRY SHISODING` (LAB_52230/52234);
+- the loop, one pass per 4 vertical blanks: pass counter 10 plays word 0 on
+  channel 2, then when channel 2 is idle `_words[rank*2]` and
+  `_words[rank*2+1]` (-1 none); after 250 passes it starts again. After
+  2470: `_end_words` 0,1,3,5,6 at passes 10..14 (each when channel 2 is idle),
+  mouth frame 5 at byte 0x10, y 0x4b at pass 16, restart after 200. Each pass
+  draws the mouth frame at byte 0x12, y 0x87 (35 rows); while channel 2 plays
+  the frame bounces 0,1,2,3,4,3,..; idle passes reset it to 0;
+- the click: `_kill_effect(0,4)`, `gmusic1` again, `_music_off`/`_effect_off`
+  restored, world selection.
+
+Port deviations: the picture uses the `lord.pic` palette and the pointer the
+gameplay `_palette` (the original's `_tcmap[16..31]`); the HUD rows below y 200
+are black but for `CLICK TO CONTINUE, ESC QUIT`. A short `lord.pic` also counts
+as failed (the original checks only `Open`); without `mouths.pic` the mouth is
+not drawn (the original would copy stale `_map_steps`), and the frames are kept
+in their own buffer instead of the A4 `_map_steps`. The 4-`_waittof` pass is
+4 of the port's 50 Hz vbi calls.
 
 ## World selection
 
@@ -1111,7 +1151,9 @@ boundaries/unaligned access, map separation, all eight start populations and
 occupancy, deterministic reset, renderer output, SDL event handling, pause,
 scroll limits, scaled mouse coordinates, inert powers, allocation-failure
 cleanup, repeated Escape/quit, CLI failure propagation and the sound triggers
-(effect ids to drumkit samples, priorities, heartbeat, music beats, toggles).
+(effect ids to drumkit samples, priorities, heartbeat, music beats, toggles)
+and the lord screen (picture/palette, text, mouth frames per pass, `gwords`
+words on channel 2, click to world selection, `_read_lord` failure).
 `test-audio` covers the mixer (period to rate, volume, panning, one-shot,
 cycles, loops, queues), the `_load_sound` parser and the no-device path.
 These and `test-graphics` are included

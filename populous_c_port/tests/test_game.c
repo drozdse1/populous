@@ -12006,6 +12006,42 @@ static void test_requesters(void)
     _closeall(); SDL_Quit();
 }
 
+/* lord.pic: colour (x/8+y)&15, palette lord_fixture_rgb(i); mouths.pic
+ * frame k all colour k+1. gwords/gmusic1 copied from the export if present. */
+static uint16_t lord_fixture_rgb(int i) { return (uint16_t)((i*7&15) << 8 | (15-i) << 4 | i); }
+static int copy_raw_sound(const char *name)
+{
+    char path[4160]; snprintf(path,sizeof path,"%s/raw/%s",POPULOUS_DEFAULT_ASSET_DIR,name);
+    FILE *in = fopen(path,"rb"); if (!in) return 0;
+    static uint8_t bytes[0x40000]; size_t count = fread(bytes,1,sizeof bytes,in); fclose(in);
+    snprintf(path,sizeof path,"%s/raw",test_data_directory); mkdir(path,0700);
+    snprintf(path,sizeof path,"%s/raw/%s",test_data_directory,name);
+    FILE *out = fopen(path,"wb"); assert(out && fwrite(bytes,1,count,out) == count && !fclose(out));
+    return 1;
+}
+static int write_lord_fixture(void)
+{
+    static uint8_t lord[32032], mouths[5040];
+    for (int p = 0; p < 4; ++p) for (int b = 0; b < 8000; ++b) lord[p*8000+b] = (((b%40 + b/40) & 15) >> p & 1) ? 0xff : 0;
+    for (int i = 0; i < 16; ++i) { lord[32000+i*2] = (uint8_t)(lord_fixture_rgb(i) >> 8); lord[32001+i*2] = (uint8_t)lord_fixture_rgb(i); }
+    for (int k = 0; k < 6; ++k) for (int r = 0; r < 35; ++r) for (int p = 0; p < 4; ++p)
+        memset(mouths + k*840 + r*24 + p*6, ((k+1) >> p & 1) ? 0xff : 0, 6);
+    const struct { const char *name; uint8_t *data; size_t size; } files[] = {{"lord.pic",lord,sizeof lord},{"mouths.pic",mouths,sizeof mouths}};
+    for (int f = 0; f < 2; ++f) {
+        char path[512]; snprintf(path,sizeof path,"%s/%s",test_data_directory,files[f].name);
+        FILE *out = fopen(path,"wb"); assert(out && fwrite(files[f].data,1,files[f].size,out) == files[f].size && !fclose(out));
+    }
+    return copy_raw_sound("gwords") & copy_raw_sound("gmusic1");
+}
+static void remove_lord_fixture(void)
+{
+    const char *names[] = {"lord.pic","mouths.pic","raw/gwords","raw/gmusic1","raw"};
+    for (int n = 0; n < 5; ++n) {
+        char path[512]; snprintf(path,sizeof path,"%s/%s",test_data_directory,names[n]);
+        if (n < 4) unlink(path); else rmdir(path);
+    }
+}
+
 /* Result -> stats once -> click/key -> next world (asm:14386-14402, 14460-14491). */
 static void test_end_transition(void)
 {
@@ -12013,6 +12049,7 @@ static void test_end_transition(void)
     assert(SDL_Init(SDL_INIT_VIDEO) == 0);
     write_level_fixture(1, 1);
     write_font_fixture();
+    write_lord_fixture();
     SDL_Event key = {.type = SDL_KEYDOWN}, click = {.type = SDL_MOUSEBUTTONDOWN};
     key.key.keysym.sym = SDLK_x; click.button.button = SDL_BUTTON_LEFT;
     /* Conquest win. */
@@ -12024,7 +12061,6 @@ static void test_end_transition(void)
     int finished, next = core_next_level(10, score, &finished);
     assert(core_end_next == next && !finished && next > 10 && !(next % 5));
     char code[16]; core_code(code, core_code_rand(next));
-    assert(strstr(core_end_conquest[1], code));
     uint8_t stopped[sizeof prg_a4_area]; memcpy(stopped, prg_a4_area, sizeof stopped);
     game_tick(); assert(!memcmp(stopped, prg_a4_area, sizeof stopped));   /* finished: no tick */
     key.key.repeat = 1; game_handle_event(&key); key.key.repeat = 0;
@@ -12032,7 +12068,13 @@ static void test_end_transition(void)
     SDL_Event escape = key; escape.key.keysym.sym = SDLK_ESCAPE;
     game_handle_event(&escape); assert(prg_quit && core_result == 1); prg_quit = 0;
     game_handle_event(&key);
-    /* _won_conquest: _show_world with the next world's code (asm:14492-14501, 14766-14772). */
+    /* _won_conquest: the lord screen first (asm:14503-14765, test_lord_screen);
+     * keys other than Escape keep it, a left click leaves it. */
+    assert(core_lord.shown && !core_req.kind && core_result == 1 && !memcmp(core_message, code, strlen(code)+1));
+    game_handle_event(&key); game_handle_event(&escape); assert(prg_quit && core_lord.shown); prg_quit = 0;
+    screen_click(160,100,SDL_BUTTON_RIGHT); assert(core_lord.shown);
+    screen_click(160,100,SDL_BUTTON_LEFT); assert(!core_lord.shown);
+    /* Then _show_world with the next world's code (asm:14492-14501, 14766-14772). */
     assert(core_req.kind == CORE_REQ_WORLD && core_world.origin == CORE_WORLD_WON && core_world.shown &&
            !strcmp(core_message, code) && core_world.level == next && core_result == 1);
     world_ok_click();
@@ -12042,7 +12084,7 @@ static void test_end_transition(void)
      * button (_check_cancel(button,0), asm:14370-14385); a click elsewhere
      * or with another button keeps the end screen. */
     end_kill(player);
-    assert(!strcmp(core_end_row(0), "GAME LOST") && core_end_next == -1 && !core_end_conquest[0][0]);
+    assert(!strcmp(core_end_row(0), "GAME LOST") && core_end_next == -1);
     game_handle_event(&click); assert(core_result && core_end_shown);
     core_end_button_layout(0);
     assert(!strcmp(core_rec_text(core_end_button), "TRY IT AGAIN") && core_rec_w(core_end_button,0) == 96 &&
@@ -12056,14 +12098,15 @@ static void test_end_transition(void)
     /* The last world wraps to 0 (asm:14482-14491). */
     assert(game_reset_start((StartSelection){START_ORIGINAL, 494}));
     end_kill(1);
-    assert(core_end_next == 0 && core_end_finished && strstr(core_end_conquest[0], "EVIL"));
-    end_button_click();
+    assert(core_end_next == 0 && core_end_finished);
+    end_button_click(); assert(core_lord.shown && core_lord.finished);
+    screen_click(160,100,SDL_BUTTON_LEFT);
     assert(core_req.kind == CORE_REQ_WORLD && !core_world.level); world_ok_click();
     assert(current_start.kind == START_ORIGINAL && !current_start.number && !A4_WORD(0xae7e));
     /* Synthetic scenarios are not conquest: restart them. */
     assert(game_reset(3));
     end_kill(1);
-    assert(core_end_next == -1 && !core_end_conquest[0][0]);
+    assert(core_end_next == -1);
     game_handle_event(&key);
     assert(!core_result && current_start.kind == START_SYNTHETIC && current_start.number == 3);
     /* A result set without the end path keeps the old gating (no transition). */
@@ -12089,6 +12132,15 @@ static void test_end_transition(void)
         text |= colour != tile;
     }
     assert(text && memcmp(playing, game_pixels, sizeof playing));
+    /* The original end screen only: no _won_conquest lines (they are on
+     * the lord screen); the strip they used matches a lost result's. */
+    uint8_t won_pixels[sizeof game_pixels]; memcpy(won_pixels, game_pixels, sizeof won_pixels);
+    assert(core_end_next >= 0);
+    core_result = 2; draw_original(xoff, yoff); core_result = 1;
+    int nonzero = 0;
+    for (int p = 0x96*320; p < 0xaa*320; ++p) { assert(won_pixels[p] == game_pixels[p]); nonzero |= won_pixels[p]; }
+    assert(nonzero);
+    draw_original(xoff, yoff);
     /* Corners and edges of the 16,16,0x120,0xa6 frame; "NEW GAME" button
      * tiles 21,22..,23 at x 112..207 (x2 = 112+(8+4)*8) on the bottom row y 176. */
     assert_tile(16,16,12); assert_tile(32,16,13); assert_tile(288,16,14);
@@ -12101,6 +12153,7 @@ static void test_end_transition(void)
     snprintf(path, sizeof path, "%s/level.dat", test_data_directory); assert(!unlink(path));
     assert(game_reset(0) && !game_font_loaded);
     copy_real_font();
+    remove_lord_fixture();
     _closeall(); SDL_Quit();
 }
 
@@ -12342,6 +12395,175 @@ static void test_sound(void)
     core_free_all_sounds();
     assert(!core_PlaySound(0x4a,2) && !audio_busy(2));
     SDL_Quit();
+}
+
+/* Four _waittof per loop pass (asm:14740-14743), then the mouth and the next pass. */
+static void lord_pass(void) { for (int v = 0; v < 4; ++v) core_lord_vblank(); }
+/* Let channel 2's word finish in the silent mixer. */
+static void lord_drain(void)
+{
+    static int16_t out[2*4096];
+    for (int k = 0; k < 64 && audio_busy(2); ++k) audio_mix(out,4096,8000);
+    assert(!audio_busy(2));
+}
+static int lord_pixel(int x, int y) { return core_lord.screen[y*320+x]; }
+static uint32_t lord_argb(int i)
+{
+    uint16_t w = lord_fixture_rgb(i);
+    return 0xff000000u | (uint32_t)((w>>8)&15)*17 << 16 | (uint32_t)((w>>4)&15)*17 << 8 | (uint32_t)(w&15)*17;
+}
+
+/* _won_conquest lord screen asm:14503-14765: _read_lord/_read_mouth,
+ * the _con_text lines, _draw_mouth and the gwords speech on channel 2. */
+static void test_lord_screen(void)
+{
+    if (getenv("POPULOUS_TEST_REAL_DATA")) return;
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    write_level_fixture(1, 1);
+    write_font_fixture();
+    int sounds = write_lord_fixture();
+    SDL_Event key = {.type = SDL_KEYDOWN}; key.key.keysym.sym = SDLK_x;
+    assert(game_reset_start((StartSelection){START_ORIGINAL, 2}));
+    audio_close();   /* the mixer moves only in lord_drain */
+    end_kill(1);
+    int finished, next = core_next_level(10, (int32_t)A4_LONG(0xae72), &finished);
+    char code[16]; core_code(code, core_code_rand(next));
+    int16_t was_music = music_off, was_effect = effect_off;
+    game_handle_event(&key);
+    assert(core_lord.shown && !core_req.kind && !core_lord.finished && core_lord.rank == next/250 && core_lord.c == 1);
+    assert(!music_off && !effect_off && left_button == 2 && A4_WORD(0xae7e) == next && !strcmp(core_message, code));
+    assert(seed == core_code_rand(10));   /* asm:14518: _seed = old world, then ___newrand */
+    if (sounds) assert(no_sounds == 104 && !audio_busy(2));
+    /* Picture and palette: plane-major colour (x/8+y)&15 away from text and mouth. */
+    for (int y = 0; y < 0xb2; ++y) for (int x = 0; x < 320; ++x)
+        if (!(x >= 144 && x < 192 && y >= 0x87 && y < 0x87+35)) assert(lord_pixel(x,y) == ((x/8 + y) & 15));
+    for (int i = 0; i < 16; ++i) assert(core_lord.palette[i] == lord_fixture_rgb(i));
+    /* The lines at x 8, y 0xb2/0xba (asm:14531-14582): "WELL DONE <rank> YOU CONQUERED " and
+     * "<old world> NOW BATTLE AT <next>", over the picture as by ___text. */
+    static uint8_t expected[320*200];
+    for (int pixel = 0; pixel < 320*200; ++pixel) expected[pixel] = (uint8_t)((pixel%320/8 + pixel/320) & 15);
+    char line[2][48], old[16]; core_code(old, core_code_rand(10));
+    snprintf(line[1], 48, "%s NOW BATTLE AT %s", old, code);
+    snprintf(line[0], 48, "WELL DONE %s YOU CONQUERED ", "MORTAL");
+    if (next/250 == 0) {
+        amiga_text(expected, 8, 0xb2, line[0]); amiga_text(expected, 8, 0xba, line[1]);
+        assert(!memcmp(core_lord.screen + 0xb2*320, expected + 0xb2*320, 16*320));
+        uint8_t plain[16*320];
+        for (int pixel = 0; pixel < 16*320; ++pixel) plain[pixel] = (uint8_t)((pixel%320/8 + 0xb2 + pixel/320) & 15);
+        assert(memcmp(core_lord.screen + 0xb2*320, plain, sizeof plain));
+    }
+    /* The render: lord _tcmap for the picture, gameplay colours kept for the pointer. */
+    game_render();
+    assert(prg_screen->chunky_buffer[20*320+300] == lord_argb(9) && prg_screen->chunky_buffer[0] == lord_argb(0));
+    for (int i = 0; i < 16; ++i) { uint16_t w = graphics_palette[i];
+        assert(prg_screen->palette[i] == (0xff000000u | (uint32_t)((w>>8)&15)*17 << 16 | (uint32_t)((w>>4)&15)*17 << 8 | (uint32_t)(w&15)*17)); }
+    /* No simulation while shown. */
+    uint8_t stopped[sizeof prg_a4_area]; memcpy(stopped, prg_a4_area, sizeof stopped);
+    game_tick(); assert(!memcmp(stopped, prg_a4_area, sizeof stopped));
+    /* Passes 1..9 idle at frame 0 (mouth frame 0 = colour 1 at byte 0x12, y 0x87). */
+    core_lord_vblank(); core_lord_vblank(); core_lord_vblank();
+    assert(lord_pixel(144,0x87) == ((18 + 0x87) & 15));
+    core_lord_vblank();
+    assert(lord_pixel(144,0x87) == 1 && lord_pixel(191,0x87+34) == 1 && lord_pixel(192,0x87) == ((24+0x87)&15) && core_lord.c == 2);
+    while (core_lord.c < 10) { lord_pass(); assert(lord_pixel(150,0x90) == 1 && core_lord.f == 0); }
+    lord_pass();   /* c 10: word 0 on channel 2 unconditionally */
+    assert(core_lord.c == 11);
+    if (!sounds) { puts("lord: extracted gwords absent, speech skipped"); goto leave; }
+    assert(sound_playing(2,0) && !audio_busy(0) && !audio_busy(1) && !audio_busy(3));
+    /* While channel 2 talks the mouth bounces 0..4 (asm:14748-14757). */
+    static const int frames[] = {0,1,2,3,4,3,2,1,0,1};
+    for (size_t k = 0; k < sizeof frames/sizeof frames[0]; ++k) {
+        lord_pass();
+        assert(lord_pixel(160,0x90) == frames[k]+1 && core_lord.c == 11);
+    }
+    /* Then _words[rank*2], _words[rank*2+1] when channel 2 is idle (asm:14670-14705). */
+    lord_drain(); int f = core_lord.f;
+    lord_pass();
+    assert(core_lord.f == f && core_lord.c == 12);
+    int16_t first = core_words[next/250*2], second = core_words[next/250*2+1];
+    assert(next/250 != 0 || (first == 9 && second == -1));
+    assert(sound_playing(2,first));
+    lord_drain(); lord_pass();
+    assert(core_lord.c == 13 && (second < 0 ? !audio_busy(2) : sound_playing(2,second)));
+    lord_drain();
+    lord_pass();   /* draws the last speech frame, then resets -108(A5) to 0 */
+    for (int k = 0; k < 237; ++k) { lord_pass(); assert(lord_pixel(160,0x90) == 1 && !audio_busy(2)); }
+    assert(core_lord.c == 251); lord_pass(); assert(core_lord.c == 1);   /* > 250: again from 0 */
+leave:
+    /* The click: gmusic1 back, sound switches restored, _show_world with the next world. */
+    screen_click(10,10,SDL_BUTTON_LEFT);
+    assert(!core_lord.shown && core_req.kind == CORE_REQ_WORLD && core_world.origin == CORE_WORLD_WON &&
+           !strcmp(core_message, code) && core_world.level == next && left_button == 2);
+    assert(music_off == was_music && effect_off == was_effect);
+    for (int ch = 0; ch < 4; ++ch) assert(!audio_busy(ch));
+    if (sounds) assert(no_sounds == 104 && seqlen == 8);
+    world_ok_click(); assert(!core_req.kind && A4_WORD(0xae7e) == next && current_start.number == next/5);
+
+    /* The last world (finished, asm:14482-14491): "CONQUERED EVIL", _end_words
+     * 0,1,3,5,6 at passes 10..14, mouth frame 5 at byte 0x10, y 0x4b at pass 16. */
+    assert(game_reset_start((StartSelection){START_ORIGINAL, 494}));
+    end_kill(1); game_handle_event(&key);
+    assert(core_lord.shown && core_lord.finished && !A4_WORD(0xae7e) && !strcmp(core_message, "SHISODING") && !seed);
+    memcpy(expected, core_lord.screen, sizeof expected);
+    for (int pixel = 0xb2*320; pixel < 0xc2*320; ++pixel) expected[pixel] = (uint8_t)((pixel%320/8 + pixel/320) & 15);
+    amiga_text(expected, 8, 0xb2, "WELL DONE YOU HAVE CONQUERED EVIL");
+    amiga_text(expected, 8, 0xba, "THE BATTLE IS OVER BUT TRY SHISODING");
+    assert(!memcmp(core_lord.screen, expected, sizeof expected));
+    while (core_lord.c < 10) lord_pass();
+    for (int w = 0; w < 5 && sounds; ++w) {
+        lord_pass(); assert(core_lord.c == 11+w && sound_playing(2,core_end_words[w]));
+        if (w < 4) { lord_pass(); assert(core_lord.c == 11+w); }   /* busy: waits (c 15 no longer does) */
+        lord_drain();
+    }
+    if (sounds) {
+        assert(lord_pixel(128,0x4b) == ((16+0x4b)&15));
+        lord_pass(); assert(core_lord.c == 16 && lord_pixel(128,0x4b) == ((16+0x4b)&15));
+        lord_pass(); assert(core_lord.c == 17 && lord_pixel(128,0x4b) == 6 && lord_pixel(175,0x4b+34) == 6);
+        while (core_lord.c <= 200) lord_pass();
+        lord_pass(); assert(core_lord.c == 1);
+    }
+    screen_click(10,10,SDL_BUTTON_LEFT);
+    assert(core_req.kind == CORE_REQ_WORLD && !core_world.level); world_ok_click();
+
+    /* _read_lord fails: _level_number back, empty _message (asm:14762-14765),
+     * then _show_world directly ("GENESIS" for the empty name). */
+    char path[512]; snprintf(path, sizeof path, "%s/lord.pic", test_data_directory); assert(!unlink(path));
+    assert(game_reset_start((StartSelection){START_ORIGINAL, 2}));
+    end_kill(1); game_handle_event(&key);
+    assert(!core_lord.shown && core_req.kind == CORE_REQ_WORLD && A4_WORD(0xae7e) == 10 &&
+           !strcmp(core_message, "GENESIS") && music_off == was_music && effect_off == was_effect);
+    world_ok_click();
+    /* A short lord.pic counts as failed too (port: no stale w_screen). */
+    FILE *file = fopen(path, "wb"); assert(file && fwrite(path, 1, 100, file) == 100 && !fclose(file));
+    assert(game_reset_start((StartSelection){START_ORIGINAL, 2}));
+    end_kill(1); game_handle_event(&key);
+    assert(!core_lord.shown && core_req.kind == CORE_REQ_WORLD && A4_WORD(0xae7e) == 10);
+    world_ok_click();
+    /* Without mouths.pic the mouth is not drawn. */
+    write_lord_fixture();
+    snprintf(path, sizeof path, "%s/mouths.pic", test_data_directory); assert(!unlink(path));
+    assert(game_reset_start((StartSelection){START_ORIGINAL, 2}));
+    end_kill(1); game_handle_event(&key);
+    assert(core_lord.shown && !core_lord.mouths_loaded);
+    lord_pass(); assert(lord_pixel(144,0x87) == ((18 + 0x87) & 15));
+    screen_click(10,10,SDL_BUTTON_LEFT); world_ok_click();
+    remove_lord_fixture();
+    /* Extracted data: mouth frame 0 is the picture's own closed mouth at
+     * _draw_mouth's byte 0x12, y 0x87 (layout check of both loaders). */
+    char saved[4096]; snprintf(saved, sizeof saved, "%s", getenv("POPULOUS_DATA_DIR"));
+    char raw[4160]; snprintf(raw, sizeof raw, "%s/raw", POPULOUS_DEFAULT_ASSET_DIR);
+    assert(!setenv("POPULOUS_DATA_DIR", raw, 1));
+    if (core_read_lord()) {
+        core_read_mouth(); assert(core_lord.mouths_loaded);
+        assert(core_lord.palette[0] == 0x000);
+        memcpy(expected, core_lord.screen, sizeof expected);
+        core_draw_mouth(0x12,0x87,0x23,0); assert(!memcmp(expected, core_lord.screen, sizeof expected));
+        core_draw_mouth(0x12,0x87,0x23,4); assert(memcmp(expected, core_lord.screen, sizeof expected));
+    } else puts("lord: extracted lord.pic absent, layout check skipped");
+    assert(!setenv("POPULOUS_DATA_DIR", saved, 1));
+    snprintf(path, sizeof path, "%s/level.dat", test_data_directory); assert(!unlink(path));
+    copy_real_font();
+    _closeall(); SDL_Quit();
 }
 
 int main(int argc, char **argv)
@@ -12671,6 +12893,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_original_reset();
     test_start_reset();
     test_end_transition();
+    test_lord_screen();
     test_world_screen();
     test_requesters();
     test_original_graphics_output();

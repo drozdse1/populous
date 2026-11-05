@@ -238,7 +238,7 @@ Belege: `populous_c_port/populous_prg.c:1030-1062`, `:1509-1543`;
 - [x] Kampfframes nach beiden Verlustberechnungen und vor dem Abschluss weiterschalten: originale Dreierzyklen 70/130/134/138 nach roher Heading-Praesenz; exakt null ueberspringen, negative Vor-Clamp-Population beachten. Zeichnen nutzt gespeicherte gueltige Kampfframes ohne Zustandsmutation.
 - [x] Beim aktuellen-Zellen- und Zielzellen-Kampfeintritt beide Frames nach den Kampfverknuepfungen initialisieren; keine vorgezogenen Verluste oder RNG. Exakt-null-Stadtniederlage im Heading-Pfad verwendet dadurch den originalen Kampf-Frame-Fallback fuer die Belohnung.
 - [ ] **Teilweise:** Bewegungsinterpolation, weitere Sonderfiguren-/Effektanimationen und gemischte Darstellungsflags vervollstaendigen. Fuer ungueltige/Legacy-Kampfframes bleibt eine reine Ersatzdarstellung.
-- [ ] **Fehlt:** Mundanimation aus `mouths.pic`, inklusive Frames, Palette und Aufruf-/Anzeigesequenzen.
+- [x] **Erledigt:** Mundanimation aus `mouths.pic` (6 Frames 48x35, `_read_mouth`/`_draw_mouth` asm:16668-16690, 19894-19922; Exporter verifiziert, Frame 0 = `lord.pic` an Byte 0x12/y 0x87) mit `lord.pic`-Palette und der `_won_conquest`-Sequenz (`core_lord_*`).
 - [ ] **Pruefen:** Ueberdeckung, Clipping, Vorderkanten, Sonderterrain, Minimap und Auswahl in allen Hoehen-/Kameralagen anhand von Originalbildern vergleichen.
 - [ ] **Pruefen:** Alle tatsaechlich sichtbaren Palettenwechsel und Sprite-/Bildschirmsonderpfade erfassen und im Renderer abbilden; Hardwareimplementierung siehe separater Abschnitt.
 
@@ -255,7 +255,8 @@ Belege: `populous_c_port/populous_prg.c:1342-1446`, `:1545-1595`;
 ## P2 - Launcher, Intro und Bildschirmablaeufe
 
 - [ ] **Fehlt:** Originale Startauswahl und Mausregionen statt konstanter Auswahl.
-- [ ] **Fehlt:** Lade-/Intro-/Lord-Bilder in die originalen Ablaeufe integrieren; die vier Bilder sind bereits extrahiert.
+- [x] **Erledigt:** `lord.pic` im Lord-Bildschirm nach einem Eroberungssieg (`_read_lord` asm:16631-16663, Fehlerpfad asm:14762-14765).
+- [ ] **Fehlt:** Lade-/Intro-Bilder (`load.pic`, `demo.pic`) in die originalen Ablaeufe integrieren; die Bilder sind bereits extrahiert.
 - [ ] **Teilweise:** Bildloader/-darstellung fuer den Fuenf-Ebenen-/32-Farben-Fall von `load.pic` erweitern, ohne die Vier-Bit-Spielgrafik stillschweigend falsch zu interpretieren.
 - [ ] **Fehlt:** Introablauf, zugehoerige Sprites/Texte und Uebergaenge gemaess Launcher-Quellcode.
 - [ ] **Pruefen:** Bildschirmwechsel, Paletten, Laden, Abbruch und Rueckkehr zwischen Intro, Auswahl, Spiel und Ergebnis komplett verfolgen.
@@ -273,7 +274,8 @@ Belege: `populous_c_port/populous_init.c:265-290`, `:363-378`;
 - [x] **Erledigt:** Levelcodes `_code`/`_decode`, `GENESIS`, CLI `--code NAME`.
 - [x] **Erledigt:** Fortschritt nach Sieg (`_won_conquest`: naechster Level, Obergrenze 2470, Umlauf auf 0), Wiederholung nach Niederlage, Neustart bei synthetischen Szenarien.
 - [x] **Erledigt:** Weltauswahl `_show_world` mit Namenseingabe `_get_name`, `level.dat`-Parameterzeilen, GENESIS, "NO SUCH WORLD", Seed-Eingabe; geoeffnet per `--conquest`, Spieloptionen "Eroberung" und nach einem Eroberungssieg (naechste Welt vorbelegt).
-- [ ] **Fehlt:** Lord-/Mund-Animation, Lord-Sprache (`gwords`), Endbildschirm in der Diagnoseansicht, "Disk einlegen"-Meldung bei fehlender `level.dat`.
+- [x] **Erledigt:** Lord-Bildschirm von `_won_conquest` (asm:14503-14765): Bild, `_con_text`-Zeilen (aus dem Endbildschirm dorthin verschoben, Endbildschirm wieder original), Mundanimation, Sprache `gwords`, Klick zur Weltauswahl.
+- [ ] **Fehlt:** Endbildschirm in der Diagnoseansicht, "Disk einlegen"-Meldung bei fehlender `level.dat`.
 - [ ] **Pruefen:** Gleichzeitige Ausloeschung und Aufgabe gegen Referenzlaeufe; Punktestand gegen einen echten Amiga-Lauf; alle originalen Spiel-/Optionsmodi.
 
 **Abhaengigkeiten:** Original-UI (Requester), Audio, Lord-Bilder.
@@ -294,7 +296,8 @@ Belege: `populous_c_port/populous_prg.c` (`core_end_stats`, `core_code`,
 - [x] **Erledigt:** `audio.c`: Paula-Mixer (4 Kanaele, 8-Bit signed, 3546895/Periode, Lautstaerke 0..64, Zyklen/Schleifen, Warteschlange, Stereo 0/3 links, 1/2 rechts); ohne Audiogeraet stumm und lauffaehig.
 - [x] **Erledigt:** Effekte 0x42..0x4d auf Kanal 2+3, Kampf 0x43/0x44 und Feuer 0x46 ueber `_move_sprite`-Flags, Herzschlag 0x47/0x48 auf Kanal 0, Prioritaeten (`_Soundpri`), Beben-Abbruch `_kill_effect(2,4)`, Musik `_PlayMeas` (`gmusic1`), Toolbar-Schalter (`_music_off`/`_effect_off` != 0 = an, Einschalten stoppt alle Kanaele).
 - [ ] **Abweichung:** Zyklenzahl der zweiten `_PlaySound`-Anforderung liegt im Original ausserhalb der Argumente (undefiniertes Stackwort); der Port nutzt das Wiederholwort (+6) des Drumkit-Eintrags.
-- [ ] **Fehlt:** Lord-Sprache (`gwords`, asm:14503-14765) mit der Lord-/Mund-Animation; Intro-Musik `popsam` (`populous_main`).
+- [x] **Erledigt:** Lord-Sprache `gwords` (asm:14503-14765): Bank statt `gmusic1` geladen, `_words`/`_end_words` auf Kanal 2 per `_check_effect(2)` synchronisiert, danach `gmusic1` und die Schalter zurueck.
+- [ ] **Fehlt:** Intro-Musik `popsam` (`populous_main`).
 - [ ] **Pruefen:** Timing, Lautstaerken und Klang gegen einen echten Amiga bzw. Emulator hoeren; Vbi wird im Port per `SDL_GetTicks` getaktet.
 
 **Abnahme:** Verifizierte Originaldaten werden ereignis- und zeitgerecht abgespielt;
@@ -303,7 +306,7 @@ kein erfundener Ersatzsound gilt als abgeschlossene Audiomigration.
 Belege: `populous_c_port/audio.c`, `populous_c_port/populous_prg.c`
 (`core_PlaySound`, `core_PlayMeas`, `core_load_sound`, `core_vbi_audio`,
 `core_tempo_pass`), `populous_c_port/extract_assets.py` (`sound_values`),
-`populous_c_port/tests/test_audio.c`, `tests/test_game.c` (`test_sound`);
+`populous_c_port/tests/test_audio.c`, `tests/test_game.c` (`test_sound`, `test_lord_screen`);
 `src/populous_prg.asm:564-614`, `:1744-1781`, `:3434-3454`, `:13966-13972`,
 `:19620-19672`, `:20307-20908`, `:24129-24134`.
 

@@ -74,6 +74,28 @@ def decode_planar(data, width, height, planes):
                      for plane in range(planes)) for pixel in range(width * height))
 
 
+# _read_mouth reads 0x13b0 bytes (src/populous_prg.asm:16668-16690); _draw_mouth
+# copies frame*0x348, rows of 6 bytes for planes 0..3 (asm:19894-19922).
+MOUTH_FRAMES, MOUTH_WIDTH, MOUTH_HEIGHT = 6, 48, 35
+
+
+def decode_mouths(data):
+    """Frames of 35 rows; each row is 6 bytes per plane 0..3, MSB left."""
+    row_bytes = MOUTH_WIDTH // 8 * 4
+    if len(data) != MOUTH_FRAMES * MOUTH_HEIGHT * row_bytes:
+        raise ValueError("expected 5040 bytes; unknown mouths.pic variant")
+    frames = []
+    for frame in range(MOUTH_FRAMES):
+        indices = bytearray()
+        for row in range(MOUTH_HEIGHT):
+            base = (frame * MOUTH_HEIGHT + row) * row_bytes
+            for pixel in range(MOUTH_WIDTH):
+                indices.append(sum(((data[base + plane * 6 + pixel // 8] >> (7 - pixel % 8)) & 1) << plane
+                                   for plane in range(4)))
+        frames.append(bytes(indices))
+    return frames
+
+
 def rgba(indices, palette, keep=None, faithful_alpha=True):
     if keep is not None and len(keep) != len(indices):
         raise ValueError("mask length does not match indices")
@@ -284,6 +306,23 @@ def export_assets(adf, output):
                               "format": "plane-major, 8000 bytes/plane, 40 bytes/row, MSB left",
                               "palette": name, "palette_source": f"file offset {pixel_size}, BE16 RGB12" if embedded else reference,
                               "source": reference, "pixel_layout": "row-major indices, one byte/pixel"})
+            elif name == "mouths.pic":
+                frames = decode_mouths(data)
+                artifacts[f"pixels/{name}.indices.u8"] = b"".join(frames)
+                entry.update({"frame_count": MOUTH_FRAMES, "frame_width": MOUTH_WIDTH, "frame_height": MOUTH_HEIGHT,
+                              "frame_bytes": 0x348, "source": "src/populous_prg.asm:16668-16690,19894-19922",
+                              "format": "frame-major rows; per row 6 bytes plane 0, 1, 2, 3; MSB left",
+                              "pixel_layout": "frame-major, then row-major; one byte/pixel"})
+                if "lord.pic" in values["palettes"]:
+                    palette = rgb12(values["palettes"]["lord.pic"])
+                    sheet = bytearray()
+                    for row in range(MOUTH_HEIGHT):
+                        for frame in frames:
+                            sheet += rgba(frame[row * MOUTH_WIDTH:(row + 1) * MOUTH_WIDTH], palette)
+                    artifacts[f"graphics/{name}.png"] = png_rgba(MOUTH_WIDTH * MOUTH_FRAMES, MOUTH_HEIGHT, bytes(sheet))
+                    entry.update({"palette": "lord.pic", "sheet_columns": MOUTH_FRAMES})
+                else:
+                    entry["limitations"].append("lord.pic palette (_tcmap, the screen _draw_mouth draws on) unavailable; no PNG.")
             elif name == "level.dat":
                 values["levels"] = level_values(data)
                 entry.update({"record_count": len(values["levels"]), "record_bytes": 10,
@@ -298,7 +337,7 @@ def export_assets(adf, output):
                               "source": "src/populous_prg.asm:20712-20872",
                               "format": "_load_sound bank: measures, sequence, drumkit, signed 8-bit PCM"})
             else:
-                raise ValueError("Original auxiliary graphics preserved raw; font/mouth layout and palette not verified by this exporter")
+                raise ValueError("Original auxiliary graphics preserved raw; font layout not decoded by this exporter")
         except ValueError as error:
             entry["status"] = "unsupported"
             entry["limitations"].append(str(error))

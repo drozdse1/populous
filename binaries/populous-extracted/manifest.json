@@ -44,6 +44,10 @@
       "sha256": "13a0b22bd77ea5c93b478e2e7e3c0b71ea44a94e4b0848a6fe26e3696226bc24",
       "size": 9338
     },
+    "graphics/mouths.pic.png": {
+      "sha256": "9c510dd6685befc90f19fb0809e95f862cb0e054d65803d2d5c607995e43cc6b",
+      "size": 2360
+    },
     "graphics/qaz.pic.png": {
       "sha256": "48ba4fb219ed3d8e23efa459a9aaee1fd3db6303bbecbbef66c535cdc825f53a",
       "size": 7337
@@ -107,6 +111,10 @@
     "pixels/lord.pic.indices.u8": {
       "sha256": "59242730a39d1fc36c2bf13fab3659ddf1aa1a9b07823c9ee2ed2536b55cadf6",
       "size": 64000
+    },
+    "pixels/mouths.pic.indices.u8": {
+      "sha256": "368e5167edbdaa359ace3a77f2bdcd7bc291f226ffdadf4697e6dce9894136df",
+      "size": 10080
     },
     "pixels/qaz.pic.indices.u8": {
       "sha256": "bff2b6d61c784e8e54fa2d06f695b67e617359b08164e76ac6f73de237068853",
@@ -240,7 +248,7 @@
     },
     "font.dat": {
       "limitations": [
-        "Original auxiliary graphics preserved raw; font/mouth layout and palette not verified by this exporter"
+        "Original auxiliary graphics preserved raw; font layout not decoded by this exporter"
       ],
       "raw": "raw/font.dat",
       "sha256": "cd5bedb77ad978ff40ae0e6a69b636728dc8170bfae399589ad4e697a3b313db",
@@ -2359,13 +2367,20 @@
       "width": 320
     },
     "mouths.pic": {
-      "limitations": [
-        "Original auxiliary graphics preserved raw; font/mouth layout and palette not verified by this exporter"
-      ],
+      "format": "frame-major rows; per row 6 bytes plane 0, 1, 2, 3; MSB left",
+      "frame_bytes": 840,
+      "frame_count": 6,
+      "frame_height": 35,
+      "frame_width": 48,
+      "limitations": [],
+      "palette": "lord.pic",
+      "pixel_layout": "frame-major, then row-major; one byte/pixel",
       "raw": "raw/mouths.pic",
       "sha256": "c22adb2ce0e1aff9b21f7fd01827493876dc099be83061a6bd186a49a7d8c368",
+      "sheet_columns": 6,
       "size": 5040,
-      "status": "unsupported"
+      "source": "src/populous_prg.asm:16668-16690,19894-19922",
+      "status": "verified"
     },
     "qaz.pic": {
       "format": "plane-major, 8000 bytes/plane, 40 bytes/row, MSB left",
