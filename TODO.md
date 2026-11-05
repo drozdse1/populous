@@ -188,17 +188,17 @@ Belege: `populous_c_port/populous_prg.c:803-915`, `:1509-1549`;
 - [ ] **Teilweise:** Originalen Aktionspfad mit Werkzeugwahl, Zielvalidierung, Freigabemasken, Modusbedingungen und Rueckmeldung herstellen. Bestehende Tastaturaktionen erhalten, aber nicht als vollstaendige Toolbar-Migration behandeln.
 - [ ] **Teilweise:** Heben/Senken und Magnet gegen alle Originalzulassungen, Kosten, Ziele und Zustandsbedingungen abgleichen.
 - [x] Gameplay-Erdbeben auf aktuellem Viewport: 2500 Mana, aktive Freigabe 0x08, zwei spaltenweise 9x9-Durchlaeufe mit bedingtem RNG, rekursivem Heben/Senken und lokaler Kartenableitung; Port-Taste Q.
-- [ ] **Teilweise:** Originales Erdbeben-Zittern (20 reine Terrainbilder, -4/-1 Pixel), Sound, Toolbar und Editor-Freimodus migrieren. Keine Ganzbildverschiebung als Originaleffekt ausgeben.
+- [ ] **Teilweise:** Originales Erdbeben-Zittern (20 reine Terrainbilder, -4/-1 Pixel), Sound und Editor-Freimodus migrieren (Toolbar-Icon erledigt). Keine Ganzbildverschiebung als Originaleffekt ausgeben.
 - [x] Gameplay-Vulkan: 10000 Mana, Freigabe 0x40, 100 Spielerpunkte, 165 verschachtelte Hoehenziehungen plus 64 Lavaziehungen, Originalschutz fuer zweimal denselben blauen Anfuehrer und beide Magnetziele; Port-Taste V auf Viewportursprung.
-- [ ] **Teilweise:** Vulkan-Toolbar, Audio, Editor und Original-Nachrichtenzeitpunkt migrieren; Original-Lava erweitert Dirty-Bounds nicht und wird nicht pauschal als Krater/Bewohnerschaden umgedeutet.
+- [ ] **Teilweise:** Vulkan-Audio, Editor und Original-Nachrichtenzeitpunkt migrieren; Original-Lava erweitert Dirty-Bounds nicht und wird nicht pauschal als Krater/Bewohnerschaden umgedeutet.
 - [x] Gameplay-Sumpfkraft: aktive Freigabe, 5000 Mana, 30 Versuche/60 RNG-Ziehungen, Punkte, Block 53 und einmalige Zielwahl ueber Port-Taste S. Originale Vertex-minus-eins-Bytekoordinaten erhalten; Bounds vor Kartenlesezugriff pruefen.
-- [ ] **Teilweise:** Sumpf in Originaltoolbar, Editor-Freimodus und Computer-KI integrieren; Audio fehlt. Diagnose-P darf keine kostenfreien Kraefte freischalten; War-Abbruch behaelt die bewaffnete Zielwahl wie im Original.
+- [ ] **Teilweise:** Sumpf in Editor-Freimodus und Computer-KI integrieren (Toolbar-Icon erledigt); Audio fehlt. Diagnose-P darf keine kostenfreien Kraefte freischalten; War-Abbruch behaelt die bewaffnete Zielwahl wie im Original.
 - [x] Gameplay-Ritter: aktiver Anfuehrer, Freigabe 0x20, 7500 Mana, 150 Spielerpunkte, originale Heading-Zielwahl und Markierung; Port-Taste K. Navigation, Sonderkampfabschluss und kanonische Sprites sind angebunden.
-- [ ] **Teilweise:** Ritter-Toolbar, Audio, Editor-/KI-Ausloesung und vollstaendige Bewegungs-/Kampfparitaet vervollstaendigen.
+- [ ] **Teilweise:** Ritter-Audio, Editor-/KI-Ausloesung und vollstaendige Bewegungs-/Kampfparitaet vervollstaendigen.
 - [x] Gameplay-Flut: aktive Freigabe 0x80, 40000 Mana, 250 Spielerpunkte, globale einmalige Absenkung positiver Hoehen und vollstaendige Kartenableitung ohne RNG; Port-Taste F.
-- [ ] **Teilweise:** Originale Folge-Tick-/Ertrinkensparitaet (insbesondere Kaempfe), Flut-Audio, Toolbar, KI und Editor-Freimodus migrieren.
+- [ ] **Teilweise:** Originale Folge-Tick-/Ertrinkensparitaet (insbesondere Kaempfe), Flut-Audio, KI und Editor-Freimodus migrieren.
 - [x] Gameplay-Armageddon: Freigabe 0x0100, 80000 Mana, 5000 Spielerpunkte, Metadaten aller belegten Datensatzplaetze leeren und Krieg aktivieren; Port-Taste A. Erneute bezahlte Ausloesung im Krieg erlaubt; Folgen erst in Bewohnerticks, manuelle Terrain-/Magneteingabe im Krieg gesperrt.
-- [ ] **Teilweise:** Armageddon-Toolbar, Audio, Editor-/KI-Ausloesung und originale Sonderfiguren-/Ertrinkens-/Endabrechnungsparitaet vervollstaendigen.
+- [ ] **Teilweise:** Armageddon-Audio, Editor-/KI-Ausloesung und originale Sonderfiguren-/Ertrinkens-/Endabrechnungsparitaet vervollstaendigen.
 - [ ] **Fehlt:** Fuer jede Kraft die gesamte Wirkungskette integrieren: Auswahl, Freigabe, Mana/Punkte, Weltveraenderung, Bewohnerfolgen, Animation und spaeter Audio. Ein grafischer Effekt allein erfuellt den Punkt nicht.
 - [ ] **Pruefen:** Originale Tendenz-/Befehlsmodi und Aktionsnachrichten vollstaendig zuordnen; dies bildet auch die spaetere Multiplayer-Grundlage.
 
@@ -226,7 +226,7 @@ Belege: `populous_c_port/populous_prg.c:1030-1062`, `:1509-1543`;
 
 ## P2 - Originalbedienung und Grafik vervollstaendigen
 
-- [ ] **Fehlt:** Toolbar anklickbar machen, Werkzeug-/Tendenz-/Modusicons und deren aktive/gesperrte Zustaende originalgetreu darstellen.
+- [ ] **Teilweise:** Toolbar anklickbar machen (Kraefte-Icons erledigt, `_zoom_map` asm:1942-2042), Werkzeug-/Tendenz-/Modusicons und deren aktive/gesperrte Zustaende originalgetreu darstellen.
 - [ ] **Fehlt:** Originale Manaanzeige, Schild, Bewohner-/Siedlungsabfrage und Informationsanzeigen. `_move_mana` ist Praesentation, nicht die bereits vorhandene Manaerzeugung.
 - [ ] **Fehlt:** Requester, Optionen, Namens-/Texteingabe und originale Dialog-/Rueckkehrpfade.
 - [ ] **Fehlt:** Originalschrift dekodieren und verwenden; eingebettetes `_font_data` und separates Launcher-`font.dat` vergleichen, nicht ungeprueft gleichsetzen.

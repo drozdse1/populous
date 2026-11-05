@@ -575,7 +575,7 @@ char **g_argv = NULL;
  *  [8] Low byte of 16-bit seed offset (added to (battle_number mod 8))
  *
  * Power bitfield (bytes 2/3):
- *   bit0 Earthquake, bit1 Swamp, bit2 Knight, bit3 Volcano, bit4 Flood, bit5 Armageddon
+ *   0x08 Earthquake, 0x10 Swamp, 0x20 Knight, 0x40 Volcano, 0x80 Flood, 0x100 Armageddon
  *
  * Game mode bits (byte 4):
  *   bit0 Water (0=harmful, 1=fatal)
@@ -2948,6 +2948,30 @@ static void _show_the_shield(void) {}
 static void _sculpt(void) {}
 static void _interogate(void) {}
 static void _zoom_map(int16_t d) {}
+/* Power icons of _zoom_map, asm:1830-2042 (jump table asm:2406-2424, cells 0..2).
+ * Either button posts the player's mailbox command; costs, permissions, war and
+ * pause stay with the consumer and the power routines. Swamp alone checks
+ * mana > cost and permission bit 4 here before arming the map target.
+ * Returns whether (sx,sy) hits a power icon; posts only when post is set. */
+static int core_power_icon(int sx, int sy, int post)
+{
+    int c = sx/2 + sy - 32, r = sy - sx/2 + 32;
+    if (sy >= 200 || c > 0x112 || r < 0x92) return 0;
+    int icon = (c-0x60)/16, line = (r-0x90)/16;
+    if (icon < 0 || icon > 2 || line > 2) return 0;
+    if (!post || player < 0 || player > 1) return 1;
+    uint8_t *mailbox = A4_DISP(0x82b6 + player*46);
+    if (icon == 0 && line == 0) { mailbox[0] = 14; mailbox[2] = 4; }
+    else if (icon == 1 && line == 0) { if (!paint_map) { mailbox[0] = 14; mailbox[2] = 3; } }
+    else if (icon == 1 && line == 1) { mailbox[0] = 6; mailbox[1] = (uint8_t)xoff; mailbox[2] = (uint8_t)yoff; }
+    else if (icon == 2 && line == 0) { mailbox[0] = 3; mailbox[1] = (uint8_t)xoff; mailbox[2] = (uint8_t)yoff; }
+    else if (icon == 2 && line == 1) { mailbox[0] = 14; mailbox[2] = 5; }
+    else if (icon == 2 && line == 2) {
+        if ((core_mana(player) > (int32_t)A4_LONG(0x8496) && (A4_WORD(0x82c4+player*46)&0x10)) || paint_map)
+            core_swamp_selected = 1;
+    }
+    return 1;
+}
 static void _do_place_funny(int16_t a) { (void)a; }   /* matches the chunk call */
 
 /* ___ shims (SDL / stdlib backed) */
@@ -3063,6 +3087,8 @@ static void game_handle_event(const SDL_Event *event)
                 return;
             }
         }
+        /* A paused or finished game never consumes mailboxes; drop the post. */
+        if (!diagnostic_view && core_power_icon(sx,sy,!pause && !core_result)) return;
         /* _sculpt asm:7295 / _do_magnet asm:6784: keep camera usable,
          * but reject world input before consuming an armed target. */
         if (pause || core_result || A4_WORD(0xae80)) return;

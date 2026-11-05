@@ -5869,6 +5869,97 @@ static void test_swamp_input(void)
     _closeall(); SDL_Quit();
 }
 
+/* Click the centre of power icon (icon,line) in a 960x768 window. */
+static void power_icon_click(int icon, int line, int button)
+{
+    int c=0x60+16*icon+8, r=0x90+16*line+8;
+    SDL_Event click={.type=SDL_MOUSEBUTTONDOWN};
+    click.button.button=button;
+    click.button.x=(c-r+64)*3; click.button.y=(c+r)/2*3;
+    game_handle_event(&click);
+}
+
+static void test_power_toolbar(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    /* _zoom_map asm:1942-2042: icon, line -> opcode, x, y (-1: viewport). */
+    static const int posts[][5]={{0,0,14,0,4},{1,0,14,0,3},{1,1,6,-1,-1},
+        {2,0,3,-1,-1},{2,1,14,0,5}};
+    for (int owner=0;owner<2;++owner) for (int p=0;p<5;++p)
+    for (int button=0;button<2;++button) {
+        assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,960,768);
+        player=owner; xoff=20; yoff=30;
+        uint8_t *mailbox=A4_DISP(0x82b6+owner*46), *other=A4_DISP(0x82b6+(1-owner)*46);
+        memset(mailbox,0,3); memset(other,0,3);
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        power_icon_click(posts[p][0],posts[p][1],button ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT);
+        assert(mailbox[0]==posts[p][2]);
+        assert(mailbox[1]==(posts[p][3]<0 ? 20 : posts[p][3]));
+        assert(mailbox[2]==(posts[p][4]<0 ? 30 : posts[p][4]));
+        assert(!other[0] && !other[1] && !other[2]);
+        /* Only the three mailbox bytes change; camera and swamp stay put. */
+        memcpy(before+(mailbox-prg_a4_area),mailbox,3);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(xoff==20 && yoff==30 && !core_swamp_selected);
+    }
+    /* Mailbox posts reach the power routines; costs are paid by the consumer. */
+    static const struct { int icon, line; uint16_t permission; int cost; } casts[]={
+        {0,0,0x80,0x84a2},{1,0,0x100,0x84a6},{1,1,0x40,0x849e},{2,0,0x08,0x8492}};
+    for (int k=0;k<4;++k) {
+        assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,960,768);
+        xoff=20; yoff=30; A4_LONG(0x9a02)=200000; A4_WORD(0x82c4)=casts[k].permission;
+        power_icon_click(casts[k].icon,casts[k].line,SDL_BUTTON_LEFT);
+        assert(core_mana(0)==200000);
+        core_consume_terrain_mailboxes();
+        assert(core_mana(0)==200000-(int32_t)A4_LONG(casts[k].cost));
+        assert(!A4_DISP(0x82b6)[0]);
+    }
+    /* Missing permission: posted, consumed, refused by the routine. */
+    assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,960,768);
+    A4_LONG(0x9a02)=200000; A4_WORD(0x82c4)=0;
+    power_icon_click(0,0,SDL_BUTTON_LEFT); core_consume_terrain_mailboxes();
+    assert(core_mana(0)==200000);
+    /* Editor mode suppresses only the Armageddon post (asm:1979). */
+    assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,960,768);
+    paint_map=1; memset(A4_DISP(0x82b6),0,3);
+    power_icon_click(1,0,SDL_BUTTON_LEFT); assert(!A4_DISP(0x82b6)[0]);
+    power_icon_click(0,0,SDL_BUTTON_LEFT); assert(A4_DISP(0x82b6)[0]==14);
+    /* Swamp arms the map target only above cost with bit 4, or in the editor. */
+    for (int gate=0;gate<5;++gate) {
+        assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,960,768);
+        int32_t cost=(int32_t)A4_LONG(0x8496);
+        A4_LONG(0x9a02)=gate==0 ? cost : cost+1; A4_WORD(0x82c4)=gate==1 ? 0xffef : 0x10;
+        if (gate==2) { A4_LONG(0x9a02)=0; A4_WORD(0x82c4)=0; paint_map=1; }
+        if (gate==3) player=2;
+        if (gate==4) pause=1;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        power_icon_click(2,2,SDL_BUTTON_LEFT);
+        assert(core_swamp_selected==(gate==2));
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+    }
+    /* Paused, finished, invalid player and diagnostic view post nothing;
+     * non-power cells keep their former (camera/world) handling. */
+    for (int gate=0;gate<5;++gate) for (int p=0;p<5;++p) {
+        assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,960,768);
+        xoff=20; yoff=30;
+        if (gate==0) pause=1;
+        if (gate==1) core_result=1;
+        if (gate==2) player=2;
+        if (gate==3) player=-1;
+        if (gate==4) diagnostic_view=1;
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        power_icon_click(posts[p][0],posts[p][1],SDL_BUTTON_LEFT);
+        if (gate!=4) assert(!memcmp(before,prg_a4_area,sizeof before));
+        else assert(!A4_DISP(0x82b6)[0] && !A4_DISP(0x82b6+46)[0]);
+    }
+    assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,960,768);
+    memset(A4_DISP(0x82b6),0,3);
+    for (int line=0;line<3;++line) power_icon_click(3,line+3,SDL_BUTTON_LEFT);
+    power_icon_click(0,1,SDL_BUTTON_LEFT); power_icon_click(1,2,SDL_BUTTON_LEFT);
+    assert(!A4_DISP(0x82b6)[0] && !core_swamp_selected);
+    _closeall(); SDL_Quit();
+}
+
 static void test_swamp_render(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
@@ -11465,6 +11556,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_flood_input();
     test_quake_input();
     test_swamp_input();
+    test_power_toolbar();
     test_swamp_render();
     test_original_reset();
     test_start_reset();

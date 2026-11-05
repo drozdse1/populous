@@ -13,7 +13,7 @@ agent-driven inputs at human rates. A human tester's winning strategy is not pro
 All eight synthetic scenarios still start on legal flat vertex terrain with both
 populations. An explicit `--level N` selects original world initialization from
 `level.dat`: level parameters, height generation, woods/rocks and initial inhabitants.
-It does not activate campaign progression or the still-unported powers/AI.
+It does not activate campaign progression.
 `_make_map` derives original block masks and cell altitudes from 65x65 vertex heights.
 The 22-byte A4 peep records drive movement,
 settlement, eight-tick growth/mana, splitting, ordinary combat and outcomes.
@@ -408,8 +408,8 @@ The original `_load_ground` reads gameplay tables from `landN` files, including
 (`src/populous_prg.asm:16468-16514`). Reset validates the selected file before
 changing A4 and installs its actual values plus original initialized tables.
 Missing/invalid files fail startup: there is no invented-rule fallback.
-Audio, campaign, save/load and multiplayer remain absent. The original toolbar
-is decorative; use the keyboard controls shown below the game view.
+Audio, campaign, save/load and multiplayer remain absent. Of the original toolbar
+only the power icons are active (see Controls); its other icons are decorative.
 
 ## Local original data (required to play)
 
@@ -567,7 +567,7 @@ retain their combat frame and use the original fallback reward of 100; direct
 completion fixtures without entry still exercise retained town-frame rewards.
 Full combat timing parity remains separate work. No
 copper, large-sprite specials, original cursor/font,
-audio or functional power toolbar is claimed. A separate compact HUD explains
+audio or non-power toolbar icon is claimed. A separate compact HUD explains
 the implemented keyboard controls. `--battle-frames` checks all 65,536 stored
 word values for each base, death/zero distinctions and stored-frame pixels;
 the full suite also checks once-per-pair resident updates. Full normal/sanitized
@@ -701,8 +701,9 @@ before navigation and walking loss. Shallow swamp returns to block 15; bottomles
 swamp (game-mode bit 1) remains. This is not water/drowning. Frame 53 already comes
 from LAND; the original effect code is recorded, but audio is not implemented.
 Editor free casting is deliberately absent: `P` remains diagnostic display state
-and never bypasses costs or permissions. Original toolbar activation, editor mode
-and computer swamp selection remain separate TODOs.
+and never bypasses costs or permissions. The toolbar swamp icon arms targeting
+(and, as in the original, also in editor mode). Editor free casting and computer
+swamp selection remain separate TODOs.
 
 ## Earthquake power
 
@@ -722,7 +723,7 @@ No direct population damage is invented; later simulation handles changed terrai
 This milestone implements terrain rules and effect code 76, **not** the original
 20-step terrain-only screen shake or sound. The original shake offsets the terrain
 by -4/-1 scanlines, not the entire framebuffer or a horizontal 120 pixels. Full
-presentation, editor bypass and original toolbar wiring remain TODOs.
+presentation and editor bypass remain TODOs; the toolbar icon posts opcode 3.
 
 ## Flood power
 
@@ -740,7 +741,7 @@ non-combat residents wet and removes their town footprint without population los
 water loss or fatal removal follows on the next wet update. These rules still use
 the port's immediate movement model and battle-water exemption, not full original
 drowning/tick parity. Sound, editor bypass,
-original toolbar and AI power selection remain deferred. `P` never makes it free.
+and AI power selection remain deferred; the toolbar icon posts opcode 14/4. `P` never makes it free.
 
 ## Volcano power
 
@@ -760,7 +761,7 @@ stale owner-0 leader references are rejected before payment as a host-safety gua
 Only actual height changes expand dirty bounds; lava writes do not. The original
 clamped bounds rectangle is rebuilt rather than unconditionally rebuilding the
 whole footprint. No residents or occupancy are changed directly by casting.
-Original toolbar, audio, editor mode and exact queued-command timing remain open.
+The toolbar icon posts opcode 6. Audio, editor mode and exact queued-command timing remain open.
 
 ## Knight power
 
@@ -778,8 +779,8 @@ normal dispatch order. A second cast needs a newly acquired leader.
 
 Pursuit, swamp avoidance, combat completion, town burning, timed remnants and
 canonical original sprites are connected. Terrain/tool use remains available;
-Armageddon later clears headings through its existing path. Original toolbar,
-audio, strategic AI, phased movement and complete combat parity remain open.
+Armageddon later clears headings through its existing path. The toolbar icon
+posts opcode 14/5. Audio, strategic AI, phased movement and complete combat parity remain open.
 
 `--knight` checks atomic casts, all 256 leader flags, costs, permissions, HUD and
 post-cast ordinary actions. Its controlled SDL-K scenario reaches pursuit,
@@ -803,7 +804,8 @@ ordinary navigation, deferred water assistance and combat. Manual terrain and
 magnet mouse actions are locked during war; camera, pause, reset and quit remain
 available. Armed swamp/tool selection is retained. There is no editor bypass.
 
-This is gameplay integration, not complete original-game parity: original toolbar,
+This is gameplay integration, not complete original-game parity (the toolbar
+icon posts opcode 14/3 outside editor mode):
 audio, editor/AI activation, other special figures, phased water behavior and original end-game
 accounting beyond `good_pop` remain open. In the controlled cast-through-SDL
 island test, either caster activates war, a route is raised, combat starts at
@@ -815,7 +817,13 @@ there is no terrain/population injection after the cast.
 
 - Blue is your population; red is the opponent. Original houses/castles show
   settlements. The lower HUD and window title report population, mana, tool,
-  pause and outcome. The historic toolbar artwork does not activate powers.
+  pause and outcome.
+- Toolbar power icons (lower-left 3x3 diamond grid, `_zoom_map` asm:1942-2042):
+  flood, Armageddon, volcano, earthquake, knight and swamp. Either button posts
+  the original mailbox command, executed on the next tick; volcano and quake use
+  the current viewport. Swamp arms map targeting like `s`. Costs, permissions
+  and war are checked by the power routines; paused or finished games ignore
+  the icons. In editor mode (`p`) the Armageddon icon posts nothing.
 - Left/right mouse: raise/lower the selected vertex. Neighbouring vertices follow
   the original maximum slope of one, height 0..8. Cost is 10 plus 4 per changed
   vertex; the original admission threshold is 10, so a large operation can leave
@@ -841,7 +849,7 @@ there is no terrain/population injection after the cast.
 The opponent independently settles, grows, explores, merges and fights. Flatten
 plots to encourage settlement, wait for population/mana, and lower the four
 corners of hostile plots to deny land. The goal is to remove the opposing living
-population, including settlements. Unported special powers remain inactive.
+population, including settlements.
 No timer or population target declares a winner.
 
 ## Verification
