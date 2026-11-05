@@ -678,6 +678,36 @@ static int core_load_game(const char *name)
     return 1;
 }
 
+/* _do_action y=13 asm:18983-18999: _ground_in = x, ___load_ground(x,1),
+ * redraw. The port has LAND rules and graphics only for 0..3 (keys 1..4);
+ * 4..8 ("custom", keys 5..9) keep the current landscape. */
+static int core_load_ground(int terrain)
+{
+    if (terrain < 0 || terrain > 3) {
+        POP_LOG_WARN("Paint map: landscape %d is not available.", terrain);
+        return 0;
+    }
+    char error[256];
+    const char *asset_directory = getenv("POPULOUS_ASSET_DIR");
+    if (!asset_directory) asset_directory = POPULOUS_DEFAULT_ASSET_DIR;
+    char default_data[4096];
+    if ((size_t)snprintf(default_data, sizeof default_data, "%s/raw", asset_directory) >= sizeof default_data) return 0;
+    const char *directory = getenv("POPULOUS_DATA_DIR");
+    if (!directory) directory = default_data;
+    LandRules rules;
+    if (!land_rules_load(directory, (unsigned)terrain, &rules, error, sizeof error)) {
+        POP_LOG_WARN("Paint map: LAND data: %s", error);
+        return 0;
+    }
+    GraphicsAssets *assets = graphics_load(asset_directory, (unsigned)terrain, rules.sprite_set, error, sizeof error);
+    if (!assets) { POP_LOG_WARN("Paint map: graphics: %s", error); return 0; }
+    ground_in = (int16_t)terrain;
+    core_install_land(&rules);
+    graphics_free(game_assets);
+    game_assets = assets;
+    return 1;
+}
+
 /* _save_load(save) asm:10493-10972: _requester(d_screen,0x48,0x10,0xb0,0xb0)
  * with "SAVE"/"LOAD" and CANCEL, 12 rows of the _drawer listing at
  * 0x58,0x22+8*row, arrows 0x88/0x89 at 0xd8, then _drawer (0x8d) and

@@ -156,6 +156,12 @@ typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
 #define GfxBase_prg      A4_LONG(0x99a4)
 #define IntuitionBase_prg A4_LONG(0x99ac)
 
+/* Editor (_paint_map) cursor and last placed tree/rock sprite ids. */
+#define cur_y            A4_WORD(0x3026)          /* _cur_y: vertex row under pointer */
+#define cur_x            A4_WORD(0x3028)          /* _cur_x: vertex column under pointer */
+#define last_tree        A4_WORD(0x825c)          /* _last_tree (bk2 50..52) */
+#define last_rock        A4_WORD(0x825e)          /* _last_rock (blk 47..49) */
+
 /* --- War / magnets / score / battle tallies (from .GAM region table) --- */
 #define war_flag         A4_WORD(0xae80)          /* _war; HUD shows "WAR" */
 #define god_magnet       A4_WORD(0xae78)          /* owner 0 magnet cell */

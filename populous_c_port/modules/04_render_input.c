@@ -441,8 +441,12 @@ static void game_handle_event(const SDL_Event *event)
         /* _end_game waits for the requester (asm:14370-14385): any other key. */
         if (core_end_shown && core_result) { if (!event->key.repeat) core_leave_end(); return; }
         if (!event->key.repeat) {
+            /* _animate asm:917: unhandled keys go to _paint_the_map, which
+             * acts only with _paint_map set (Amiga raw codes). */
+            int raw = key >= SDLK_F1 && key <= SDLK_F8 ? 0x50 + (int)(key - SDLK_F1) :
+                      key == SDLK_DELETE ? 0x46 : key >= SDLK_1 && key <= SDLK_9 ? (int)(key - SDLK_0) : -1;
+            if (raw >= 0 && core_paint_the_map(raw, (event->key.keysym.mod & KMOD_SHIFT) != 0)) return;
             if (key == SDLK_SPACE) pause = !pause;
-            if (key == SDLK_p) paint_map = !paint_map;
             if (key == SDLK_d) { diagnostic_view = !diagnostic_view; xoff = yoff = diagnostic_view ? 0 : 6; }
             if (key == SDLK_r && !game_reset_start(current_start))
             POP_LOG_ERROR("Reset failed; keeping the current game.");
@@ -456,8 +460,8 @@ static void game_handle_event(const SDL_Event *event)
             if (key == SDLK_a) _do_war();
             /* Host S mapping for source selection asm:2021-2042 (> cost). */
             if (key == SDLK_s && player >= 0 && player <= 1 &&
-                core_mana(player) > (int32_t)mana_swamp_cost &&
-                (stats_power_mask(player)&0x10)) { core_swamp_selected = 1; core_set_pointer(); }
+                ((core_mana(player) > (int32_t)mana_swamp_cost &&
+                  (stats_power_mask(player)&0x10)) || paint_map)) { core_swamp_selected = 1; core_set_pointer(); }
         }
         if ((key == SDLK_LEFT || key == SDLK_KP_4 || key == SDLK_KP_7 || key == SDLK_KP_1) && xoff > 0) --xoff;
         if ((key == SDLK_RIGHT || key == SDLK_KP_6 || key == SDLK_KP_9 || key == SDLK_KP_3) && xoff < 56) ++xoff;
@@ -478,6 +482,12 @@ static void game_handle_event(const SDL_Event *event)
             mousey = (int16_t)((int64_t)y * prg_screen->height / height);
             big_mousex = mousex;
             big_mousey = mousey;
+            /* _sculpt asm:7406-7416 keeps _cur_x/_cur_y on the vertex under
+             * the pointer; _paint_the_map posts there. */
+            int column, row;
+            if (!diagnostic_view && !core_req.kind && game_pick(mousex,mousey,&column,&row)) {
+                cur_x = (int16_t)column; cur_y = (int16_t)row;
+            }
             /* continue_3EC20 asm:963-975 also interrogates while hovering. */
             if (!event->motion.state && !diagnostic_view && !core_req.kind && !core_lord.shown) core_interogate(mousex,mousey,0);
         }
@@ -543,6 +553,13 @@ static void game_handle_event(const SDL_Event *event)
             if (event->button.button == SDL_BUTTON_LEFT && core_leader(0) && core_mana(0)>=200) {
                 core_add_mana(0,-200); core_target(0)=row*64+column; core_tendency(0)=0;
             }
+        } else if (paint_map && (event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT)) {
+            /* _sculpt asm:7307-7312,7417-7438: the editor skips _ok_to_build
+             * and the game-mode build limits; the raise/lower opcodes then
+             * run free (_do_raise_point/_do_lower_point). */
+            cur_x = (int16_t)column; cur_y = (int16_t)row;
+            if (event->button.button == SDL_BUTTON_LEFT) core_raw_raise(player,column,row);
+            else if (column <= 64 && row <= 64) core_do_lower_point(player,column,row);
         } else if (event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT)
             core_sculpt(0,column,row,event->button.button == SDL_BUTTON_LEFT ? 1 : -1);
     }
