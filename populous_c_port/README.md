@@ -1223,7 +1223,10 @@ Continuing (see Controls):
 Each start re-derives `_level_number`/`_in_conquest` from the selected world and
 clears `_score`. The box is the original `_requester(d_screen,16,16,0x120,
 0xa6,button)` frame with its single button (asm:14340-14385), with only the
-original rows. Not ported: the end screen in the diagnostic view.
+original rows. In the diagnostic view the same box, rows and button are drawn
+over the top-down map (only the box's own pixels of the 200-line `d_screen`;
+the diagnostic bars below stay), followed by the drawn pointer; the button
+and keys continue exactly as in the original view.
 
 ### Lord screen
 
@@ -1292,9 +1295,22 @@ Opened from `--conquest`, game options CONQUEST (asm:13221-13239, also sets
 input needed); Escape has no meaning in `_get_name` and keeps the port's quit.
 Port deviations: the cursor (0x83) blinks every 10 frame ticks instead of 36
 loop passes, and Backspace clears the deleted cell at once instead of at the
-next blink; a missing `level.dat` stays in the entry instead of the "insert
-disk" message; worlds above 2470 (no record) cannot be started; START/conquest
+next blink; worlds above 2470 (no record) cannot be started; START/conquest
 screens clear the screen, the game-options one draws over the setup screen.
+
+### Missing `level.dat`: "insert disk"
+
+When `_show_world` cannot open `level.dat` (diskerr_47222, asm:12369-12375) it
+calls `_do_message(strInsertDisk,0)` (asm:11098-11141): `_requester(d_screen,
+0x28,0x3c,0x100,0x30,_end_ok,NULL)` with `INSERT THE ORIGINAL` /
+`POPULOUS DISK IN DF0:` (strInsertDisk asm:21250-21256) at 0x38,0x48, and
+waits for its single OK (`_check_cancel(_end_ok,NULL)`; there is no CANCEL,
+keys are ignored, Escape still quits the port). OK returns to LAB_47064
+without `_get_name`, so the name is evaluated again: the world lines appear
+once the file is there, otherwise the message repeats. The same message and
+retry loop follow a save (see "Save and load"). The port looks for
+`level.dat` in `POPULOUS_DATA_DIR`, else `<assets>/raw` (the original opens
+it in the current directory, i.e. the disk).
 
 ## Requesters and options
 
@@ -1307,7 +1323,7 @@ the original and labelled with the original font; `_check_cancel`
 requester as a blocking loop inside `_do_action`; the port keeps the requester
 state, stops `game_tick` while one is open, routes left presses to it at the
 pointer (`_mousex`/`_mousey`) and draws it over every frame (original view
-only; in the diagnostic view it is open but not drawn). `_tempo` is cleared
+and, over the top-down map, the diagnostic view). `_tempo` is cleared
 when a requester opens rather than on every draw.
 
 - `_options` (`_do_action` y=7, asm:13617-13873; left button: your side, right:
@@ -1403,7 +1419,9 @@ state at once (a failed load still closes the setup, as `_save_load` returns 1).
 Saves go to a temporary file renamed into place, so a failed save leaves no
 partial file. A pointer that is not a `_peeps` record address (for example from
 another load address) is read as the peep itself, so `_get_heading` recomputes
-it, or 0 in `_stats`. The `level.dat` disk check after a save is dropped. The
+it, or 0 in `_stats`. After a successful save (`_saved` 1) `level.dat` is reopened until it
+exists (asm:10931-10944), showing the "insert disk" message (see below) after
+each failure; only then does the setup close. The
 port's own tool state is reset to the terrain tool; a synthetic demo start
 keeps its restart target. The listing holds at most 256 names.
 

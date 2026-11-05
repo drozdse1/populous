@@ -435,6 +435,10 @@ static void core_draw_requester(void);
 /* _show_world state, see core_world_open. */
 enum { CORE_WORLD_START, CORE_WORLD_OPTIONS, CORE_WORLD_WON };
 static struct { int origin, shown, entry, error, level, length, blink; } core_world;
+/* An open _do_message(strInsertDisk) over the world or file requester. */
+enum { CORE_DISK_NONE, CORE_DISK_WORLD, CORE_DISK_SAVE };
+static int core_disk_message;
+static FILE *core_level_dat_open(void);
 static uint8_t core_world_ok[46], core_world_cancel[46];
 /* _save_load's file requester (CORE_REQ_FILE), see core_file_open. The
  * _get_a_dir listing (32-byte names) was at _w_screen; 256 here. */
@@ -3074,7 +3078,7 @@ static int game_reset_start(StartSelection selection)
     /* Single-player conquest start sets _serial_off (asm:12768); the end
      * score reads it (asm:14239). _score was cleared with the staged A4. */
     serial_off = 1;
-    core_end_shown = 0; core_end_next = -1;
+    core_end_shown = 0; core_end_next = -1; core_disk_message = CORE_DISK_NONE;
     if (selection.kind != START_CUSTOM) {   /* the custom _stats stand (asm:430-457) */
         A4_WORD(0x82bc) = 0; A4_WORD(0x82bc + 46) = 1;
         A4_WORD(0x82be) = 1; A4_WORD(0x82be + 46) = 0;
@@ -4296,7 +4300,12 @@ static void core_file_click(void)
     snprintf(name + strlen(name), sizeof name - strlen(name), "%.19s", core_filename);
     if (core_file.save) {
         if (!core_save_game(name)) { core_file.error = 1; return; }   /* "ERROR IN SAVING" */
-        A4_WORD(0x3054) = 1;   /* _saved; the level.dat disk check is not needed here */
+        A4_WORD(0x3054) = 1;   /* _saved */
+        /* LAB_46110..LAB_46144 (asm:10931-10944): reopen level.dat until it
+         * exists, _do_message(strInsertDisk,0) after each failure. */
+        FILE *check = core_level_dat_open();
+        if (!check) { core_disk_message = CORE_DISK_SAVE; return; }
+        fclose(check);
     } else if (!core_load_game(name)) fprintf(stderr, "Load game: %s could not be loaded.\n", name);
     core_game_options_close();   /* _save_load returns 1 either way */
 }
@@ -4328,8 +4337,32 @@ static void core_draw_file(void)
     }
 }
 
+/* _do_message(strInsertDisk,0) asm:11098-11141 (strInsertDisk asm:21250-21256):
+ * _requester(d_screen,0x28,0x3c,0x100,0x30,_end_ok,NULL), the text at
+ * 0x38,0x48, then _check_cancel(_end_ok,NULL) until OK; no CANCEL. */
+static void core_disk_layout(int draw) { core_buttons_install(); core_requester(0x28,0x3c,0x100,0x30,core_end_ok,NULL,draw); }
+static void core_draw_disk_message(void)
+{
+    core_disk_layout(1);
+    amiga_text(game_pixels, 0x38, 0x48, "INSERT THE ORIGINAL\nPOPULOUS DISK IN DF0:");
+}
+static void core_world_evaluate(void);
+static void core_disk_click(void)
+{
+    core_disk_layout(0);
+    if (!core_check_cancel(core_end_ok, NULL)) return;
+    int retry = core_disk_message;
+    core_disk_message = CORE_DISK_NONE; left_button = 2;
+    if (retry == CORE_DISK_WORLD) { core_requester_layout(); core_world_evaluate(); return; }
+    FILE *check = core_level_dat_open();   /* CORE_DISK_SAVE: the reopen loop */
+    if (!check) { core_disk_message = CORE_DISK_SAVE; return; }
+    fclose(check);
+    core_game_options_close();
+}
+
 static void core_requester_click(void)
 {
+    if (core_disk_message) { core_disk_click(); return; }
     if (core_req.kind == CORE_REQ_OPTIONS) core_options_click();
     else if (core_req.kind == CORE_REQ_GAME) core_game_options_click();
     else if (core_req.kind == CORE_REQ_SET) core_set_options_click();
@@ -4345,7 +4378,7 @@ static void core_draw_game_options(void)
                    core_rec_text(core_game_entry(i)));
 }
 /* Draw the open requester over the frame, as the original's d_screen. */
-static void core_draw_requester(void)
+static void core_draw_requester_kind(void)
 {
     if (core_req.kind == CORE_REQ_OPTIONS) {
         core_requester(0x10,0x10,0x120,0xa6,core_end_ok,core_end_cancel,1);
@@ -4379,6 +4412,11 @@ static void core_draw_requester(void)
         char landscape[32]; snprintf(landscape, sizeof landscape, "LANDSCAPE NO %d", (int)start_seed);
         amiga_text(game_pixels, core_rec_w(core_set_entry(shown),0)+0x20, core_rec_w(core_set_entry(shown),2)+0x22, landscape);
     }
+}
+static void core_draw_requester(void)
+{
+    core_draw_requester_kind();
+    if (core_req.kind && core_disk_message) core_draw_disk_message();
 }
 
 /* _end_game display asm:14317-14385: _requester(d_screen,16,16,0x120,0xa6,
@@ -4606,7 +4644,7 @@ static void core_world_line(int i, char *line, char you[8], char him[8])
     line[entry->w] = 0; strncat(line, value, 47 - strlen(line));
 }
 /* level.dat record level/25 into _conquest 0x84bc..0x84c5 (asm:12315-12368). */
-static int core_world_read(int record)
+static FILE *core_level_dat_open(void)
 {
     char fallback[4096], path[4200];
     const char *directory = getenv("POPULOUS_DATA_DIR"), *assets = getenv("POPULOUS_ASSET_DIR");
@@ -4614,7 +4652,11 @@ static int core_world_read(int record)
     snprintf(fallback, sizeof fallback, "%s/raw", assets);
     if (!directory) directory = fallback;
     snprintf(path, sizeof path, "%s/level.dat", directory);
-    FILE *file = fopen(path, "rb");
+    return fopen(path, "rb");
+}
+static int core_world_read(int record)
+{
+    FILE *file = core_level_dat_open();
     if (!file) return 0;
     uint8_t bytes[10];
     /* ___Seek/___Read: a short read past the end keeps the old bytes. */
@@ -4671,11 +4713,9 @@ static void core_world_evaluate(void)
         if (core_world.level < 0) core_world.error = 1;   /* "NO SUCH WORLD" */
     }
     if (core_world.level < 0) { core_world_entry(); return; }
-    /* Port: a missing level.dat stays in the entry ("insert disk" loops). */
-    if (!core_world_read(core_world.level / 25)) {
-        fprintf(stderr, "World selection: level.dat not found.\n");
-        core_world_entry(); return;
-    }
+    /* diskerr_47222 (asm:12369-12375): _do_message(strInsertDisk,0); its
+     * OK returns to LAB_47064 without _get_name, i.e. this evaluation. */
+    if (!core_world_read(core_world.level / 25)) { core_disk_message = CORE_DISK_WORLD; left_button = 2; return; }
     core_world.shown = 1; core_world.entry = 0; left_button = 2;
 }
 static void core_world_open(int origin)
@@ -5069,6 +5109,20 @@ static void draw_original(int view_x, int view_y)
     core_draw_pointer();
 }
 
+/* The diagnostic view has no d_screen: the end screen and the requesters
+ * are drawn into game_pixels over a sentinel and only their own pixels
+ * (all < 32) cover the diagnostic map; the drawn pointer then follows. */
+static void core_draw_diagnostic_overlay(void)
+{
+    if (!(core_end_shown && core_result) && !core_req.kind) return;
+    memset(game_pixels, 0xff, sizeof game_pixels);
+    if (core_end_shown && core_result) core_draw_end_screen();
+    core_draw_requester();
+    for (size_t pixel=0; pixel<320*200; ++pixel)   /* d_screen's 200 lines */
+        if (game_pixels[pixel] != 0xff) prg_screen->chunky_buffer[pixel]=prg_screen->palette[game_pixels[pixel]];
+    core_draw_pointer();
+}
+
 static void _draw_it(int16_t y, int16_t x)
 {
     ensure_prg_screen();
@@ -5119,6 +5173,7 @@ static void _draw_it(int16_t y, int16_t x)
         uint32_t colour = core_result == 1 ? 0xff8cffff : core_result ? 0xffff795d : 0xffffff80;
         for (int pixel=0; pixel<width; ++pixel) prg_screen->chunky_buffer[pixel] = colour;
     }
+    core_draw_diagnostic_overlay();
     } else draw_original(x,y);
     char title[512];
     snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; K knight 7500; Q quake 2500; F flood 40000; V volcano 10000; A Armageddon 80000; Space pause R reset Esc quit",
@@ -5564,6 +5619,7 @@ static void game_handle_event(const SDL_Event *event)
     if (event->type == SDL_KEYDOWN) {
         SDL_Keycode key = event->key.keysym.sym;
         if (key == SDLK_ESCAPE) { prg_quit = 1; return; }
+        if (core_req.kind && core_disk_message) return;   /* _do_message reads only the mouse */
         /* _show_world's _get_name reads ___keyboard (_asckey). */
         if (core_req.kind == CORE_REQ_WORLD) {
             if (key == SDLK_RETURN || key == SDLK_KP_ENTER) core_world_key(13);

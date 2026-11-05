@@ -12226,6 +12226,8 @@ static void entry_click(const uint8_t *entry, int dx, int dy)
 {
     screen_click(core_rec_w(entry,0)+dx+1, core_rec_w(entry,2)+dy+1, SDL_BUTTON_LEFT);
 }
+/* _do_message's OK (_end_ok of _requester 0x28,0x3c,0x100,0x30). */
+static void disk_ok_click(void) { screen_click(core_rec_w(core_end_ok,0)+4, core_rec_w(core_end_ok,2)+8, SDL_BUTTON_LEFT); }
 static void world_ok_click(void) { screen_click(core_rec_w(core_world_ok,0)+4, core_rec_w(core_world_ok,2)+8, SDL_BUTTON_LEFT); }
 static void world_new_click(void) { screen_click(core_rec_w(core_world_cancel,0)+4, core_rec_w(core_world_cancel,2)+8, SDL_BUTTON_LEFT); }
 static void world_type(const char *text)
@@ -12408,9 +12410,22 @@ static void test_save_load(void)
     screen_click(0x60, 0xa2, SDL_BUTTON_LEFT); assert(core_file.field == 2);
     world_type("slot\b\bved\n"); assert(!core_file.field && !strcmp(core_filename, "SLVED"));
     memcpy(snapshot, prg_a4_area, sizeof snapshot);
+    char level_path[512]; snprintf(level_path, sizeof level_path, "%s/level.dat", test_data_directory);
+    assert(access(level_path, F_OK));   /* no level.dat: the disk check after the save */
     screen_click(core_rec_w(core_file_ok,0)+4, core_rec_w(core_file_ok,2)+8, SDL_BUTTON_LEFT);
-    assert(core_req.kind == CORE_REQ_NONE && A4_WORD(0x3054) == 1);
     assert(save_read("SLVED.GAM", file, sizeof file) == CORE_SAVE_SIZE);
+    /* LAB_46110..LAB_46144 (asm:10931-10944): _saved is set, then
+     * _do_message(strInsertDisk,0) until level.dat opens; only OK, keys ignored. */
+    assert(core_req.kind == CORE_REQ_FILE && core_disk_message == CORE_DISK_SAVE && A4_WORD(0x3054) == 1);
+    world_type("x\n"); assert(!strcmp(core_filename, "SLVED") && core_disk_message == CORE_DISK_SAVE);
+    core_draw_requester(); assert_tile(32,0x3c,12);
+    assert(core_rec_w(core_end_ok,0) == 144 && core_rec_w(core_end_ok,4) == 192 && core_rec_w(core_end_ok,2) == 0x5c);
+    screen_click(0x100, 0x60, SDL_BUTTON_LEFT); assert(core_disk_message == CORE_DISK_SAVE);
+    disk_ok_click(); assert(core_req.kind == CORE_REQ_FILE && core_disk_message == CORE_DISK_SAVE);
+    write_level_fixture(1, 1);
+    disk_ok_click();
+    assert(core_req.kind == CORE_REQ_NONE && !core_disk_message && A4_WORD(0x3054) == 1);
+    assert(!unlink(level_path));
     /* LOAD A GAME lists the drawer (upper-cased .GAM files, sorted), a row
      * picks the name; the arrows scroll while top+5 < count. */
     save_write("b.gam", file, 4); save_write("note.txt", file, 4);
@@ -12986,6 +13001,92 @@ static void test_world_screen(void)
     _animate(); assert(core_req.kind == CORE_REQ_WORLD && core_world.origin == CORE_WORLD_START);
     requested_world = 0; core_req.kind = CORE_REQ_NONE; prg_quit = 0;
     assert(!unlink(path));
+    _closeall(); SDL_Quit();
+}
+
+/* diskerr_47222 (asm:12369-12375): without level.dat _show_world shows
+ * _do_message(strInsertDisk,0) (asm:11098-11141, text asm:21250-21256);
+ * its OK re-evaluates the name (LAB_47064 with -22 clear), so it repeats
+ * until the file is there. Also drawn in the diagnostic view. */
+static void test_insert_disk(void)
+{
+    if (getenv("POPULOUS_TEST_REAL_DATA")) return;
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    char path[512]; snprintf(path, sizeof path, "%s/level.dat", test_data_directory);
+    unlink(path);
+    assert(game_reset(0));
+    core_message[0] = 0; core_world_open(CORE_WORLD_START);
+    assert(core_req.kind == CORE_REQ_WORLD && core_disk_message == CORE_DISK_WORLD &&
+           !core_world.shown && !core_world.entry && !strcmp(core_message, "GENESIS"));
+    /* Frame 0x28,0x3c,0x100,0x30: title 12 at x 32 (0x28/16 words), the lone OK at 144..192. */
+    draw_original(xoff, yoff);
+    assert_tile(32,0x3c,12); assert_tile(0x110,0x3c,14); assert_tile(32,0x5c,15);
+    assert(core_rec_w(core_end_ok,0) == 144 && core_rec_w(core_end_ok,4) == 192 && core_rec_w(core_end_ok,2) == 0x5c && !strcmp(core_rec_text(core_end_ok), "OK"));
+    static uint8_t shown[sizeof game_pixels]; memcpy(shown, game_pixels, sizeof shown);
+    core_disk_layout(1);   /* the frame alone: both text lines differ */
+    int line1 = 0, line2 = 0;
+    for (int x = 0x38; x < 0x38 + 21*8; ++x) for (int y = 0; y < 8; ++y) {
+        line1 |= shown[(0x48+y)*320+x] != game_pixels[(0x48+y)*320+x];
+        line2 |= shown[(0x50+y)*320+x] != game_pixels[(0x50+y)*320+x];
+    }
+    assert(line1 && line2);
+    core_disk_layout(1); amiga_text(game_pixels, 0x38, 0x48, "INSERT THE ORIGINAL\nPOPULOUS DISK IN DF0:");
+    assert(!memcmp(shown, game_pixels, sizeof shown));   /* exactly strInsertDisk at 0x38,0x48 */
+    /* Keys are ignored, a click off OK keeps it, OK without the file repeats it. */
+    world_type("ABC\n"); assert(!strcmp(core_message, "GENESIS") && core_disk_message == CORE_DISK_WORLD);
+    screen_click(0x100, 0x48, SDL_BUTTON_LEFT); assert(core_disk_message == CORE_DISK_WORLD);
+    disk_ok_click(); assert(core_req.kind == CORE_REQ_WORLD && core_disk_message == CORE_DISK_WORLD && !core_world.shown);
+    /* Diagnostic view: the requester and the message over the map. */
+    diagnostic_view = 1; xoff = yoff = 0;
+    static uint32_t frame[320*256];
+    _draw_it(yoff, xoff);
+    memcpy(frame, prg_screen->chunky_buffer, sizeof frame);
+    for (int row = 0; row < 16; ++row) for (int column = 0; column < 16; ++column)
+        assert(frame[(0x3c+row)*320+32+column] == prg_screen->palette[icon_pixel(12,column,row)]);
+    core_disk_message = CORE_DISK_NONE; core_req.kind = CORE_REQ_NONE;
+    _draw_it(yoff, xoff);
+    /* The start world screen clears d_screen (as in the original view);
+     * the diagnostic rows below y 200 stay. */
+    assert(frame[2*320+2] == prg_screen->palette[0] && frame[2*320+2] != prg_screen->chunky_buffer[2*320+2]);
+    assert(!memcmp(frame + 200*320, prg_screen->chunky_buffer + 200*320, 56*320*sizeof *frame));
+    core_disk_message = CORE_DISK_WORLD; core_req.kind = CORE_REQ_WORLD;
+    /* The file is back: OK reads record 0 and shows the world lines. */
+    write_level_fixture(1, 1);
+    disk_ok_click();
+    assert(core_req.kind == CORE_REQ_WORLD && !core_disk_message && core_world.shown && !core_world.level &&
+           (uint16_t)conq_08_seed == 0xabcd);
+    world_ok_click(); assert(!core_req.kind && current_start.kind == START_ORIGINAL && in_conquest == 0);
+    assert(!unlink(path));
+    _closeall(); SDL_Quit();
+}
+
+/* The _end_game screen in the diagnostic view: the same requester, rows and
+ * button over the map, the pointer drawn; its button continues. */
+static void test_diagnostic_end_screen(void)
+{
+    if (getenv("POPULOUS_TEST_REAL_DATA")) return;
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    write_font_fixture();
+    assert(game_reset(0) && game_font_loaded);
+    end_kill(1);
+    draw_original(6, 6);
+    static uint8_t original[sizeof game_pixels]; memcpy(original, game_pixels, sizeof original);
+    diagnostic_view = 1; xoff = yoff = 0; mousex = 300; mousey = 230;
+    _draw_it(yoff, xoff);
+    static uint32_t frame[320*256]; memcpy(frame, prg_screen->chunky_buffer, sizeof frame);
+    /* Every pixel of the 16,16,0x120,0xa6 box matches the original view. */
+    for (int y = 16; y < 16+0xa6; ++y) for (int x = 16; x < 16+0x120; ++x)
+        assert(frame[y*320+x] == prg_screen->palette[original[y*320+x]]);
+    assert(SDL_ShowCursor(SDL_QUERY) == SDL_DISABLE);   /* the drawn pointer */
+    core_end_shown = 0; _draw_it(yoff, xoff); core_end_shown = 1;
+    assert(frame[2*320+2] == prg_screen->chunky_buffer[2*320+2]);   /* map outside the box */
+    int differs = 0;
+    for (int x = 32; x < 300; ++x) differs |= frame[32*320+x] != prg_screen->chunky_buffer[32*320+x];
+    assert(differs);
+    end_button_click();
+    assert(!core_end_shown && !core_result && current_start.kind == START_SYNTHETIC);
+    diagnostic_view = 0;
+    copy_real_font();
     _closeall(); SDL_Quit();
 }
 
@@ -13878,6 +13979,8 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_end_transition();
     test_lord_screen();
     test_world_screen();
+    test_insert_disk();
+    test_diagnostic_end_screen();
     test_requesters();
     test_save_load();
     test_custom_game();
