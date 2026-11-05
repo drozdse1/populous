@@ -394,6 +394,7 @@ static void _move_peeps(void);
 static void _move_explorer(void);
 static void _move_magnet_peeps(void);
 static void _move_mana(void);
+static void core_set_pointer(void);
 static void _where_do_i_go(void);
 static void _get_heading(void);
 static void _join_forces(void);
@@ -2421,7 +2422,7 @@ static int game_reset_start(StartSelection selection)
         A4_LONG(0x9a02+owner*16) = 399; /* _setup_display asm:1070 */
         core_tendency(owner) = 1; core_target(owner) = 0x820;
     }
-    core_result = core_battles = core_settlements = core_tool = 0;
+    core_result = core_battles = core_settlements = core_tool = 0; core_set_pointer();
     const uint8_t *entry = demo_levels[scenario];
     conquest = entry[0];
     conq_01_speed = entry[1];
@@ -2457,7 +2458,7 @@ static int game_reset_start(StartSelection selection)
     A4_WORD(0x82bc) = 0; A4_WORD(0x82bc + 46) = 1;
     A4_WORD(0x82be) = 1; A4_WORD(0x82be + 46) = 0;
     A4_WORD(0x82c6) = 1; A4_WORD(0x82c6 + 46) = selected_speed;
-    core_result = core_battles = core_settlements = core_tool = core_swamp_selected = 0;
+    core_result = core_battles = core_settlements = core_tool = core_swamp_selected = 0; core_set_pointer();
     xoff = yoff = 6;
     if (selection.kind == START_ORIGINAL) {
         /* Host camera accommodation: original inhabitants are not on demo plots. */
@@ -2769,9 +2770,58 @@ static void _place_first_people(void)
 }
 #endif
 
+/* _move_mana asm:3164-3244, presentation only: the first _mana_values (A4
+ * 0x8486) entry not below the player's mana picks the scale step, the
+ * remainder (*8, divs) the eighth within it; sprite 69 is drawn at
+ * x 160+16*(step-1)+2*eighth, y 8+8*(step-1)+eighth, past step 9 at
+ * (0x137,0x57). Mana <= _mana_values[0] (unreachable: asm reads the long
+ * before the table) is clamped to step 1 here. */
 static void _move_mana(void)
 {
-    /* Original _move_mana is presentation only, never mana generation. */
+    if (!game_assets || player < 0 || player > 1) return;
+    int32_t mana = (int32_t)A4_LONG(0x9a02 + player*16);
+    int step = 0;
+    while (step < 10 && mana > (int32_t)A4_LONG(0x8486 + step*4)) ++step;
+    int x = 0x137, y = 0x57;
+    if (step <= 9) {
+        if (!step) step = 1;
+        int32_t low = (int32_t)A4_LONG(0x8486 + (step-1)*4), high = (int32_t)A4_LONG(0x8486 + step*4);
+        int eighth = high != low ? (int)(int16_t)((mana - low) * 8 / (high - low)) : 0;
+        x = (step-1)*16 + eighth*2 + 0xa0; y = (step-1)*8 + eighth + 8;
+    }
+    graphics_blit(game_pixels,64000,320,200,graphics_sprites(game_assets),69,x,y);
+}
+
+/* _pointer (A4 0x84b6) indexes _a_sprite[], built by _sprite_to_amiga
+ * asm:16783-16830 from these _sprite_data frames. Values as the original:
+ * query 0, terrain player*3+1 (asm:615-620, 1054-1056, 2110-2116), magnet
+ * player+2 (asm:2125-2131), swamp 5 (asm:2042), after the swamp target
+ * mode-1 (asm:7480-7487). Port deviation: the port keeps its magnet tool
+ * after a swamp target, so its magnet pointer is restored there. */
+static const uint8_t core_pointer_frames[8] = {0x44,0x4e,0x50,0x51,0x4f,0x53,0x52,0x81};
+static void core_set_pointer(void)
+{
+    int own = player == 1;
+    pointer = (int16_t)(core_swamp_selected ? 5 : core_tool == 2 ? 0 : core_tool == 1 ? own+2 : own*3+1);
+}
+
+/* Hardware sprite: _convert_sprite asm:19823-19846 drops the mask word and
+ * attaches planes 0-1/2-3, so any non-zero plane value is opaque colour
+ * 16+value (_palette 16-31 repeat 0-15, asm:24264). _move_pointer
+ * asm:19928-19972 with x+0x40 (asm:19551) gives HSTART mousex+0x80 and VSTART
+ * mousey+0x2c: the hotspot is the top-left pixel. Drawn over the whole
+ * 320x256 frame, HUD included. */
+static void core_draw_pointer(void)
+{
+    if (!game_assets || (uint16_t)pointer > 7) return;
+    GraphicsSheet small = graphics_sprites(game_assets);
+    size_t base = (size_t)core_pointer_frames[pointer] * 256;
+    if (base + 256 > small.size) return;
+    for (int row = 0; row < 16; ++row) for (int column = 0; column < 16; ++column) {
+        int x = mousex + column, y = mousey + row, colour = small.indices[base + row*16 + column] & 15;
+        if (colour && x >= 0 && x < 320 && y >= 0 && y < 256)
+            prg_screen->chunky_buffer[y*320+x] = prg_screen->palette[colour];
+    }
 }
 
 /* ___text/_text asm:19973-20052 on the 320x200 game_pixels: x is byte
@@ -2834,28 +2884,6 @@ static void core_draw_end_screen(void)
         core_fill(0,176,320,20,0);
         amiga_text(game_pixels, 8, 0xb2, core_end_conquest[0]);
         amiga_text(game_pixels, 8, 0xba, core_end_conquest[1]);
-    }
-}
-
-/* A compact port HUD font, not an interpretation of the original font.dat. */
-static void hud_text(int left, int top, const char *text)
-{
-    static const uint16_t letters[] = {
-        0x5f7a,0x3b6b,0x624e,0x3b6e,0x73cf,0x13cf,0x6b4e,0x5bed,0x7497,
-        0x2b24,0x5aed,0x7249,0x5bfd,0x5ffd,0x3b6e,0x12eb,0x6f6a,0x5aeb,
-        0x38ce,0x2497,0x3b6d,0x2b6d,0x5fed,0x5aad,0x24ad,0x72a7
-    };
-    static const uint16_t digits[] = {0x7b6f,0x2492,0x73e7,0x79e7,0x49ed,0x79cf,0x7bcf,0x4927,0x7bef,0x79ef};
-    for (; *text && left+3 < 320; ++text,left+=4) {
-        uint16_t bits = 0;
-        if (*text >= 'A' && *text <= 'Z') bits=letters[*text-'A'];
-        else if (*text >= '0' && *text <= '9') bits=digits[*text-'0'];
-        else if (*text == '-') bits=7<<6;
-        else if (*text == '/') bits=0x12a4;
-        else if (*text == ':') bits=0x410;
-        for (int row=0; row<5; ++row) for (int col=0; col<3; ++col)
-            if ((bits & (1u<<(row*3+col))) && top+row>=0 && top+row<256 && left+col>=0)
-                prg_screen->chunky_buffer[(top+row)*320+left+col]=0xffcccccc;
     }
 }
 
@@ -2983,6 +3011,9 @@ static void draw_original(int view_x, int view_y)
     memset(game_pixels,0,sizeof game_pixels);
     memcpy(game_pixels,game_assets->background,sizeof game_assets->background);
     core_draw_icons();
+    /* asm:615-622: terrain mode refreshes _pointer, then _move_mana. */
+    if (!core_tool && !core_swamp_selected) core_set_pointer();
+    _move_mana();
     int dy = core_shake_dy;
     GraphicsSheet land=graphics_land(game_assets), small=graphics_sprites(game_assets);
     int phase=((uint16_t)game_turn/4)&1;
@@ -3065,35 +3096,37 @@ static void draw_original(int view_x, int view_y)
             (column==view_x || column==view_x+7 || row==view_y || row==view_y+7)) colour=5;
         game_pixels[my*320+mx]=(uint8_t)colour;
     }
-    int column,row;
-    if (game_pick(mousex,mousey,&column,&row)) {
-        int sx,sy;
-        graphics_vertex(column-xoff,row-yoff,core_vertex(column,row),&sx,&sy);
-        for (int delta=-2;delta<=2;++delta) {
-            if (sy>=0 && sy<200 && sx+delta>=64 && sx+delta<320) game_pixels[sy*320+sx+delta]=5;
-            if (sy+delta>=0 && sy+delta<200 && sx>=64 && sx<320) game_pixels[(sy+delta)*320+sx]=5;
-        }
-    }
     if (core_end_shown && core_result) core_draw_end_screen();
     for (size_t pixel=0; pixel<sizeof game_pixels; ++pixel)
         prg_screen->chunky_buffer[pixel]=prg_screen->palette[game_pixels[pixel]];
-    char status[80];
-    snprintf(status,sizeof status,"%s  BLUE %d RED %d MANA %d",core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : pause ? "PAUSED" : A4_WORD(0xae80) ? "WAR" : "PLAY",core_population(0),core_population(1),core_mana(0));
-    hud_text(4,204,status);
-    hud_text(4,213,core_end_shown && core_result ? "GAME OVER - CLICK OR PRESS A KEY TO CONTINUE / ESC QUIT" : A4_WORD(0xae80) ?
-        "WAR - TERRAIN AND MAGNET INPUT LOCKED / ARROWS SCROLL / MAP CLICK" : core_swamp_selected ?
-        "S SWAMP ARMED 5000 / LMB TARGET / RMB INERT" :
-        "LMB RAISE / RMB LOWER / ARROWS SCROLL / MAP CLICK");
-    hud_text(4,222,"0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET / S SWAMP 5000 / K KNIGHT 7500");
-    hud_text(4,231,"Q QUAKE 2500 / F FLOOD 40000 / V VOLCANO 10000 / A ARMAGEDDON 80000");
-    hud_text(4,249,"SPACE PAUSE / R RESET / ESC QUIT / D VIEW");
-    hud_text(4,240,core_swamp_selected ?
-        (core_tool == 1 ? "AFTER TARGET: MAGNET / TOOLBAR ICONS ACTIVE" : core_tool == 2 ?
-                          "AFTER TARGET: QUERY / TOOLBAR ICONS ACTIVE" :
-                          "AFTER TARGET: TERRAIN / TOOLBAR ICONS ACTIVE") :
-        (core_tool == 1 ? "MAGNET TOOL - TOOLBAR ICONS ACTIVE" : core_tool == 2 ?
-                          "QUERY TOOL - HOVER/LMB TEMP VIEW, RMB KEEP VIEW" :
-                          "TERRAIN TOOL - TOOLBAR ICONS ACTIVE"));
+    /* Port HUD (not in the original, whose screen ends at y 200): 7 lines of
+     * 40 columns in the original font (amiga_text) on y 200..255. */
+    static uint8_t hud[320*200];
+    char lines[7][48]={{0}};
+    snprintf(lines[0],48,"%s BLUE %d RED %d MANA %d",core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : pause ? "PAUSED" : A4_WORD(0xae80) ? "WAR" : "PLAY",core_population(0),core_population(1),core_mana(0));
+    snprintf(lines[1],48,"%s",core_end_shown && core_result ? "GAME OVER: CLICK/KEY CONTINUE, ESC QUIT" : A4_WORD(0xae80) ?
+        "WAR: TERRAIN+MAGNET LOCKED, ARROWS/MAP" : core_swamp_selected ?
+        "SWAMP ARMED 5000: LMB TARGET, RMB INERT" : "LMB RAISE, RMB LOWER, ARROWS/MAP SCROLL");
+    snprintf(lines[2],48,"%s",core_swamp_selected ?
+        (core_tool == 1 ? "AFTER TARGET: MAGNET / D VIEW" : core_tool == 2 ?
+                          "AFTER TARGET: QUERY / D VIEW" : "AFTER TARGET: TERRAIN / D VIEW") :
+        (core_tool == 1 ? "MAGNET TOOL, ICONS ACTIVE / D VIEW" : core_tool == 2 ?
+                          "QUERY HOVER/LMB TEMP RMB KEEP / D VIEW" : "TERRAIN TOOL, ICONS ACTIVE / D VIEW"));
+    snprintf(lines[3],48,"0 GATHER 1 SETTLE 2 JOIN 3 FIGHT R RESET");
+    snprintf(lines[4],48,"S SWAMP 5000 Q QUAKE 2500 K KNIGHT 7500");
+    snprintf(lines[5],48,"V VOLCANO 10000 F FLOOD 40000 M MAGNET");
+    snprintf(lines[6],48,"A ARMAGEDDON 80000 SPC PAUSE ESC QUIT");
+    /* Re-rasterise only when the text or the loaded font changes. */
+    static char shown[7][48]; static uint8_t font[sizeof game_font]; static int valid;
+    for (int line=0; line<7; ++line) lines[line][40]=0;
+    if (!valid || memcmp(shown,lines,sizeof shown) || valid != game_font_loaded+1 || memcmp(font,game_font,sizeof font)) {
+        memset(hud,0,320*56);
+        for (int line=0; line<7; ++line) amiga_text(hud,0,line*8,lines[line]);
+        memcpy(shown,lines,sizeof shown); memcpy(font,game_font,sizeof font); valid=game_font_loaded+1;
+    }
+    for (int pixel=0; pixel<320*56; ++pixel)
+        prg_screen->chunky_buffer[200*320+pixel]=prg_screen->palette[hud[pixel]];
+    core_draw_pointer();
 }
 
 static void _draw_it(int16_t y, int16_t x)
@@ -3483,7 +3516,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else if (icon == 2 && line == 1) { mailbox[0] = 14; mailbox[2] = 5; }
         else if (icon == 2 && line == 2) {
             if ((core_mana(player) > (int32_t)A4_LONG(0x8496) && (A4_WORD(0x82c4+player*46)&0x10)) || paint_map)
-                core_swamp_selected = 1;
+                { core_swamp_selected = 1; core_set_pointer(); }
         }
     } else if (icon <= 5) {
         /* Tendency icons asm:2043-2089: _do_action y=1 with x = tendency. */
@@ -3494,7 +3527,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
         /* Mode icons asm:2090-2133: 0 query, 1 terrain, 2 papal magnet; each
          * clears the swamp bit. core_tool: 0 terrain, 1 magnet, 2 query. */
         if (line > 2) return 0;
-        core_tool = line == 0 ? 2 : line == 2; core_swamp_selected = 0;
+        core_tool = line == 0 ? 2 : line == 2; core_swamp_selected = 0; core_set_pointer();
     } else if (icon == 7) {
         /* asm:2134-2228: left views the leader (else the magnet), right the magnet. */
         if (line == 0) {
@@ -3585,7 +3618,7 @@ static void game_handle_event(const SDL_Event *event)
             if (key == SDLK_r && !game_reset_start(current_start))
             fprintf(stderr, "Reset failed; keeping the current game.\n");
             if (!pause && !core_result && key >= SDLK_0 && key <= SDLK_3) core_tendency(0) = key-SDLK_0;
-            if (key == SDLK_m) core_tool = core_tool != 1;
+            if (key == SDLK_m) { core_tool = core_tool != 1; core_set_pointer(); }
             if (key == SDLK_q) _do_quake();
             if (key == SDLK_f) _do_flood();
             if (key == SDLK_v) _do_volcano();
@@ -3595,7 +3628,7 @@ static void game_handle_event(const SDL_Event *event)
             /* Host S mapping for source selection asm:2021-2042 (> cost). */
             if (key == SDLK_s && player >= 0 && player <= 1 &&
                 core_mana(player) > (int32_t)A4_LONG(0x8496) &&
-                (A4_WORD(0x82c4+player*46)&0x10)) core_swamp_selected = 1;
+                (A4_WORD(0x82c4+player*46)&0x10)) { core_swamp_selected = 1; core_set_pointer(); }
         }
         if ((key == SDLK_LEFT || key == SDLK_KP_4 || key == SDLK_KP_7 || key == SDLK_KP_1) && xoff > 0) --xoff;
         if ((key == SDLK_RIGHT || key == SDLK_KP_6 || key == SDLK_KP_9 || key == SDLK_KP_3) && xoff < 56) ++xoff;
@@ -3662,7 +3695,7 @@ static void game_handle_event(const SDL_Event *event)
             if (event->button.button == SDL_BUTTON_LEFT) {
                 /* asm:7451-7489 clears selection before command execution.
                  * Diagnostic picks use this same vertex-to-byte mapping. */
-                core_swamp_selected = 0;
+                core_swamp_selected = 0; core_set_pointer();
                 core_swamp(player,(column-1)&255,(row-1)&255,___newrand);
             }
             return;

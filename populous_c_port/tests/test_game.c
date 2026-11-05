@@ -4918,6 +4918,15 @@ static void fixture_sprite_pixels(const char *name, int keep)
     }
     assert(!fclose(file));
 }
+/* The HUD draws in the original font: copy raw/font.dat (_font_data). */
+static void copy_real_font(void)
+{
+    char path[4160]; snprintf(path,sizeof path,"%s/raw/font.dat",POPULOUS_DEFAULT_ASSET_DIR);
+    FILE *in=fopen(path,"rb"); assert(in);
+    uint8_t bytes[8192]; size_t count=fread(bytes,1,sizeof bytes,in); fclose(in); assert(count>0);
+    snprintf(path,sizeof path,"%s/font.dat",test_data_directory);
+    FILE *out=fopen(path,"wb"); assert(out && fwrite(bytes,1,count,out)==count && !fclose(out));
+}
 static void prepare_rule_data(void)
 {
     if (getenv("POPULOUS_TEST_REAL_DATA")) return;
@@ -4947,6 +4956,7 @@ static void prepare_rule_data(void)
         snprintf(name,sizeof name,"land%d.keep.u8",land); fixture_pixels(name,GFX_LAND_PIXELS,1);
     }
     assert(!setenv("POPULOUS_ASSET_DIR",test_data_directory,1));
+    copy_real_font();
 }
 static void cleanup_rule_data(void)
 {
@@ -4963,6 +4973,7 @@ static void cleanup_rule_data(void)
         snprintf(path,sizeof path,"%s/pixels/land%d.keep.u8",test_data_directory,land); assert(!unlink(path));
     }
     snprintf(path,sizeof path,"%s/pixels",test_data_directory); assert(!rmdir(path));
+    snprintf(path,sizeof path,"%s/font.dat",test_data_directory); assert(!unlink(path));
     assert(rmdir(test_data_directory)==0);
 }
 
@@ -6034,8 +6045,11 @@ static void test_power_toolbar(void)
         if (gate==3) player=2;
         if (gate==4) pause=1;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        int16_t old_pointer=pointer;
         power_icon_click(2,2,SDL_BUTTON_LEFT);
         assert(core_swamp_selected==(gate==2));
+        /* Only the armed swamp writes _pointer = 5 (asm:2042). */
+        assert(pointer==(gate==2 ? 5 : old_pointer)); pointer=old_pointer;
         assert(a4_same(before));
     }
     /* Paused, finished, invalid player and diagnostic view post nothing;
@@ -6629,6 +6643,19 @@ static void test_flood_delayed_hazards(void)
     assert(peeps[22]==2 && core_leader(0)==2 && map_who[650]==2);
 }
 
+/* HUD line/column holds text exactly as amiga_text draws it on black. */
+static int hud_text_at(int line, int column, const char *text)
+{
+    static uint8_t scratch[320*200]; memset(scratch,0,sizeof scratch);
+    amiga_text(scratch,column*8,0,text);
+    int lit=0;
+    for (int y=0;y<8;++y) for (int x=column*8;x<column*8+8*(int)strlen(text);++x) {
+        lit+=scratch[y*320+x]!=0;
+        if (prg_screen->chunky_buffer[(200+line*8+y)*320+x]!=prg_screen->palette[scratch[y*320+x]]) return 0;
+    }
+    return lit>0;
+}
+
 static void test_flood_input(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
@@ -6665,11 +6692,10 @@ static void test_flood_input(void)
     }
     assert(game_reset(0)); game_render();
     assert(strstr(SDL_GetWindowTitle(prg_screen->window),"F flood 40000"));
-    /* Verify visible text rather than only the window title; four-pixel glyph
-     * pitch leaves the entire flood label inside the 320-pixel HUD. */
-    uint32_t line[320*7]; memcpy(line,prg_screen->chunky_buffer+231*320,sizeof line);
-    hud_text(64,231,"F FLOOD 40000");
-    assert(!memcmp(line,prg_screen->chunky_buffer+231*320,sizeof line));
+    /* Verify visible text rather than only the window title: the flood label
+     * is HUD line 5 column 16 in the original 8x8 font. */
+    mousex=-100; game_render();
+    assert(hud_text_at(5,16,"F FLOOD 40000"));
     _closeall(); SDL_Quit();
 }
 
@@ -6870,9 +6896,8 @@ static void test_volcano_input(void)
     }
     assert(game_reset(0)); game_render();
     assert(strstr(SDL_GetWindowTitle(prg_screen->window),"V volcano 10000"));
-    uint32_t line[320*7]; memcpy(line,prg_screen->chunky_buffer+231*320,sizeof line);
-    hud_text(128,231,"V VOLCANO 10000");
-    assert(!memcmp(line,prg_screen->chunky_buffer+231*320,sizeof line));
+    mousex=-100; game_render();
+    assert(hud_text_at(5,0,"V VOLCANO 10000")); /* original 8x8 font, HUD line 5 */
     _closeall(); SDL_Quit();
 }
 
@@ -7847,21 +7872,15 @@ static void test_armageddon_render(void)
     game_render(); assert(a4_same(before));
     const char *title=SDL_GetWindowTitle(prg_screen->window);
     assert(strstr(title,"WAR") && strstr(title,"A Armageddon 80000") && strstr(title,"Esc quit"));
+    mousex=-100; memcpy(before,prg_a4_area,sizeof before); game_render(); assert(a4_same(before));
     uint32_t hud[320*56]; memcpy(hud,prg_screen->chunky_buffer+320*200,sizeof hud);
-    /* Check glyph presence using the existing renderer; separately prove the
-     * literal strings fit its four-pixel advance rather than trusting clipping. */
+    /* Original 8x8 font, 40 columns x 7 lines (strings <= 40 chars). */
     const char *lines[]={
-        "Q QUAKE 2500 / F FLOOD 40000 / V VOLCANO 10000 / A ARMAGEDDON 80000",
-        "WAR - TERRAIN AND MAGNET INPUT LOCKED / ARROWS SCROLL / MAP CLICK",
-        "SPACE PAUSE / R RESET / ESC QUIT / D VIEW",
-        "0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET / S SWAMP 5000 / K KNIGHT 7500"
+        "WAR BLUE","WAR: TERRAIN+MAGNET LOCKED, ARROWS/MAP","AFTER TARGET: MAGNET / D VIEW",
+        "0 GATHER 1 SETTLE 2 JOIN 3 FIGHT R RESET","S SWAMP 5000 Q QUAKE 2500 K KNIGHT 7500",
+        "V VOLCANO 10000 F FLOOD 40000 M MAGNET","A ARMAGEDDON 80000 SPC PAUSE ESC QUIT"
     };
-    const int rows[]={231,213,249,222};
-    for (unsigned line=0;line<sizeof lines/sizeof lines[0];++line) {
-        assert(4+4*strlen(lines[line])<=320 && rows[line]+5<=256);
-        hud_text(4,rows[line],lines[line]);
-    }
-    assert(!memcmp(hud,prg_screen->chunky_buffer+320*200,sizeof hud));
+    for (int line=0;line<7;++line) assert(strlen(lines[line])<=40 && hud_text_at(line,0,lines[line]));
     game_render(); assert(a4_same(before));
     assert(!memcmp(hud,prg_screen->chunky_buffer+320*200,sizeof hud));
     pause=1; game_render(); assert(strstr(SDL_GetWindowTitle(prg_screen->window),"PAUSED"));
@@ -9243,9 +9262,9 @@ static void test_knight_cast(void)
 static void test_knight_render(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
-    const char *line="0 GATHER 1 SETTLE 2 JOIN 3 FIGHT / M MAGNET / S SWAMP 5000 / K KNIGHT 7500";
-    /* Four-pixel advance and three-pixel glyph: remain inside the HUD. */
-    assert(4+4*strlen(line)<=302);
+    const char *line="S SWAMP 5000 Q QUAKE 2500 K KNIGHT 7500";
+    /* Original 8x8 font: the knight line fits 40 columns. */
+    assert(strlen(line)<=40); mousex=-100;
     for (int state=0; state<6; ++state) {
         core_result=state>=3 ? state-2 : 0; pause=state==1; A4_WORD(0xae80)=state==2;
         core_swamp_selected=core_tool=1;
@@ -9253,9 +9272,7 @@ static void test_knight_render(void)
         game_render(); assert(a4_same(before));
         const char *title=SDL_GetWindowTitle(prg_screen->window);
         assert(strstr(title,"K knight 7500") && strstr(title,"Esc quit") && strlen(title)<512);
-        uint32_t hud[320*56]; memcpy(hud,prg_screen->chunky_buffer+320*200,sizeof hud);
-        hud_text(4,222,line);
-        assert(!memcmp(hud,prg_screen->chunky_buffer+320*200,sizeof hud));
+        assert(hud_text_at(4,0,line));
         assert(a4_same(before));
     }
     _closeall(); SDL_Quit();
@@ -11701,6 +11718,59 @@ static void test_amiga_text(void)
     memcpy(game_font, saved, sizeof saved); game_font_loaded = loaded;
 }
 
+/* _pointer (asm:615-620, 2042, 2110-2131), _a_sprite frames (asm:16783-16830),
+ * top-left hotspot (asm:19928-19972), HUD font and _move_mana (asm:3164-3244). */
+static void test_pointer_hud_mana(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    assert(player==0 && pointer==1);
+    SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_m;
+    game_handle_event(&key); assert(core_tool==1 && pointer==2);
+    player=1; game_handle_event(&key); assert(core_tool==0 && pointer==4);
+    game_handle_event(&key); assert(pointer==3);
+    player=0; game_handle_event(&key); assert(pointer==1);
+    core_tool=2; core_set_pointer(); assert(pointer==0);
+    core_tool=0; pointer=7; mousex=-100; game_render(); assert(pointer==1); /* asm:615-620 */
+    A4_LONG(0x9a02)=6000; A4_WORD(0x82c4)|=0x10; key.key.keysym.sym=SDLK_s;
+    game_handle_event(&key); assert(core_swamp_selected && pointer==5);
+    core_swamp_selected=0; core_set_pointer(); assert(pointer==1);
+    /* HUD: original font glyphs (status and key lines). */
+    game_render();
+    assert(hud_text_at(0,0,"PLAY BLUE") && hud_text_at(3,0,"0 GATHER 1 SETTLE 2 JOIN 3 FIGHT R RESET"));
+    assert(hud_text_at(6,0,"A ARMAGEDDON 80000 SPC PAUSE ESC QUIT"));
+    /* Pointer: non-zero plane values of frame 0x4e at (mousex,mousey), mask ignored. */
+    memset(game_assets->sprite_indices,0,sizeof game_assets->sprite_indices);
+    memset(game_assets->sprite_keep,0,sizeof game_assets->sprite_keep);
+    game_assets->sprite_indices[0x4e*256]=7; game_assets->sprite_indices[0x4e*256+15*16+15]=3;
+    game_assets->sprite_indices[0x53*256+16+1]=11;
+    uint32_t *off=malloc(320*256*sizeof *off); assert(off);
+    mousex=-100; game_render(); memcpy(off,prg_screen->chunky_buffer,320*256*sizeof *off);
+    for (int sample=0; sample<2; ++sample) {
+        mousex=100; mousey=sample ? 236 : 150; game_render();
+        int changed=0;
+        for (int pixel=0; pixel<320*256; ++pixel) changed+=prg_screen->chunky_buffer[pixel]!=off[pixel];
+        assert(prg_screen->chunky_buffer[mousey*320+100]==prg_screen->palette[7]);
+        assert(prg_screen->chunky_buffer[(mousey+15)*320+115]==prg_screen->palette[3]);
+        assert(changed<=2);
+    }
+    key.key.keysym.sym=SDLK_s; game_handle_event(&key); assert(pointer==5);
+    game_render(); assert(prg_screen->chunky_buffer[(mousey+1)*320+101]==prg_screen->palette[11]);
+    core_swamp_selected=0; core_set_pointer();
+    mousex=-100; free(off);
+    /* Mana marker: sprite 69 on the scale per _mana_values thresholds. */
+    game_assets->sprite_indices[69*256]=9; game_assets->sprite_keep[69*256]=1;
+    memset(game_assets->background,0,sizeof game_assets->background);
+    static const struct { int32_t mana; int x, y; } marks[] = {
+        {0,174,15},{10,176,16},{11,176,16},{2500,208,32},{7000,236,46},{160000,304,80},{160001,311,87},{5000000,311,87}};
+    for (size_t sample=0; sample<sizeof marks/sizeof *marks; ++sample) {
+        A4_LONG(0x9a02)=(uint32_t)marks[sample].mana; game_render();
+        assert(game_pixels[marks[sample].y*320+marks[sample].x]==9);
+        for (size_t other=0; other<sizeof marks/sizeof *marks; ++other)
+            if (marks[other].x!=marks[sample].x) assert(game_pixels[marks[other].y*320+marks[other].x]!=9);
+    }
+    _closeall(); SDL_Quit();
+}
+
 static void end_kill(int owner)
 {
     for (int p = 0; p < no_peeps; ++p) if (peep_owner(p) == owner) set_peep_word(p,4,0);
@@ -11779,6 +11849,7 @@ static void test_end_transition(void)
     char path[512]; snprintf(path, sizeof path, "%s/font.dat", test_data_directory); assert(!unlink(path));
     snprintf(path, sizeof path, "%s/level.dat", test_data_directory); assert(!unlink(path));
     assert(game_reset(0) && !game_font_loaded);
+    copy_real_font();
     _closeall(); SDL_Quit();
 }
 
@@ -12091,6 +12162,7 @@ int main(int argc, char **argv)
     test_walker_extras();
     test_original_selection();
     test_end_stats(); test_level_codes(); test_next_level(); test_amiga_text();
+    test_pointer_hud_mana();
     test_original_generator();
     test_original_placement();
     prepare_rule_data();

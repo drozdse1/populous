@@ -228,10 +228,11 @@ Belege: `populous_c_port/populous_prg.c:1030-1062`, `:1509-1543`;
 ## P2 - Originalbedienung und Grafik vervollstaendigen
 
 - [ ] **Teilweise:** Toolbar anklickbar (alle `_zoom_map`-Icons, asm:1700-2451). Erledigt: Abfragemodus (`_interogate`) mit Schild (`_show_the_shield`, ohne Flaggen-/Waffen-Icons mangels `_icon_data`) und dauerhafte Icon-Hervorhebung (`_toggle_icon`) fuer Tendenz, Modus, Musik, FX und Pause. Offen: Options-/Spieloptionen-/Nachrichten-Requester (`_do_action` 7/8/2), kurze Tastendruck-Blitze der Power-/View-Icons.
-- [ ] **Fehlt:** Originale Manaanzeige, Schild, Bewohner-/Siedlungsabfrage und Informationsanzeigen. `_move_mana` ist Praesentation, nicht die bereits vorhandene Manaerzeugung.
+- [ ] **Teilweise:** Originale Manaanzeige erledigt (`_move_mana` asm:3164-3244: Sprite 69 auf der Manaskala nach `_mana_values`, reine Praesentation). Offen: weitere Bewohner-/Siedlungs-Informationsanzeigen.
 - [ ] **Fehlt:** Requester, Optionen, Namens-/Texteingabe und originale Dialog-/Rueckkehrpfade.
 - [ ] **Fehlt:** Originalschrift dekodieren und verwenden; eingebettetes `_font_data` und separates Launcher-`font.dat` vergleichen, nicht ungeprueft gleichsetzen.
-- [ ] **Fehlt:** Originalen Mauszeiger und Auswahl-/Zielanzeigen statt Ersatzkreuz integrieren.
+- [ ] **Teilweise:** Originaler Mauszeiger erledigt (`_pointer` A4 0x84b6 wie im Original gesetzt, `_a_sprite`-Frames aus `_sprite_to_amiga` asm:16783-16830, Hotspot oben links nach `_move_pointer` asm:19928-19972; Ersatzkreuz entfernt). Abweichung: nach Sumpfziel bleibt der Port-Magnet samt Zeiger. Offen: weitere Auswahl-/Zielanzeigen.
+- [x] Port-HUD (keine Originalfunktion, y 200..255) nutzt die Originalschrift ueber `amiga_text`, 40 Spalten x 7 Zeilen; Ersatzschrift `hud_text` entfernt.
 - [ ] **Fehlt:** Bereits extrahierte 32x32-Grosssprites in Laufzeit-Assets, Zeichnen und passende Spielzustaende integrieren.
 - [x] Originalsprites fuer exakte Feierflags 5/6, Brandreste 0x80 und kanonische Heading-Geh-/Warte-/Wasserzustaende anbinden; originale Frameoffsets und Anker, volle Vierbyte-Praesenz statt Pointer-Halbwort, unveraenderter A4-Zustand beim Zeichnen.
 - [x] Kampfframes nach beiden Verlustberechnungen und vor dem Abschluss weiterschalten: originale Dreierzyklen 70/130/134/138 nach roher Heading-Praesenz; exakt null ueberspringen, negative Vor-Clamp-Population beachten. Zeichnen nutzt gespeicherte gueltige Kampfframes ohne Zustandsmutation.

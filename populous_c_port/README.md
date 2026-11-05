@@ -550,7 +550,7 @@ operations finish; only then does it expand RGB12 to ARGB. This matters for
 LAND2's nonzero colour bits under keep masks. PNG alpha previews are not used.
 The source projection is `left=176+16*(u-v)`, `top=64+8*(u+v)-8*map_alt`,
 row-major 8x8 cells; overlays are eight pixels higher. Front faces use small
-frames 77/76. The height-aware cursor uses the corresponding 9x9 vertex lattice,
+frames 77/76. Mouse picking uses the corresponding 9x9 vertex lattice,
 `x=192+16*(u-v)`, `y=72+8*(u+v)-8*vertex_height`, choosing a nearby projected
 vertex (frontmost on ties). This is bounded geometric picking, not an exact
 translation of every original `_sculpt` screen-region heuristic.
@@ -570,9 +570,23 @@ remains for malformed/legacy frames. Exact-zero town losses after normal entry
 retain their combat frame and use the original fallback reward of 100; direct
 completion fixtures without entry still exercise retained town-frame rewards.
 Full combat timing parity remains separate work. No
-copper, large-sprite specials, original cursor/font,
-audio or toolbar requester is claimed. A separate compact HUD explains
-the implemented keyboard controls. `--battle-frames` checks all 65,536 stored
+copper, large-sprite specials, audio or toolbar requester is claimed.
+
+The mouse pointer is the original hardware sprite: `_pointer` (A4 0x84b6) is
+set as in the original (query 0, terrain player*3+1, magnet player+2, swamp 5;
+asm:615-620, 1054-1056, 2042, 2110-2131, 7480-7487) and indexes the
+`_sprite_to_amiga` frames 0x44,0x4e,0x50,0x51,0x4f,0x53,0x52,0x81
+(asm:16783-16830). Every non-zero plane value is opaque in _palette (colours
+16-31 repeat 0-15); the mask is ignored as in `_convert_sprite`; the hotspot
+is the top-left pixel (`_move_pointer`, asm:19928-19972). It is drawn last over
+the full 320x256 frame; the former substitute vertex cross is gone. After a
+swamp target the port keeps its magnet tool and pointer, where the original
+falls back to mode-1. `_move_mana` (asm:3164-3244) draws sprite 69 on the
+panel mana scale: x 160+16*(step-1)+2*eighth, y 8+8*(step-1)+eighth from the
+`_mana_values` thresholds, at (311,87) above 160000.
+The lower HUD (y 200..255) is a port addition, not original: seven 40-column
+lines in the original 8x8 font (`amiga_text`, raw/font.dat == `_font_data`)
+explain status and the implemented keyboard controls. `--battle-frames` checks all 65,536 stored
 word values for each base, death/zero distinctions and stored-frame pixels;
 the full suite also checks once-per-pair resident updates. Full normal/sanitized
 suites, original-data matches and all
