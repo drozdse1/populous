@@ -29,6 +29,8 @@ SANITIZER_FLAGS = -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all 
 
 TARGET = populous_init_port
 SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c
+# populous_prg.c is a unity build of these fragments (kept for test #include).
+PRG_MODULES = modules/01_preamble.c modules/02_rules.c modules/03_ui_save.c modules/04_render_input.c a4_state.h
 CPPFLAGS += -DPOPULOUS_DEFAULT_ASSET_DIR='"$(abspath ../binaries/populous-extracted)"'
 OBJS = $(SRCS:.c=.o)
 HEADERS = $(wildcard *.h)
@@ -44,6 +46,8 @@ $(TARGET): $(OBJS)
 
 %.o: %.c $(HEADERS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+populous_prg.o: populous_prg.c $(HEADERS) $(PRG_MODULES)
 
 tests/test_runtime: $(RUNTIME_SOURCES)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< $(RUNTIME_LINK) -o $@ $(LDLIBS)
@@ -71,10 +75,10 @@ test-sanitize: tests/test_runtime_sanitize
 # Only activate game checks once the core step supplies real test sources.
 ifneq ($(wildcard tests/test_game.c),)
 .PHONY: test-game
-tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c $(HEADERS)
+tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c $(HEADERS) $(PRG_MODULES)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c -o $@ $(LDLIBS)
 
-tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c $(HEADERS)
+tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c $(HEADERS) $(PRG_MODULES)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c -o $@ $(LDLIBS)
 
 test-game: tests/test_game

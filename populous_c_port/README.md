@@ -1,5 +1,16 @@
 # Populous Amiga C/SDL2 port
 
+## C source layout
+
+The playable PRG lives under a unity build:
+
+- `a4_state.h` — A4 globals with speaking names (`war_flag`, `map_vertex_word`, `core_mana`, …)
+- `populous_prg.c` — includes `modules/01_preamble.c` … `04_render_input.c` in order
+- existing units — `populous_init.c` (launcher), `graphics.c`, `audio.c`, `land_data.c`, `level_data.c`, `sdl_lowlevel.c`
+
+See `modules/README.md`. Keep behaviour identical when splitting further; run `make test`.
+
+
 This is an incremental study port of the 1993 Hit Squad release, based on the
 [tetracorp disassembly](https://github.com/tetracorp/populous). It preserves the
 launcher (`populous_init.c`), PRG (`populous_prg.c`), A4-relative state and SDL2
