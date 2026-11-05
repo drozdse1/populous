@@ -167,6 +167,17 @@ typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
 #define raise_min_row    A4_WORD(0x2f8e)
 #define raise_max_row    A4_WORD(0x2f90)
 
+/* Battle / water-loss scratch and HUD view toggles. */
+#define a4_walk_death  A4_WORD(0x2fb0)          /* per-frame peep water/battle loss */
+#define view_fight       A4_WORD(0x2f92)
+#define view_people      A4_WORD(0x2f94)
+
+/* Game-options / requester scratch. */
+#define bring_up_two     A4_WORD(0x3080)          /* _bring_up_two */
+#define saved_flag       A4_WORD(0x3054)          /* _saved */
+#define options_new_map  A4_WORD(0x309a)          /* map-restart / landscape pick */
+#define surrender_side   A4_WORD(0x8258)          /* _surender; -1 = none */
+
 /* Life-scan scratch used by _check_life / settlement growth. */
 #define life_water_flag  A4_WORD(0x2fb2)
 #define life_swamp_count A4_WORD(0x2ff8)

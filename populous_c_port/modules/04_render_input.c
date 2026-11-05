@@ -96,7 +96,7 @@ static void _move_peeps(void)
                  * original flags; otherwise store the word before signed death.
                  * Still wet skips framing and all lower-priority consumers. */
                 if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
-                uint16_t loss = (uint16_t)(2u*(uint16_t)A4_WORD(0x2fb0));
+                uint16_t loss = (uint16_t)(2u*(uint16_t)a4_walk_death);
                 set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)-loss));
                 if (peep_word(person,4)<=0) core_remove(person);
                 continue;
@@ -116,7 +116,7 @@ static void _move_peeps(void)
              * 0x22/42/62 finish waiting loss and any retry before cleanup.
              * Exact-0x80 framing is inert; even nonpositive loss reaches its timer. */
             if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
-            uint16_t loss = (uint16_t)(2u*(uint16_t)A4_WORD(0x2fb0));
+            uint16_t loss = (uint16_t)(2u*(uint16_t)a4_walk_death);
             set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)-loss));
             peeps[person*22] = flags &= 0xef;
             /* asm:5728,5810-5832: zero skips this first frame, negative does
@@ -149,7 +149,7 @@ static void _move_peeps(void)
         } else if (flags&0x60) {
             /* _move_peeps asm:4213-4268: loss every tick, unsigned old counter. */
             core_frame_walker(person);
-            set_peep_word(person,4,peep_word(person,4)-A4_WORD(0x2fb0));
+            set_peep_word(person,4,peep_word(person,4)-a4_walk_death);
             unsigned previous = (uint16_t)peep_word(person,6);
             set_peep_word(person,6,(uint16_t)(previous+1));
             if (previous > 14) {
@@ -178,7 +178,7 @@ static void _move_peeps(void)
              * Water cells never get here: they end the turn at the top. */
             if (map_blk[position] == 53) {
                 core_remove(person);
-                A4_WORD(0x2fac) = 66;
+                effect = 66;
                 if (!(game_mode&2)) map_blk[position] = 15;
                 continue;
             }
@@ -192,7 +192,7 @@ static void _move_peeps(void)
             if (peep_word(person,18) &&
                 (int16_t)(peep_word(person,8)-peep_word(person,10)) != peep_word(person,18))
                 set_peep_word(person,18,0);
-            set_peep_word(person,4,peep_word(person,4)-A4_WORD(0x2fb0));
+            set_peep_word(person,4,peep_word(person,4)-a4_walk_death);
             core_collision_wait(person);
             if (peep_word(person,4)<=0) core_remove(person);
         }
@@ -234,8 +234,6 @@ static void core_view_cell(int16_t cell)
     xoff = (int16_t)((cell & 63) - 3);
     yoff = (int16_t)((cell >= 0 ? cell/64 : -((-cell+63)/64)) - 3);
 }
-#define view_fight  A4_WORD(0x2f92)
-#define view_people A4_WORD(0x2f94)
 /* Battle cycle, asm:2229-2290. The original never stops when no battle exists
  * and view_fight+1 == no_peeps (the wrap skips the end test); bound the scan. */
 static void core_next_battle(void)
@@ -298,7 +296,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else if (icon == 1 && line == 1) { if (post) { mailbox[0] = 14; mailbox[2] = 8; } }
         /* _do_action y=6 asm:18591-18608. The port's pause also stops the
          * mailbox consumer, so this icon toggles directly rather than posting. */
-        else if (icon == 1 && line == 3) { pause = !pause; A4_WORD(0x9a1a) = 0; }
+        else if (icon == 1 && line == 3) { pause = !pause; toggle = 0; }
         else if (icon == 2 && line == 2) { if (post) { mailbox[0] = 14; mailbox[2] = 2; } }
         else return 0;
         return 1;

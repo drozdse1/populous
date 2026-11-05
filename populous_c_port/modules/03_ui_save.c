@@ -295,14 +295,14 @@ static void core_game_options_open(void)
     core_req.kind = CORE_REQ_GAME;
     core_req.saved_serial = serial_off; core_req.saved_paint = paint_map; core_req.saved_player = player;
     core_req.saved_human = core_rec_w(core_stats(player),6); core_req.saved_conquest = in_conquest;
-    A4_WORD(0x3080) = 0;  /* _bring_up_two */
+    bring_up_two = 0;
     core_buttons_install(); core_menu_install(core_game_entry(0), core_game_template, 17);
     static const int ticks[] = {1,2,3,4,5,6,7,8,9,10};
     int16_t human = core_rec_w(core_stats(player),6);
     int16_t values[] = {serial_off, !serial_off, !paint_map, paint_map, !player, player, !human, human,
                         in_conquest != -1, in_conquest == -1};
     for (int k = 0; k < 10; ++k) core_rec_text(core_game_entry(ticks[k]))[0] = (char)(0x80 + values[k]);
-    A4_WORD(0x3054) = 0;  /* _saved */
+    saved_flag = 0;
     core_requester_layout();
 }
 static void core_game_tick(int on, int off)
@@ -334,7 +334,7 @@ static int core_custom_new_map(int16_t new_map)
 static void core_game_options_close(void)
 {
     core_req.kind = CORE_REQ_NONE; left_button = 2;
-    int16_t new_map = A4_WORD(0x309a);
+    int16_t new_map = options_new_map;
     if (new_map && !(in_conquest == -1 ? core_custom_new_map(new_map) : game_reset_start(current_start)))
         POP_LOG_ERROR("Game options: map restart failed; keeping the current game.");
 }
@@ -373,9 +373,9 @@ static void core_game_options_click(void)
     case 11: core_set_options_open(); return;
     case 12: core_file_open(1); return;                     /* asm:13259-13266 */
     case 13: if (serial_off) { core_file_open(0); return; } break;   /* asm:13267-13276 */
-    case 14: A4_WORD(0x309a) = 1; core_game_options_close(); return;
-    case 15: A4_WORD(0x309a) = (int16_t)(ground_in + 2); core_game_options_close(); return;
-    case 16: A4_WORD(0x8258) = player; core_game_options_close(); return;  /* _surender */
+    case 14: options_new_map = 1; core_game_options_close(); return;
+    case 15: options_new_map = (int16_t)(ground_in + 2); core_game_options_close(); return;
+    case 16: surrender_side = player; core_game_options_close(); return;
     default: break;
     }
     int result = core_check_cancel(core_end_ok, core_end_cancel);
@@ -797,7 +797,7 @@ static void core_file_click(void)
     snprintf(name + strlen(name), sizeof name - strlen(name), "%.19s", core_filename);
     if (core_file.save) {
         if (!core_save_game(name)) { core_file.error = 1; return; }   /* "ERROR IN SAVING" */
-        A4_WORD(0x3054) = 1;   /* _saved; the level.dat disk check is not needed here */
+        saved_flag = 1;   /* level.dat disk check is not needed here */
     } else if (!core_load_game(name)) POP_LOG_ERROR("Load game: %s could not be loaded.", name);
     core_game_options_close();   /* _save_load returns 1 either way */
 }
@@ -1134,7 +1134,7 @@ static void core_world_return(int result)
 {
     in_conquest = (int16_t)result;
     if (result == -1 && core_world.origin != CORE_WORLD_OPTIONS) { core_world_open(core_world.origin); return; }
-    if (core_world.origin == CORE_WORLD_OPTIONS) A4_WORD(0x309a) = 1;
+    if (core_world.origin == CORE_WORLD_OPTIONS) options_new_map = 1;
     if (result == -1 && !core_custom_new_map(1)) {
         POP_LOG_ERROR("World selection: landscape %d could not be started.", (int)seed);
         in_conquest = core_req.saved_conquest;

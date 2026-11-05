@@ -1062,7 +1062,7 @@ static void core_consume_terrain_mailboxes(void)
                 const uint8_t *other = A4_DISP(0x82b6 + (owner ? 0 : 1) * 46);
                 if (!(other[2] == 7 && other[0] == 14)) core_options_open(x ? player : not_player);
             } else if (y == 8 && owner == player && !core_req.kind) {
-                A4_WORD(0x309a) = 0; core_game_options_open();
+                options_new_map = 0; core_game_options_open();
             }
             break;
         default: break;
@@ -1083,7 +1083,7 @@ static int core_do_magnet(int owner, int x, int y)
 {
     if ((int32_t)core_mana_long(owner) < (int32_t)mana_magnet_cost ||
         !core_leader(owner) || war_flag) return 0;
-    A4_WORD(0x2fac) = 77;
+    effect = 77;
     core_mana_long(owner) -= mana_magnet_cost;
     if (x >= 64) x = 63;
     if (x < 0) x = 0;
@@ -1129,7 +1129,7 @@ static int core_flood(int owner)
         !(stats_power_mask(owner)&0x80)) return 0;
     core_mana_long(owner) -= mana_flood_cost;
     if (owner == player) score_long += 250;
-    A4_WORD(0x2fac) = 74;
+    effect = 74;
     for (int index = 0; index < 4225; ++index)
         if (A4_WORD(0xae86+index*2) > 0) --A4_WORD(0xae86+index*2);
     _make_map();
@@ -1157,7 +1157,7 @@ static int core_knight(int owner)
     core_target(owner)=position;
     owner_magnet(owner)=position;
     core_leader(owner)=0;
-    A4_WORD(0x2fac)=69;
+    effect=69;
     return 1;
 }
 
@@ -1175,7 +1175,7 @@ static int core_war(int owner)
     if (owner == player) score_long += 5000;
     for (int person = 0; person < no_peeps; ++person)
         memset(peeps+person*22+14,0,4);
-    A4_WORD(0x2fac) = 73;
+    effect = 73;
     war_flag = 1;
     return 1;
 }
@@ -1325,7 +1325,7 @@ static int core_quake(int owner, int column, int row, WorldRandom random)
     core_mana_long(owner) -= A4_LONG(0x8492);
     raise_min_col = raise_max_col = column;
     raise_min_row = raise_max_row = row;
-    A4_WORD(0x2fac) = 76;
+    effect = 76;
     if (owner == player) score_long += 25;
     core_quake_shake();
     for (int pass = 0; pass < 2; ++pass)
@@ -1365,7 +1365,7 @@ static int core_volcano(int owner, int column, int row, WorldRandom random)
     if (owner == player) score_long += 100;
     raise_min_col = raise_max_col = column;
     raise_min_row = raise_max_row = row;
-    A4_WORD(0x2fac) = 75;
+    effect = 75;
     for (int pass = 0; pass < 5; ++pass)
         for (int x = column+pass; x <= column+8-pass; ++x)
             for (int y = row+pass; y <= row+8-pass; ++y) {
@@ -1388,7 +1388,7 @@ static int core_volcano(int owner, int column, int row, WorldRandom random)
     if (raise_max_row > 63) raise_max_row = 63;
     core_make_map_region(raise_min_col-1,raise_min_row-1,
                          raise_max_col,raise_max_row);
-    A4_WORD(0x2fac) = 75;
+    effect = 75;
     return 1;
 }
 
@@ -1512,7 +1512,7 @@ static void original_clear(WorldRandom random, unsigned internal_level)
     }
     if (internal_level > 0x4d3) A4_LONG(0x9a12) = 2700; /* mana_values[3] + 200 */
     devil_magnet = god_magnet = 0x820;
-    pointer = 1; mode = 2; A4_WORD(0x8258) = -1;
+    pointer = 1; mode = 2; surrender_side = -1;
     right_button = left_button = 2;
 }
 
@@ -1868,7 +1868,7 @@ static void core_install_land(const LandRules *loaded)
     const int offsets[] = {0x2fe2,0x2fb6,0x2fcc,0x2ffa,0x3010,0x2f96};
     for (int table = 0; table < 6; ++table)
         for (int index = 0; index < (table == 4 ? 3 : 11); ++index) A4_WORD(offsets[table]+index*2) = tables[table][index];
-    A4_WORD(0x2fb0) = loaded->walk_death;
+    a4_walk_death = loaded->walk_death;
     memcpy(map_colour_data,loaded->map_colour,32);
 }
 
@@ -2032,7 +2032,7 @@ static int game_reset_start(StartSelection selection)
     core_clear_terrain_mailboxes();
     /* Every start: _setup_display clears _surender (asm:1149) and
      * _two_players derives _not_player from _player (asm:11779-11786). */
-    A4_WORD(0x8258) = -1; not_player = player ? 0 : 1;
+    surrender_side = -1; not_player = player ? 0 : 1;
     /* Single-player conquest start sets _serial_off (asm:12768); the end
      * score reads it (asm:14239). _score was cleared with the staged A4. */
     serial_off = 1;
@@ -2077,8 +2077,8 @@ static void game_tick(void)
     /* _move_peeps asm:4323-4347, after the peep loop: the pass's pre-move
      * good_pop or a surrender ends the game, _player first (___end_game(1)
      * lost, else ___end_game(0) won). There is no draw. */
-    if (!core_good_pop(player) || player == A4_WORD(0x8258)) core_result = 2;
-    else if (!core_good_pop(not_player) || not_player == A4_WORD(0x8258)) core_result = 1;
+    if (!core_good_pop(player) || player == surrender_side) core_result = 2;
+    else if (!core_good_pop(not_player) || not_player == surrender_side) core_result = 1;
     /* Preserve the C population/result timing; never modify terrain mid-movement. */
     if (core_result) core_clear_terrain_mailboxes();
     else core_consume_terrain_mailboxes();
