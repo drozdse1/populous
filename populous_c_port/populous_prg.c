@@ -744,6 +744,7 @@ static void _make_map(void)
 #define core_target(owner) A4_WORD(0x99f8 + (owner) * 16)
 static int core_result, core_battles, core_settlements, core_tool;
 static int core_swamp_selected;
+static int core_shake_dy; /* terrain-only vertical offset, quake shake */
 static const int16_t core_offsets[25] = {
     0,-64,1,64,-1,-63,65,63,-65,-128,2,128,-2,-126,130,126,-130,
     -127,-62,66,129,127,62,-66,-129
@@ -1869,6 +1870,23 @@ static int core_war(int owner)
 typedef uint16_t (*WorldRandom)(void);
 /* _do_quake asm:7863-8042, gameplay only (P is not the editor).
  * Terrain-only pre-mutation shake and audio remain separate work. */
+/* _do_quake asm:7895-7925: screen_origin -40, then per frame -120/+120
+ * bytes; at 40 bytes a row that is -4 lines on even c, -1 on odd c. */
+static int core_quake_shake_dy(int c) { return c&1 ? -1 : -4; }
+static void core_quake_delay_sdl(int ms) { SDL_Delay((Uint32)ms); }
+static void (*core_quake_delay)(int ms) = core_quake_delay_sdl;
+/* 20 synchronous frames of pre-quake terrain (no ticks), unconditional on
+ * owner; each frame is presented and waits about one vblank. */
+static void core_quake_shake(void)
+{
+    if (!prg_screen || !game_assets) return;
+    for (int c = 0; c < 20; ++c) {
+        core_shake_dy = core_quake_shake_dy(c);
+        game_render();
+        core_quake_delay(20);
+    }
+    core_shake_dy = 0;
+}
 static int core_quake(int owner, int column, int row, WorldRandom random)
 {
     if (owner < 0 || owner > 1 || column < 0 || column > 56 || row < 0 || row > 56 ||
@@ -1880,6 +1898,7 @@ static int core_quake(int owner, int column, int row, WorldRandom random)
     A4_WORD(0x2f8e) = A4_WORD(0x2f90) = row;
     A4_WORD(0x2fac) = 76;
     if (owner == player) A4_LONG(0xae72) += 25;
+    core_quake_shake();
     for (int pass = 0; pass < 2; ++pass)
         for (int x = column; x < column+9; ++x)
             for (int y = row; y < row+9; ++y) {
@@ -2579,17 +2598,127 @@ static int game_pick(int sx, int sy, int *column, int *row)
     return 1;
 }
 
+/* _toggle_icon asm:19493-19521: XOR bitplane 0 (palette bit 0) with the
+ * LAB_4C750 diamond; a steps +8 rows/+16px, b +8 rows/-16px. */
+static void core_xor_icon(int base, int a, int b)
+{
+    static const uint32_t mask[16] = {0,0x0000c000,0x0003f000,0x000ffc00,0x003fff00,
+        0x00ffffc0,0x03fffff0,0x0ffffffc,0x3fffffff,0x0ffffffc,0x03fffff0,0x00ffffc0,
+        0x003fff00,0x000ffc00,0x0003f000,0x0000c000};
+    int x0 = 8*(base%40) + 16*a - 16*b, y0 = base/40 + 8*a + 8*b;
+    for (int r = 1; r < 16; ++r) for (int bit = 0; bit < 32; ++bit) {
+        int x = x0+bit, y = y0+r;
+        if ((mask[r] >> (31-bit) & 1) && x >= 0 && x < 320 && y >= 0 && y < 200)
+            game_pixels[y*320+x] ^= 1;
+    }
+}
+
+/* Persistent highlights, derived from state rather than toggled: tendency
+ * (_set_tend_icons asm:2455-2522), mode (_set_mode_icons asm:2526-2567,
+ * magnet bit before swamp bit before _mode), sound (initial toggles
+ * asm:513-536) and pause (_do_action y=6 asm:18591). The short press
+ * flashes on the power and view icons are not reproduced. */
+static void core_draw_icons(void)
+{
+    if (player < 0 || player > 1 || diagnostic_view) return;
+    static const int8_t tend[4][2] = {{3,3},{4,3},{5,3},{4,4}};
+    int t = core_tendency(player);
+    if (t >= 0 && t <= 3) core_xor_icon(0x12c0,tend[t][0],tend[t][1]);
+    if (core_tool == 1) core_xor_icon(0x12c0,6,2);
+    else if (core_swamp_selected) core_xor_icon(0x12c0,2,2);
+    else if (core_tool == 2) core_xor_icon(0x12c0,6,0);
+    else core_xor_icon(0x12c0,6,1);
+    if (!A4_WORD(0x8250)) core_xor_icon(0x17e4,0,3);
+    if (!A4_WORD(0x8252)) core_xor_icon(0x17e4,0,4);
+    if (pause) core_xor_icon(0x17e4,1,3);
+}
+
+/* _draw_bar asm:19213-19282: 4px column at byte x (pixels 2-5), growing
+ * up from y; value rows in colour, the rest of height in colour 2. */
+static void core_draw_bar(int x, int y, int height, int value, int colour)
+{
+    if (value < 0) value = 0;
+    if (value > height) value = height;
+    for (int k = 0; k < height; ++k) {
+        int row = y-k;
+        if (row < 0 || row >= 200) continue;
+        for (int px = 8*x+2; px < 8*x+6; ++px) game_pixels[row*320+px] = (uint8_t)(k < value ? colour : 2);
+    }
+}
+
+/* _show_the_shield state part asm:2769-2790: a dead view_who is dropped. */
+static int core_shield_state(void)
+{
+    if (!view_who) return 1;
+    if (view_who < 0 || view_who > no_peeps || peep_word(view_who-1,4) <= 0) { view_who = 0; return 0; }
+    return 1;
+}
+
+/* _show_the_shield asm:2790-3147. The owner flag and weapon icons use
+ * _icon_data, which the asset export lacks; they are not drawn. */
+static void core_show_the_shield(GraphicsSheet small)
+{
+    if (!core_shield_state()) return;
+    if (view_who) {
+        int person = view_who-1, flags = peeps[person*22], owner = peeps[person*22+1]&1;
+        int16_t pop = peep_word(person,4);
+        uint32_t heading; memcpy(&heading,peeps+person*22+14,sizeof heading);
+        if (flags & 8) {
+            /* Battle: sprite +0xC and strength bars, blue left (asm:2840-2895). */
+            int other = peep_word(person,6);
+            if (other >= 0 && other < no_peeps) {
+                int blue = owner ? other : person, red = owner ? person : other;
+                int32_t sum = peep_word(blue,4) + peep_word(red,4);
+                int frame = peep_word(person,12);
+                if (frame >= 0 && frame < 143) graphics_blit(game_pixels,64000,320,200,small,frame,0x110,0x16);
+                core_draw_bar(0x24,0x25,16,(int)___divs(16*peep_word(blue,4),sum),15);
+                core_draw_bar(0x25,0x25,16,(int)___divs(16*peep_word(red,4),sum),8);
+            }
+        } else if (flags == 1) {
+            /* Town: capacity and fill bars (asm:2896-2953). */
+            graphics_blit(game_pixels,64000,320,200,small,0x40+owner*2+(toggle&1),0x10c,0x16);
+            int capacity = core_check_life(owner,peep_word(person,8));
+            if (!capacity) capacity = 1;
+            core_draw_bar(0x24,0x25,16,capacity == 0xbea ? 16 : (uint16_t)(capacity*16)/0x131,10);
+            int fill = (uint16_t)(pop*16)/(uint16_t)capacity;
+            core_draw_bar(0x25,0x25,16,fill > 16 ? 16 : fill,12);
+        } else {
+            /* Walker sprite (asm:2954-3020) and population bars (asm:3021-3061). */
+            int frame;
+            if (flags & 0x60) frame = (heading ? 0x7d : 0x65) + owner*2 + (toggle&1);
+            else if (flags & 0x10) frame = (heading ? 0x6d : 0x5d) + owner*4 + ((uint16_t)game_turn&3);
+            else {
+                static const int16_t dir_sprite[9] = {-65,-64,-63,1,65,64,63,-1,0};
+                int d = 0;
+                while (d < 9 && dir_sprite[d] != peep_word(person,10)) ++d;
+                if (d > 7) d = 4;
+                frame = d*2 + (toggle&1) + (heading ? 0x20 : 0) + owner*16;
+            }
+            if (frame < 143) graphics_blit(game_pixels,64000,320,200,small,frame,0x110,0x16);
+            if (pop > 0x1000) { core_draw_bar(0x24,0x25,16,pop/0x400,10); core_draw_bar(0x25,0x25,16,pop%0x400,9); }
+            else { core_draw_bar(0x24,0x25,16,pop/0x100,9); core_draw_bar(0x25,0x25,16,(pop%0x100)/16,9); }
+        }
+    }
+    /* good_pop/bad_pop bars asm:3062-3147. */
+    int32_t good = (int32_t)core_good_pop(0), bad = (int32_t)core_good_pop(1);
+    core_draw_bar(0x20,0x1f,0x20,good ? (int)(31*good/50000+1) : 0,15);
+    core_draw_bar(0x27,0x1f,0x20,bad ? (int)(31*bad/50000+1) : 0,8);
+}
+
 static void draw_original(int view_x, int view_y)
 {
     if (!game_assets || view_x<0 || view_x>56 || view_y<0 || view_y>56) return;
     memset(game_pixels,0,sizeof game_pixels);
     memcpy(game_pixels,game_assets->background,sizeof game_assets->background);
+    core_draw_icons();
+    int dy = core_shake_dy;
     GraphicsSheet land=graphics_land(game_assets), small=graphics_sprites(game_assets);
     int phase=((uint16_t)game_turn/4)&1;
     /* _draw_it, asm:15794-15949: row-major tiles, raised overlays, front faces. */
     for (int v=0; v<8; ++v) for (int u=0; u<8; ++u) {
         int cell=(view_y+v)*64+view_x+u, left,top;
         if (!graphics_tile(u,v,map_alt[cell],&left,&top)) continue;
+        top+=dy;
         int frame=map_blk[cell];
         if (!frame && !phase) frame=16;
         graphics_blit(game_pixels,64000,320,200,land,frame,left,top);
@@ -2600,13 +2729,15 @@ static void draw_original(int view_x, int view_y)
     }
     for (int v=0; v<8; ++v)
         for (int level=0; level<map_alt[(view_y+v)*64+view_x+7]; ++level)
-            graphics_blit(game_pixels,64000,320,200,small,77,304-16*v,128+8*v-8*level);
+            graphics_blit(game_pixels,64000,320,200,small,77,304-16*v,128+8*v-8*level+dy);
     for (int u=7; u>=0; --u)
         for (int level=0; level<map_alt[(view_y+7)*64+view_x+u]; ++level)
-            graphics_blit(game_pixels,64000,320,200,small,76,64+16*u,128+8*u-8*level);
+            graphics_blit(game_pixels,64000,320,200,small,76,64+16*u,128+8*u-8*level+dy);
     /* Original queues occupants then draws them after terrain (asm:623-657).
-     * Core movement commits its destination immediately: no second interpolation. */
-    for (int v=0; v<8; ++v) for (int u=0; u<8; ++u) {
+     * Core movement commits its destination immediately: no second interpolation.
+     * A shaken screen_origin skips _move_sprite entirely (asm:15842-15849). */
+    if (!dy) no_sprites = 0;
+    for (int v=0; v<8 && !dy; ++v) for (int u=0; u<8; ++u) {
         int cell=(view_y+v)*64+view_x+u, person=(int)map_who[cell]-1;
         if (person<0 || person>=no_peeps || peep_word(person,4)<=0 || peep_word(person,8)!=cell) continue;
         int left,top,owner=peep_owner(person),flags=peeps[person*22];
@@ -2643,7 +2774,15 @@ static void draw_original(int view_x, int view_y)
         }
         else if (flags&16) frame=93+((uint16_t)game_turn&3)+owner*4;
         graphics_blit(game_pixels,64000,320,200,small,frame,sx,sy);
+        /* _sprite table A4 0x9a22 (+0 x, +2 y, +6 who), read by _interogate. */
+        if (no_sprites < 64) {
+            int entry = 0x9a22 + no_sprites*8;
+            A4_WORD(entry) = (int16_t)sx; A4_WORD(entry+2) = (int16_t)sy;
+            A4_WORD(entry+4) = 0; A4_WORD(entry+6) = (int16_t)(person+1);
+            ++no_sprites;
+        }
     }
+    core_show_the_shield(small);
     /* Original overview projection (_a_putpixel, asm:16758-16777). */
     for (int row=0; row<64; ++row) for (int column=0; column<64; ++column) {
         int cell=row*64+column, mx=64+column-row, my=(column+row)/2;
@@ -2676,10 +2815,12 @@ static void draw_original(int view_x, int view_y)
     hud_text(4,231,"Q QUAKE 2500 / F FLOOD 40000 / V VOLCANO 10000 / A ARMAGEDDON 80000");
     hud_text(4,249,"SPACE PAUSE / R RESET / ESC QUIT / D VIEW");
     hud_text(4,240,core_swamp_selected ?
-        (core_tool ? "AFTER TARGET: MAGNET / TOOLBAR ICONS ACTIVE" :
-                     "AFTER TARGET: TERRAIN / TOOLBAR ICONS ACTIVE") :
-        (core_tool ? "MAGNET TOOL - TOOLBAR ICONS ACTIVE" :
-                     "TERRAIN TOOL - TOOLBAR ICONS ACTIVE"));
+        (core_tool == 1 ? "AFTER TARGET: MAGNET / TOOLBAR ICONS ACTIVE" : core_tool == 2 ?
+                          "AFTER TARGET: QUERY / TOOLBAR ICONS ACTIVE" :
+                          "AFTER TARGET: TERRAIN / TOOLBAR ICONS ACTIVE") :
+        (core_tool == 1 ? "MAGNET TOOL - TOOLBAR ICONS ACTIVE" : core_tool == 2 ?
+                          "QUERY TOOL - HOVER/LMB TEMP VIEW, RMB KEEP VIEW" :
+                          "TERRAIN TOOL - TOOLBAR ICONS ACTIVE"));
 }
 
 static void _draw_it(int16_t y, int16_t x)
@@ -2738,9 +2879,10 @@ static void _draw_it(int16_t y, int16_t x)
         core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : A4_WORD(0xae80) ? "WAR" : "RUNNING",
         core_population(0),core_population(1),core_mana(0),A4_WORD(0xae80) ?
         "TERRAIN AND MAGNET INPUT LOCKED / ARROWS SCROLL / MAP CLICK" : core_swamp_selected ?
-        (core_tool ? "SWAMP ARMED (5000) LMB target then MAGNET / RMB inert" :
-                     "SWAMP ARMED (5000) LMB target then TERRAIN / RMB inert") :
-        (core_tool ? "MAGNET (200)" : "TERRAIN (10+4/point)"));
+        (core_tool == 1 ? "SWAMP ARMED (5000) LMB target then MAGNET / RMB inert" : core_tool == 2 ?
+                          "SWAMP ARMED (5000) LMB target then QUERY / RMB inert" :
+                          "SWAMP ARMED (5000) LMB target then TERRAIN / RMB inert") :
+        (core_tool == 1 ? "MAGNET (200)" : core_tool == 2 ? "QUERY" : "TERRAIN (10+4/point)"));
     SDL_SetWindowTitle(prg_screen->window,title);
 }
 
@@ -2948,9 +3090,8 @@ static void _move_peeps(void)
         A4_WORD(0x82ca+owner*46) = core_city_count[owner];
     }
 }
-static void _show_the_shield(void) {}
+static void _show_the_shield(void) { core_shield_state(); }
 static void _sculpt(void) {}
-static void _interogate(void) {}
 static void _zoom_map(int16_t d) {}
 /* _set_temp_view asm:3151-3160; restored by the countdown in game_tick. */
 static void core_set_temp_view(int16_t who)
@@ -2959,6 +3100,21 @@ static void core_set_temp_view(int16_t who)
     view_timer = 10;
     view_who = who;
 }
+/* _interogate asm:2719-2765: first sprite entry with mx in [x,x+12] and
+ * my in [y,y+8]; query mode only. Right keeps the view, else temporary. */
+static void core_interogate(int mx, int my, int right)
+{
+    for (int i = 0; i < no_sprites && i < 64; ++i) {
+        int16_t x = A4_WORD(0x9a22+i*8), y = A4_WORD(0x9a24+i*8), who = A4_WORD(0x9a28+i*8);
+        if (mx < x || mx > x+12 || my < y || my > y+8) continue;
+        if (core_tool == 2) {
+            if (right) { view_timer = 0; view_who = who; }
+            else core_set_temp_view(who);
+        }
+        return;
+    }
+}
+static void _interogate(void) { core_interogate(mousex,mousey,right_button); }
 /* xoff/yoff = cell column/row - 3; ASR.W #6 floors negative rows. */
 static void core_view_cell(int16_t cell)
 {
@@ -3062,10 +3218,10 @@ static int core_toolbar(int sx, int sy, int left, int post)
         if (line < 3 || line > 4 || tendency[icon-3][line-3] < 0) return 0;
         if (post) { mailbox[0] = 14; mailbox[1] = (uint8_t)tendency[icon-3][line-3]; mailbox[2] = 1; }
     } else if (icon == 6) {
-        /* Mode icons asm:2090-2133: 0 query, 1 terrain, 2 papal magnet; both
-         * real tools clear the swamp bit. Query (_interogate) is unported. */
-        if (line == 1 || line == 2) { core_tool = line == 2; core_swamp_selected = 0; }
-        else if (line != 0) return 0;
+        /* Mode icons asm:2090-2133: 0 query, 1 terrain, 2 papal magnet; each
+         * clears the swamp bit. core_tool: 0 terrain, 1 magnet, 2 query. */
+        if (line > 2) return 0;
+        core_tool = line == 0 ? 2 : line == 2; core_swamp_selected = 0;
     } else if (icon == 7) {
         /* asm:2134-2228: left views the leader (else the magnet), right the magnet. */
         if (line == 0) {
@@ -3154,7 +3310,7 @@ static void game_handle_event(const SDL_Event *event)
             if (key == SDLK_r && !game_reset_start(current_start))
             fprintf(stderr, "Reset failed; keeping the current game.\n");
             if (!pause && !core_result && key >= SDLK_0 && key <= SDLK_3) core_tendency(0) = key-SDLK_0;
-            if (key == SDLK_m) core_tool = !core_tool;
+            if (key == SDLK_m) core_tool = core_tool != 1;
             if (key == SDLK_q) _do_quake();
             if (key == SDLK_f) _do_flood();
             if (key == SDLK_v) _do_volcano();
@@ -3185,6 +3341,8 @@ static void game_handle_event(const SDL_Event *event)
             mousey = (int16_t)((int64_t)y * prg_screen->height / height);
             big_mousex = mousex;
             big_mousey = mousey;
+            /* continue_3EC20 asm:963-975 also interrogates while hovering. */
+            if (!event->motion.state && !diagnostic_view) core_interogate(mousex,mousey,0);
         }
     }
     if (event->type == SDL_MOUSEBUTTONDOWN && prg_screen) {
@@ -3209,6 +3367,13 @@ static void game_handle_event(const SDL_Event *event)
             event->button.button == SDL_BUTTON_RIGHT) &&
             core_toolbar(sx,sy,event->button.button == SDL_BUTTON_LEFT,
                          !pause && !core_result)) return;
+        /* Query mode skips _sculpt: clicks only interrogate (asm:963-975). */
+        if (core_tool == 2 && !core_swamp_selected) {
+            if (!diagnostic_view && (event->button.button == SDL_BUTTON_LEFT ||
+                event->button.button == SDL_BUTTON_RIGHT))
+                core_interogate(sx,sy,event->button.button == SDL_BUTTON_RIGHT);
+            return;
+        }
         /* _sculpt asm:7295 / _do_magnet asm:6784: keep camera usable,
          * but reject world input before consuming an armed target. */
         if (pause || core_result || A4_WORD(0xae80)) return;
@@ -3226,7 +3391,7 @@ static void game_handle_event(const SDL_Event *event)
             }
             return;
         }
-        if (core_tool) {
+        if (core_tool == 1) {
             if (column>=64 || row>=64) return;
             if (event->button.button == SDL_BUTTON_LEFT && core_leader(0) && core_mana(0)>=200) {
                 core_add_mana(0,-200); core_target(0)=row*64+column; core_tendency(0)=0;

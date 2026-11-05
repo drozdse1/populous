@@ -410,7 +410,9 @@ changing A4 and installs its actual values plus original initialized tables.
 Missing/invalid files fail startup: there is no invented-rule fallback.
 Audio, campaign, save/load and multiplayer remain absent. The original toolbar
 is clickable (see Controls); the options, game-options and message requesters
-it opens in the original are not ported, and icons are not highlighted.
+it opens in the original are not ported. Selected tendency, mode, music, FX
+and pause icons are highlighted with the original `_toggle_icon` diamond XOR;
+the short press flashes on the power and view icons are not reproduced.
 
 ## Local original data (required to play)
 
@@ -568,7 +570,7 @@ retain their combat frame and use the original fallback reward of 100; direct
 completion fixtures without entry still exercise retained town-frame rewards.
 Full combat timing parity remains separate work. No
 copper, large-sprite specials, original cursor/font,
-audio or toolbar requester/highlight is claimed. A separate compact HUD explains
+audio or toolbar requester is claimed. A separate compact HUD explains
 the implemented keyboard controls. `--battle-frames` checks all 65,536 stored
 word values for each base, death/zero distinctions and stored-frame pixels;
 the full suite also checks once-per-pair resident updates. Full normal/sanitized
@@ -721,10 +723,14 @@ is rebuilt afterwards; outside movement history and all occupancy remain intact.
 The existing build counter accumulates changes rather than being reset by casting.
 No direct population damage is invented; later simulation handles changed terrain.
 
-This milestone implements terrain rules and effect code 76, **not** the original
-20-step terrain-only screen shake or sound. The original shake offsets the terrain
-by -4/-1 scanlines, not the entire framebuffer or a horizontal 120 pixels. Full
-presentation and editor bypass remain TODOs; the toolbar icon posts opcode 3.
+After admission, charge, effect code 76 and score, and before any terrain change,
+the original 20-frame shake runs (`_do_quake` asm:7895-7925) for every caster:
+frames alternate -4/-1 scanlines, only terrain tiles, overlays and front faces
+move (panel, HUD and shield stay), peeps are not drawn (asm:15842-15849) and the
+frames show the pre-quake terrain. Ticks are frozen during the synchronous loop;
+each frame is presented and waits about one vblank (20 ms). Without a screen or
+assets (headless rule tests) the shake is skipped; rules are identical either way.
+Sound and editor bypass remain TODOs; the toolbar icon posts opcode 3.
 
 ## Flood power
 
@@ -829,8 +835,14 @@ there is no terrain/population injection after the cast.
   - Arrow pad: scroll one cell; its centre shield recentres on the viewed figure.
   - Tendency icons: settle, join, fight and go to magnet, posted as mailbox
     commands like the powers (ignored while paused or finished).
-  - Mode icons: terrain and papal magnet select the tool (like `m`) and disarm
-    the swamp target. The query (`?`) mode icon is inert: `_interogate` is unported.
+  - Mode icons: query, terrain and papal magnet select the tool and disarm the
+    swamp target. In query mode (`_interogate` asm:2719-2765) world clicks never
+    sculpt or move the magnet: hovering or left-clicking a drawn figure gives a
+    10-turn temporary view, right-click views it permanently.
+  - Shield (top right, `_show_the_shield` asm:2769-3147): for the viewed figure
+    the walker/town/battle sprite with its population, capacity or strength bars,
+    plus the good/bad population bars. A dead figure clears the view. The owner
+    flag and weapon icons are not drawn: the asset export has no `_icon_data`.
   - Ankh: left views the leader (else the magnet), right the magnet.
   - Crossed swords: cycle through battles. Walker icon: cycle own walkers;
     right picks ordinary walkers, left walkers with a heading. The original
@@ -847,7 +859,7 @@ there is no terrain/population injection after the cast.
 - `1`: settle/explore (default); `2`: join friendly walkers; `3`: seek nearby foes.
 - `0`: gather walkers at the initial magnet (32,32). After a leader reaches it,
   `m` selects magnet placement; left-click moves the target for 200 mana. `m`
-  again returns to terrain. Settlements release walkers when over capacity.
+  again returns to terrain (from query mode `m` selects the magnet). Settlements release walkers when over capacity.
 - `k`: convert the current leader to a knight, if allowed, for 7500 mana; unavailable during war.
 - `a`: Armageddon, if allowed, for 80000 mana; terrain/magnet clicks lock during war.
 - `v`: volcano on the current viewport, if allowed, for 10000 mana.

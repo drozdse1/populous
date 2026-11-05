@@ -188,7 +188,8 @@ Belege: `populous_c_port/populous_prg.c:803-915`, `:1509-1549`;
 - [ ] **Teilweise:** Originalen Aktionspfad mit Werkzeugwahl, Zielvalidierung, Freigabemasken, Modusbedingungen und Rueckmeldung herstellen. Bestehende Tastaturaktionen erhalten, aber nicht als vollstaendige Toolbar-Migration behandeln.
 - [ ] **Teilweise:** Heben/Senken und Magnet gegen alle Originalzulassungen, Kosten, Ziele und Zustandsbedingungen abgleichen.
 - [x] Gameplay-Erdbeben auf aktuellem Viewport: 2500 Mana, aktive Freigabe 0x08, zwei spaltenweise 9x9-Durchlaeufe mit bedingtem RNG, rekursivem Heben/Senken und lokaler Kartenableitung; Port-Taste Q.
-- [ ] **Teilweise:** Originales Erdbeben-Zittern (20 reine Terrainbilder, -4/-1 Pixel), Sound und Editor-Freimodus migrieren (Toolbar-Icon erledigt). Keine Ganzbildverschiebung als Originaleffekt ausgeben.
+- [x] Originales Erdbeben-Zittern: 20 synchrone reine Terrainbilder (-4/-1 Zeilen, ohne Figuren, vor der Terrainaenderung), asm:7895-7925.
+- [ ] **Teilweise:** Erdbeben-Sound und Editor-Freimodus migrieren (Toolbar-Icon und Zittern erledigt).
 - [x] Gameplay-Vulkan: 10000 Mana, Freigabe 0x40, 100 Spielerpunkte, 165 verschachtelte Hoehenziehungen plus 64 Lavaziehungen, Originalschutz fuer zweimal denselben blauen Anfuehrer und beide Magnetziele; Port-Taste V auf Viewportursprung.
 - [ ] **Teilweise:** Vulkan-Audio, Editor und Original-Nachrichtenzeitpunkt migrieren; Original-Lava erweitert Dirty-Bounds nicht und wird nicht pauschal als Krater/Bewohnerschaden umgedeutet.
 - [x] Gameplay-Sumpfkraft: aktive Freigabe, 5000 Mana, 30 Versuche/60 RNG-Ziehungen, Punkte, Block 53 und einmalige Zielwahl ueber Port-Taste S. Originale Vertex-minus-eins-Bytekoordinaten erhalten; Bounds vor Kartenlesezugriff pruefen.
@@ -226,7 +227,7 @@ Belege: `populous_c_port/populous_prg.c:1030-1062`, `:1509-1543`;
 
 ## P2 - Originalbedienung und Grafik vervollstaendigen
 
-- [ ] **Teilweise:** Toolbar anklickbar (alle `_zoom_map`-Icons, asm:1700-2451). Offen: Abfragemodus (`_interogate`), Options-/Spieloptionen-/Nachrichten-Requester (`_do_action` 7/8/2), Icon-Hervorhebung (`_toggle_icon`) sowie aktive/gesperrte Zustaende originalgetreu darstellen.
+- [ ] **Teilweise:** Toolbar anklickbar (alle `_zoom_map`-Icons, asm:1700-2451). Erledigt: Abfragemodus (`_interogate`) mit Schild (`_show_the_shield`, ohne Flaggen-/Waffen-Icons mangels `_icon_data`) und dauerhafte Icon-Hervorhebung (`_toggle_icon`) fuer Tendenz, Modus, Musik, FX und Pause. Offen: Options-/Spieloptionen-/Nachrichten-Requester (`_do_action` 7/8/2), kurze Tastendruck-Blitze der Power-/View-Icons.
 - [ ] **Fehlt:** Originale Manaanzeige, Schild, Bewohner-/Siedlungsabfrage und Informationsanzeigen. `_move_mana` ist Praesentation, nicht die bereits vorhandene Manaerzeugung.
 - [ ] **Fehlt:** Requester, Optionen, Namens-/Texteingabe und originale Dialog-/Rueckkehrpfade.
 - [ ] **Fehlt:** Originalschrift dekodieren und verwenden; eingebettetes `_font_data` und separates Launcher-`font.dat` vergleichen, nicht ungeprueft gleichsetzen.

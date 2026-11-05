@@ -33,6 +33,15 @@ static void checked_free(void *memory)
 #undef calloc
 #undef free
 
+/* Renders own the original _sprite table (no_sprites A4 0x9a1c, entries
+ * 0x9a22..0x9c21); everything else must be untouched. */
+static int a4_same(const uint8_t *before)
+{
+    size_t lo=(size_t)(A4_DISP(0x9a1c)-prg_a4_area), hi=(size_t)(A4_DISP(0x9c22)-prg_a4_area);
+    return !memcmp(before,prg_a4_area,lo) &&
+           !memcmp(before+hi,prg_a4_area+hi,sizeof prg_a4_area-hi);
+}
+
 static void test_memory(void)
 {
     assert((uintptr_t)A4_DISP(0x8000) >= (uintptr_t)prg_a4_area);
@@ -115,7 +124,7 @@ static void test_reset_and_input(void)
         key.key.keysym.sym = SDLK_r;
         assert(SDL_PushEvent(&key) == 1);
         ___keyboard();
-        assert(memcmp(before, prg_a4_area, sizeof before) == 0);
+        assert(a4_same(before));
         key.key.keysym.sym = SDLK_SPACE;
         assert(SDL_PushEvent(&key) == 1);
         ___keyboard();
@@ -123,7 +132,7 @@ static void test_reset_and_input(void)
         memcpy(before, prg_a4_area, sizeof before);
         game_tick();
         game_render();
-        assert(memcmp(before, prg_a4_area, sizeof before) == 0);
+        assert(a4_same(before));
         for (int repeat = 0; repeat < 100; ++repeat) {
             key.key.keysym.sym = SDLK_RIGHT;
             game_handle_event(&key);
@@ -224,7 +233,7 @@ static void test_original_rules(void)
     assert(memcmp(initial, prg_a4_area, sizeof initial) != 0);
     memcpy(initial, prg_a4_area, sizeof initial);
     game_render(); _move_mana();
-    assert(memcmp(initial, prg_a4_area, sizeof initial) == 0);
+    assert(a4_same(initial));
     assert(game_reset(0));
     int32_t mana_before = core_mana(0);
     assert(core_sculpt(0, 10, 10, 1));
@@ -260,10 +269,10 @@ static void test_sculpt_projection_and_rejection(void)
     uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
     click.button.y=750;
     assert(SDL_PushEvent(&click)==1); ___keyboard();
-    assert(memcmp(before,prg_a4_area,sizeof before)==0); /* HUD must not sculpt hidden terrain. */
+    assert(a4_same(before)); /* HUD must not sculpt hidden terrain. */
     LAB_516B2=0; memcpy(before,prg_a4_area,sizeof before);
     assert(!core_sculpt(0,10,10,1));
-    assert(memcmp(before,prg_a4_area,sizeof before)==0);
+    assert(a4_same(before));
     _closeall(); SDL_Quit();
 }
 
@@ -275,7 +284,7 @@ static void test_load_failure_and_magnet(void)
     uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
     assert(setenv("POPULOUS_DATA_DIR","/nonexistent-populous-data",1)==0);
     assert(!game_reset(0));
-    assert(memcmp(before,prg_a4_area,sizeof before)==0);
+    assert(a4_same(before));
     assert(setenv("POPULOUS_DATA_DIR",directory,1)==0); free(directory);
     SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_0;
     assert(SDL_PushEvent(&key)==1); ___keyboard();
@@ -355,7 +364,7 @@ static void test_colocated_hostile_encounter(void)
         assert(peep_word(0,4)==100 && peep_word(1,4)==100);
         assert(core_battles==1 && core_settlements==0 && !map_bk2[position]);
         uint8_t saved[sizeof prg_a4_area]; memcpy(saved,prg_a4_area,sizeof saved);
-        game_render(); assert(!memcmp(saved,prg_a4_area,sizeof saved));
+        game_render(); assert(a4_same(saved));
     }
     /* asm:4148-4184 handshake: slot 0's incomplete first frame marks the
      * represented slot 1 (0x22, frame 101, counter 0); it waits until slot 0
@@ -1003,7 +1012,7 @@ static void test_magnet_leaders(void)
         assert(core_magnet_direction(0)==-64);
         assert((int8_t)peeps[21]==-64);
         peeps[21]=0;
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
 }
 
@@ -1070,7 +1079,7 @@ static void test_magnet_war_water_and_bounds(void)
             assert(A4_WORD(0x82be)==1);
             memset(A4_DISP(0x82b6),0,3); A4_WORD(0x82be)=0;
         }
-        assert(!memcmp(before,prg_a4_area,sizeof before)); /* Only command/latch/history changed. */
+        assert(a4_same(before)); /* Only command/latch/history changed. */
         memset(map_blk,47,4096); map_blk[650]=15; map_blk[651]=0;
         assert(core_magnet_direction(0)==999); /* War does not admit fallback 47. */
     }
@@ -3391,7 +3400,7 @@ static void test_remnant_occupancy_and_state(void)
         assert(peep_word(0,6)==0);
         /* Apart from timer and empty-slot claim, consumption is inert. */
         set_peep_word(0,6,1); map_who[650]=representative;
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         set_peep_word(0,6,0); _move_peeps();
         assert(!peep_word(0,4) && map_who[650]==(representative==2 ? 2 : 0));
     }
@@ -3408,7 +3417,7 @@ static void test_remnant_tick_and_water(void)
             pause=gate==0; core_result=gate;
             uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
             game_tick();
-            assert(!memcmp(before,prg_a4_area,sizeof before));
+            assert(a4_same(before));
         }
         pause=0; core_result=0;
         for (int tick=1; tick<=40; ++tick) {
@@ -3577,7 +3586,7 @@ static void test_war_target_reset(void)
                 A4_WORD(0xae78)=301+repeat; A4_WORD(0xae76)=401+repeat;
                 if (released0) core_leader(0)=1;
                 if (released1) core_leader(1)=2;
-                assert(!memcmp(before,prg_a4_area,sizeof before));
+                assert(a4_same(before));
                 if (released0) core_leader(0)=0;
                 if (released1) core_leader(1)=0;
             }
@@ -3589,7 +3598,7 @@ static void test_war_target_reset(void)
         pause=gate==0; prg_quit=gate==1; core_result=gate>=2 ? gate-1 : 0;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         game_tick();
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
 }
 
@@ -4706,7 +4715,7 @@ static void test_near_town_sculpt(void)
     uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
     /* asm:7430-7438: above-water near-town mode rejects without permission. */
     assert(!core_sculpt(0,8,8,1));
-    assert(memcmp(before,prg_a4_area,sizeof before)==0);
+    assert(a4_same(before));
     for (int tick=0; tick<16; ++tick) game_tick();
     int position=peep_word(0,8);
     assert(peeps[0]==1);
@@ -4715,7 +4724,7 @@ static void test_near_town_sculpt(void)
     assert(core_vertex(position%64,position/64)==2 && core_mana(0)==mana_before-14);
     memcpy(before,prg_a4_area,sizeof before);
     assert(!core_sculpt(0,60,60,1));
-    assert(memcmp(before,prg_a4_area,sizeof before)==0);
+    assert(a4_same(before));
     _closeall(); SDL_Quit();
 }
 
@@ -5006,7 +5015,7 @@ static void test_isometric_match_cadence(int interval, int start, const MatchOut
     /* Measured deterministic defeat phase with the computer-player AI. */
     if (getenv("POPULOUS_TEST_REAL_DATA")) assert((uint16_t)game_turn==831 && core_population(1)==6323);
     uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
-    game_tick(); game_render(); assert(!memcmp(before,prg_a4_area,sizeof before));
+    game_tick(); game_render(); assert(a4_same(before));
     game_handle_event(&event); assert(!core_result && xoff==6 && yoff==6);
     event.key.keysym.sym=SDLK_3; game_handle_event(&event);
     for (int tick=0;tick<12000 && !core_result;++tick) {
@@ -5038,6 +5047,98 @@ static void test_isometric_match(void)
  * any of their input fires, so they pin that deterministic defeat. */
 static const MatchOutcome late_rescue_defeat = {2,3104,33,79,0,30639};
 
+/* Icon centre (x0+15,y0+8) per _toggle_icon geometry. */
+static int icon_lit(int base, int a, int b)
+{
+    int x=8*(base%40)+16*a-16*b+15, y=base/40+8*a+8*b+8;
+    return game_pixels[y*320+x]==(game_assets->background[y*320+x]^1);
+}
+
+static void test_query_and_shield(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    /* _interogate asm:2719-2765 on a hand-built sprite table. */
+    no_sprites=2;
+    A4_WORD(0x9a22)=100; A4_WORD(0x9a24)=50; A4_WORD(0x9a28)=3;
+    A4_WORD(0x9a2a)=100; A4_WORD(0x9a2c)=50; A4_WORD(0x9a30)=4;
+    view_who=1; view_timer=0; old_view_who=0; core_tool=0;
+    core_interogate(106,54,0); assert(view_who==1 && view_timer==0); /* not query */
+    core_tool=2;
+    core_interogate(113,54,0); assert(view_who==1 && view_timer==0); /* miss x */
+    core_interogate(106,59,0); assert(view_who==1 && view_timer==0); /* miss y */
+    core_interogate(112,58,0); /* inclusive edges, first entry wins */
+    assert(view_who==3 && view_timer==10 && old_view_who==1);
+    core_interogate(100,50,1); assert(view_who==3 && view_timer==0);
+    /* Shield state asm:2769-2790: a dead view_who is dropped. */
+    view_who=1; set_peep_word(0,4,0); assert(!core_shield_state() && !view_who);
+    assert(game_reset(0));
+    /* Query clicks neither sculpt nor spend mana; the table follows the blit. */
+    memset(game_assets->background,1,sizeof game_assets->background);
+    memset(game_assets->sprite_keep,1,sizeof game_assets->sprite_keep);
+    game_render();
+    assert(no_sprites>0 && A4_WORD(0x9a22)==184 && A4_WORD(0x9a24)==88 && A4_WORD(0x9a28)==1);
+    core_tool=2; SDL_SetWindowSize(prg_screen->window,640,512);
+    static int16_t heights[65*65];
+    for (int v=0;v<65*65;++v) heights[v]=core_vertex(v%65,v/65);
+    int32_t mana=core_mana(0); int16_t target=core_target(0);
+    for (int button=SDL_BUTTON_LEFT;button<=SDL_BUTTON_RIGHT;button+=2) {
+        SDL_Event click={.type=SDL_MOUSEBUTTONDOWN}; click.button.button=(uint8_t)button;
+        click.button.x=224; click.button.y=96; game_handle_event(&click);
+    }
+    assert(core_mana(0)==mana && core_target(0)==target);
+    for (int v=0;v<65*65;++v) assert(heights[v]==core_vertex(v%65,v/65));
+    /* Hover over the first sprite selects it temporarily. */
+    view_who=0; view_timer=0;
+    SDL_Event motion={.type=SDL_MOUSEMOTION}; motion.motion.x=(184+4)*2; motion.motion.y=(88+4)*2;
+    game_handle_event(&motion); assert(view_who==1 && view_timer==10);
+    /* Shield panel: pixels change only when view_who is set. */
+    memset(game_assets->sprite_indices,7,sizeof game_assets->sprite_indices);
+    view_who=0; game_render();
+    static uint8_t empty[320*200]; memcpy(empty,game_pixels,sizeof empty);
+    view_who=1; game_render();
+    int changed=0;
+    for (int y=0;y<40;++y) for (int x=256;x<320;++x) changed+=empty[y*320+x]!=game_pixels[y*320+x];
+    assert(changed>0);
+    view_who=0; game_render(); assert(!memcmp(empty,game_pixels,sizeof empty));
+    core_tool=0;
+}
+
+static void test_toolbar_icon_highlight(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    int16_t saved_tend=core_tendency(player);
+    /* Defaults asm:513-536: music, effects, terrain, plus current tendency. */
+    A4_WORD(0x8250)=A4_WORD(0x8252)=0; pause=0; core_tool=0; core_swamp_selected=0;
+    core_tendency(player)=1; game_render();
+    assert(icon_lit(0x17e4,0,3) && icon_lit(0x17e4,0,4) && !icon_lit(0x17e4,1,3));
+    assert(icon_lit(0x12c0,6,1) && icon_lit(0x12c0,4,3) && !icon_lit(0x12c0,6,2));
+    /* Toggling music changes exactly the (0,3) diamond, centre included. */
+    static uint8_t on[320*200]; memcpy(on,game_pixels,sizeof on);
+    A4_WORD(0x8250)=1; game_render(); A4_WORD(0x8250)=0;
+    int changed=0, x0=8*(0x17e4%40)-48, y0=0x17e4/40+24;
+    for (int i=0;i<320*200;++i) if (on[i]!=game_pixels[i]) {
+        int x=i%320-x0, y=i/320-y0;
+        assert((on[i]^game_pixels[i])==1 && x>=0 && x<32 && y>=1 && y<16);
+        ++changed;
+    }
+    assert(changed==2*(2+6+10+14+18+22+26)+30);
+    const int tend[4][2]={{3,3},{4,3},{5,3},{4,4}};
+    for (int t=0;t<4;++t) {
+        core_tendency(player)=(int16_t)t; game_render();
+        for (int o=0;o<4;++o) assert(icon_lit(0x12c0,tend[o][0],tend[o][1])==(o==t));
+    }
+    core_tool=1; game_render(); assert(icon_lit(0x12c0,6,2) && !icon_lit(0x12c0,6,1));
+    core_tool=0; core_swamp_selected=1; game_render();
+    assert(icon_lit(0x12c0,2,2) && !icon_lit(0x12c0,6,1));
+    core_swamp_selected=0; core_tool=2; game_render();
+    assert(icon_lit(0x12c0,6,0) && !icon_lit(0x12c0,6,1) && !icon_lit(0x12c0,6,2));
+    core_tool=0;
+    A4_WORD(0x8250)=1; A4_WORD(0x8252)=1; pause=1; game_render();
+    assert(!icon_lit(0x17e4,0,3) && !icon_lit(0x17e4,0,4) && icon_lit(0x17e4,1,3));
+    A4_WORD(0x8250)=A4_WORD(0x8252)=0; pause=0;
+    core_tendency(player)=saved_tend;
+}
+
 static void test_original_graphics_output(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
@@ -5045,7 +5146,7 @@ static void test_original_graphics_output(void)
     uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
     char *directory=strdup(getenv("POPULOUS_ASSET_DIR") ? getenv("POPULOUS_ASSET_DIR") : POPULOUS_DEFAULT_ASSET_DIR);
     assert(directory && !setenv("POPULOUS_ASSET_DIR","/nonexistent-populous-assets",1));
-    assert(!game_reset(0) && game_assets==assets_before && !memcmp(before,prg_a4_area,sizeof before));
+    assert(!game_reset(0) && game_assets==assets_before && a4_same(before));
     assert(!setenv("POPULOUS_ASSET_DIR",directory,1)); free(directory);
     game_render();
     assert(prg_screen->chunky_buffer[190*320+20]==prg_screen->palette[game_assets->background[190*320+20]]);
@@ -5062,7 +5163,7 @@ static void test_original_graphics_output(void)
     game_render();
     assert(game_pixels[72*320+192]==3); /* first flat tile */
     assert(game_pixels[88*320+184]==9); /* first walker at (8,8), no interpolation */
-    assert(!memcmp(before,prg_a4_area,sizeof before));
+    assert(a4_same(before));
     for (int tick=0;tick<16;++tick) game_tick();
     int settlements=0;
     for (int cell=0;cell<4096;++cell) settlements+=map_bk2[cell]==42;
@@ -5082,7 +5183,7 @@ static void test_original_graphics_output(void)
         game_render();
         assert(game_pixels[88*320+192]==(phase ? 5 : 3));
         assert(prg_screen->chunky_buffer[88*320+192]==prg_screen->palette[phase ? 5 : 3]);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
     /* High terrain projects beside (not inside) the minimap diamond. */
     for (int row=0;row<=64;++row) for (int column=0;column<=64;++column) core_set_vertex(column,row,8);
@@ -5144,13 +5245,13 @@ static void sprite_case(int flags, int owner, int stored, uint32_t heading,
     uint8_t expected[64000],before[sizeof prg_a4_area];
     memcpy(before,prg_a4_area,sizeof before);
     draw_original(16,16);
-    assert(!memcmp(before,prg_a4_area,sizeof before));
+    assert(a4_same(before));
     memcpy(expected,game_pixels,sizeof expected);
     sprite_mask_oracle(expected,want_frame,want_x,want_y);
     map_who[cell]=1;
     memcpy(before,prg_a4_area,sizeof before);
     draw_original(16,16);
-    assert(!memcmp(before,prg_a4_area,sizeof before));
+    assert(a4_same(before));
     assert_sprite_pixels(expected);
 }
 static void test_special_sprite_frames(void)
@@ -5244,7 +5345,7 @@ static void test_special_sprite_order_and_guards(void)
     sprite_mask_oracle(expected,85,192,56);
     sprite_mask_oracle(expected,7,200,64);
     memcpy(before,prg_a4_area,sizeof before); draw_original(16,16);
-    assert(!memcmp(before,prg_a4_area,sizeof before)); assert_sprite_pixels(expected);
+    assert(a4_same(before)); assert_sprite_pixels(expected);
     for (int guard=0;guard<5;++guard) {
         sprite_scene(); game_turn=0;
         draw_original(16,16); memcpy(expected,game_pixels,sizeof expected);
@@ -5256,7 +5357,7 @@ static void test_special_sprite_order_and_guards(void)
         if (guard==3) peeps[1]=2;
         if (guard==4) map_who[16*64+16]=255;
         memcpy(before,prg_a4_area,sizeof before); draw_original(16,16);
-        assert(!memcmp(before,prg_a4_area,sizeof before)); assert_sprite_pixels(expected);
+        assert(a4_same(before)); assert_sprite_pixels(expected);
     }
 }
 static void test_special_sprites(void)
@@ -5647,7 +5748,7 @@ static void test_swamp_cast(void)
         if (gate==10) core_result=1;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(!core_swamp(owner,column,row,swamp_random));
-        assert(swamp_draws==0 && !memcmp(before,prg_a4_area,sizeof before));
+        assert(swamp_draws==0 && a4_same(before));
     }
     for (int owner=0;owner<2;++owner) for (int local=0;local<2;++local)
     for (int mana=5000;mana<=5001;++mana) for (int paint=0;paint<2;++paint) {
@@ -5678,7 +5779,7 @@ static void test_swamp_cast(void)
     map_blk[cells[0]]=15; map_blk[cells[1]]=31;
     map_blk[cells[2]]=32; map_blk[cells[3]]=66;
     A4_LONG(0x9a02)=10000; A4_LONG(0xae72)=0;
-    assert(!memcmp(before,prg_a4_area,sizeof before));
+    assert(a4_same(before));
     static const int corners[4][2]={{0,0},{63,0},{0,63},{63,63}};
     for (int corner=0;corner<4;++corner) {
         swamp_fixture();
@@ -5768,7 +5869,7 @@ static void test_swamp_input(void)
         game_handle_event(&key);
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         click.button.button=SDL_BUTTON_RIGHT; game_handle_event(&click);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         click.button.button=SDL_BUTTON_LEFT; game_handle_event(&click);
         assert(core_mana(0)==(mana>5000 ? 1 : mana));
         assert(core_tool==tool);
@@ -5899,7 +6000,7 @@ static void test_power_toolbar(void)
         assert(!other[0] && !other[1] && !other[2]);
         /* Only the three mailbox bytes change; camera and swamp stay put. */
         memcpy(before+(mailbox-prg_a4_area),mailbox,3);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         assert(xoff==20 && yoff==30 && !core_swamp_selected);
     }
     /* Mailbox posts reach the power routines; costs are paid by the consumer. */
@@ -5935,7 +6036,7 @@ static void test_power_toolbar(void)
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         power_icon_click(2,2,SDL_BUTTON_LEFT);
         assert(core_swamp_selected==(gate==2));
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
     /* Paused, finished, invalid player and diagnostic view post nothing;
      * non-power cells keep their former (camera/world) handling. */
@@ -5949,7 +6050,7 @@ static void test_power_toolbar(void)
         if (gate==4) diagnostic_view=1;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         power_icon_click(posts[p][0],posts[p][1],SDL_BUTTON_LEFT);
-        if (gate!=4) assert(!memcmp(before,prg_a4_area,sizeof before));
+        if (gate!=4) assert(a4_same(before));
         else assert(!A4_DISP(0x82b6)[0] && !A4_DISP(0x82b6+46)[0]);
     }
     assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,960,768);
@@ -6000,8 +6101,9 @@ static void test_toolbar_icons(void)
         assert(core_tool==1 && !core_swamp_selected);
         core_swamp_selected=1; grid_click(6,1,SDL_BUTTON_LEFT);
         assert(core_tool==0 && !core_swamp_selected);
+        /* Query (asm:2090-2133 mode 1) is a third tool and also disarms. */
         core_swamp_selected=1; grid_click(6,0,SDL_BUTTON_LEFT);
-        assert(core_tool==0 && core_swamp_selected);
+        assert(core_tool==2 && !core_swamp_selected);
     }
     /* Scroll pad: eight directions, clamped to 0..56. */
     for (int icon=3;icon<=5;++icon) for (int line=0;line<=2;++line) {
@@ -6065,7 +6167,7 @@ static void test_toolbar_icons(void)
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         core_consume_terrain_mailboxes();
         memset(before+(mailbox-prg_a4_area),0,3);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         toolbar_fixture(); pause=1;
         system_click(requests[k][0],requests[k][1],SDL_BUTTON_LEFT);
         assert(!A4_DISP(0x82b6)[0]);
@@ -6106,7 +6208,7 @@ static void test_swamp_render(void)
     int left,top; assert(graphics_tile(7,7,map_alt[cell],&left,&top));
     assert(graphics_blit(expected,sizeof expected,320,200,graphics_land(game_assets),53,left,top));
     assert(!memcmp(expected,game_pixels,sizeof expected));
-    assert(!memcmp(before,prg_a4_area,sizeof before));
+    assert(a4_same(before));
     SDL_SetWindowSize(prg_screen->window,640,512);
     iso_click_vertex(20,20,SDL_BUTTON_LEFT); game_render();
     assert(!strstr(SDL_GetWindowTitle(prg_screen->window),"SWAMP ARMED"));
@@ -6140,7 +6242,7 @@ static void test_original_lower(void)
     assert(original_lower_point(0,0)==0);
     assert(original_lower_point(-1,0)==0 && original_lower_point(65,64)==0);
     assert(original_lower_point(0,-1)==0 && original_lower_point(64,65)==0);
-    assert(!memcmp(before,prg_a4_area,sizeof before));
+    assert(a4_same(before));
     quake_fixture(8);
     A4_WORD(0x2f88)=-1;
     A4_WORD(0x2f8a)=A4_WORD(0x2f8c)=32;
@@ -6170,6 +6272,50 @@ static void test_original_lower(void)
         }
     }
 }
+static int shake_frames;
+static int16_t shake_heights[65*65];
+static void shake_delay(int ms)
+{
+    /* Each frame: pre-quake terrain shifted by the offset, no sprites. */
+    assert(ms==20 && core_shake_dy==core_quake_shake_dy(shake_frames));
+    assert(game_pixels[(72+core_shake_dy)*320+192]==3);
+    assert(game_pixels[72*320+192]!=3 && game_pixels[88*320+184]!=9);
+    for (int v=0;v<65*65;++v) assert(core_vertex(v%65,v/65)==shake_heights[v]);
+    ++shake_frames;
+}
+static void test_quake_shake(void)
+{
+    for (int c=0;c<20;++c) assert(core_quake_shake_dy(c)==(c%2 ? -1 : -4));
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    /* Headless reference: identical rules without a screen. */
+    for (int run=0;run<2;++run) {
+        static int16_t heights[2][65*65]; static int32_t mana[2], score[2]; static uint16_t seeds[2];
+        assert(game_reset(0));
+        memset(game_assets->background,1,sizeof game_assets->background);
+        memset(game_assets->land_keep,1,sizeof game_assets->land_keep);
+        memset(game_assets->land_indices,0,sizeof game_assets->land_indices);
+        memset(game_assets->sprite_keep,1,sizeof game_assets->sprite_keep);
+        memset(game_assets->sprite_indices,0,sizeof game_assets->sprite_indices);
+        game_assets->land_indices[15*768+8*32+16]=2;
+        game_assets->sprite_indices[8*256]=8;
+        game_render(); assert(game_pixels[72*320+192]==3 && game_pixels[88*320+184]==9);
+        int sprites=no_sprites;
+        GraphicsAssets *assets=game_assets;
+        if (!run) game_assets=NULL;
+        for (int v=0;v<65*65;++v) shake_heights[v]=core_vertex(v%65,v/65);
+        A4_LONG(0x9a02)=10000; A4_WORD(0x82c4)|=8; pause=0; core_result=0; A4_WORD(0xae80)=0;
+        shake_frames=0; void (*delay)(int)=core_quake_delay; core_quake_delay=shake_delay;
+        assert(core_quake(0,0,0,___newrand));
+        core_quake_delay=delay; game_assets=assets;
+        assert(shake_frames==(run ? 20 : 0) && !core_shake_dy && no_sprites==sprites);
+        int changed=0;
+        for (int v=0;v<65*65;++v) changed+=(heights[run][v]=core_vertex(v%65,v/65))!=shake_heights[v];
+        assert(changed>0);
+        mana[run]=core_mana(0); score[run]=(int32_t)A4_LONG(0xae72); seeds[run]=seed;
+        if (run) assert(!memcmp(heights[0],heights[1],sizeof heights[0]) &&
+                        mana[0]==mana[1] && score[0]==score[1] && seeds[0]==seeds[1]);
+    }
+}
 static void test_quake_cast(void)
 {
     for (int owner=0;owner<2;++owner) for (int paint=0;paint<2;++paint)
@@ -6189,7 +6335,7 @@ static void test_quake_cast(void)
         if (gate>=10) core_result=gate-9;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(!core_quake(side,x,y,quake_random));
-        assert(!quake_draws && !memcmp(before,prg_a4_area,sizeof before));
+        assert(!quake_draws && a4_same(before));
     }
     for (int owner=0;owner<2;++owner) for (int local=0;local<2;++local)
     for (int paint=0;paint<2;++paint) for (int height=0;height<2;++height) {
@@ -6292,8 +6438,8 @@ static void test_quake_input(void)
                 assert(core_vertex(x,y)==1);
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         key.key.repeat=1; game_handle_event(&key); key.key.repeat=0;
-        assert(!memcmp(before,prg_a4_area,sizeof before));
-        game_render(); assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
+        game_render(); assert(a4_same(before));
     }
     /* Every rejected key preserves the entire emulated state and armed tool. */
     for (int diagnostic=0;diagnostic<2;++diagnostic) for (int paint=0;paint<2;++paint)
@@ -6312,7 +6458,7 @@ static void test_quake_input(void)
         if (gate==8) player=2;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         game_handle_event(&key); key.key.repeat=0;
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         assert(core_tool==1 && core_swamp_selected==1);
         assert(core_result==(gate>=3 && gate<=5 ? gate-2 : 0));
     }
@@ -6358,7 +6504,7 @@ static void test_flood_cast(void)
         if (gate>=6) core_result=gate-5;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(!core_flood(side));
-        assert(!memcmp(before,prg_a4_area,sizeof before) && seed==321);
+        assert(a4_same(before) && seed==321);
         assert(core_result==(gate>=6 ? gate-5 : 0));
     }
     /* An empty world still pays, scores, signals effect, and clears history. */
@@ -6514,7 +6660,7 @@ static void test_flood_input(void)
         if (gate==9) player=2;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         game_handle_event(&key); key.key.repeat=0;
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         assert(core_tool==1 && core_swamp_selected==1);
     }
     assert(game_reset(0)); game_render();
@@ -6583,7 +6729,7 @@ static void test_volcano_cast(void)
         }
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(!core_volcano(side,x,y,volcano_random));
-        assert(!volcano_draws && seed==321 && !memcmp(before,prg_a4_area,sizeof before));
+        assert(!volcano_draws && seed==321 && a4_same(before));
     }
     for (int owner=0;owner<2;++owner) for (int local=0;local<2;++local)
     for (int paint=0;paint<2;++paint) for (int height=0;height<=8;height+=8)
@@ -6719,7 +6865,7 @@ static void test_volcano_input(void)
         if (gate==10) core_leader(0)=209;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         game_handle_event(&key); key.key.repeat=0;
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         assert(core_tool==1 && core_swamp_selected==1);
     }
     assert(game_reset(0)); game_render();
@@ -6758,7 +6904,7 @@ static void test_volcano_render(void)
     game_render();
     assert(game_pixels[screen_pixel]==14);
     assert(prg_screen->chunky_buffer[screen_pixel]==prg_screen->palette[14]);
-    assert(!memcmp(before,prg_a4_area,sizeof before));
+    assert(a4_same(before));
     game_assets=loaded; free(fixture);
     _closeall(); SDL_Quit();
 }
@@ -6820,7 +6966,7 @@ static void test_terrain_defaults(void)
         LevelTable levels; char error[160];
         assert(level_data_load(test_data_directory,&levels,error,sizeof error));
         assert(!game_reset_start((StartSelection){START_ORIGINAL,0}));
-        assert(!memcmp(before,prg_a4_area,sizeof before) && assets==game_assets);
+        assert(a4_same(before) && assets==game_assets);
         assert(pause && diagnostic_view==1 && core_tool==1 && core_battles==17);
         assert(current_start.kind==START_ORIGINAL && current_start.number==0);
         assert(prg_a4==prg_a4_area+32768);
@@ -6941,7 +7087,7 @@ static void test_terrain_mailbox_gates(void)
         else if (gate==1) prg_quit=1;
         else core_result=gate-1;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
-        game_tick(); assert(!memcmp(before,prg_a4_area,sizeof before));
+        game_tick(); assert(a4_same(before));
     }
     /* Only old water dies before the queued raise. Newly submerged residents
      * survive this tick, so the existing mailbox consumer can rescue them. */
@@ -6978,7 +7124,7 @@ static void test_terrain_mailbox_raise(void)
         terrain_mailbox_fixture(1);
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(!core_raw_raise(invalid[index][0],invalid[index][1],invalid[index][2]));
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
     static const int coordinates[][2]={{0,0},{64,0},{0,64},{64,64},{20,30},{65,30},{255,30},{20,65},{20,255}};
     for (unsigned index=0;index<sizeof coordinates/sizeof coordinates[0];++index)
@@ -7171,7 +7317,7 @@ static void test_war_terrain_bounds(void)
         war_terrain_fixture();
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         core_queue_terrain_raise(invalid[sample][0],invalid[sample][1]);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
     const int corners[]={0,63,4032,4095};
     for (int owner=0;owner<2;++owner) for (int corner=0;corner<4;++corner) {
@@ -7180,7 +7326,7 @@ static void test_war_terrain_bounds(void)
     }
     war_terrain_fixture(); A4_WORD(0xae80)=0;
     uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
-    core_queue_terrain_raise(0,650); assert(!memcmp(before,prg_a4_area,sizeof before));
+    core_queue_terrain_raise(0,650); assert(a4_same(before));
 }
 static void test_war_terrain_magnet(void)
 {
@@ -7591,7 +7737,7 @@ static void test_armageddon_locks(void)
         A4_WORD(0x82c4+owner*46)=0xffff;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(!core_sculpt(owner,20,20,direction));
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         assert(core_raw_raise(owner,20,20));
         assert(core_vertex(20,20)==2 && core_mana(owner)==80000);
     }
@@ -7611,7 +7757,7 @@ static void test_armageddon_locks(void)
             click.button.x=80*width/320; click.button.y=80*height/256;
             game_handle_event(&click);
         }
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         assert(core_tool==tool && core_swamp_selected==armed);
     }
     diagnostic_view=0; xoff=yoff=6;
@@ -7647,10 +7793,10 @@ static void test_armageddon_cast(void)
         if (gate==11) no_peeps=-1;
         if (gate==12) no_peeps=209;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
-        assert(!core_war(side)); assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(!core_war(side)); assert(a4_same(before));
         SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_a;
         player=side; memcpy(before,prg_a4_area,sizeof before);
-        game_handle_event(&key); assert(!memcmp(before,prg_a4_area,sizeof before));
+        game_handle_event(&key); assert(a4_same(before));
         assert(core_tool==1 && core_swamp_selected==1 && !core_battles && !core_settlements);
     }
     const int counts[]={0,1,7,207,208};
@@ -7682,7 +7828,7 @@ static void test_armageddon_cast(void)
         A4_WORD(0x2fac)=0; A4_WORD(0xae80)=wars[active];
         for (int person=0;person<no_peeps;++person)
             memcpy(peeps+person*22+14,before+(peeps-prg_a4_area)+person*22+14,4);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         assert(core_tool==1 && core_swamp_selected==1 && !core_result && !core_battles && !core_settlements);
     }
     /* Active cost, signed equality, and defined SUB.L/ADD.L wrap, not caps. */
@@ -7698,7 +7844,7 @@ static void test_armageddon_render(void)
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
     A4_WORD(0xae80)=1; core_tool=core_swamp_selected=1;
     uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
-    game_render(); assert(!memcmp(before,prg_a4_area,sizeof before));
+    game_render(); assert(a4_same(before));
     const char *title=SDL_GetWindowTitle(prg_screen->window);
     assert(strstr(title,"WAR") && strstr(title,"A Armageddon 80000") && strstr(title,"Esc quit"));
     uint32_t hud[320*56]; memcpy(hud,prg_screen->chunky_buffer+320*200,sizeof hud);
@@ -7716,7 +7862,7 @@ static void test_armageddon_render(void)
         hud_text(4,rows[line],lines[line]);
     }
     assert(!memcmp(hud,prg_screen->chunky_buffer+320*200,sizeof hud));
-    game_render(); assert(!memcmp(before,prg_a4_area,sizeof before));
+    game_render(); assert(a4_same(before));
     assert(!memcmp(hud,prg_screen->chunky_buffer+320*200,sizeof hud));
     pause=1; game_render(); assert(strstr(SDL_GetWindowTitle(prg_screen->window),"PAUSED"));
     core_result=1; game_render(); assert(strstr(SDL_GetWindowTitle(prg_screen->window),"VICTORY"));
@@ -7822,7 +7968,7 @@ static void test_armageddon_original(const char *directory)
         for (int byte=14;byte<18;++byte) assert(!peeps[person*22+byte]);
         memset(before+(peeps-prg_a4_area)+person*22+14,0,4);
     }
-    assert(!memcmp(before,prg_a4_area,sizeof before));
+    assert(a4_same(before));
     game_render(); assert(!memcmp(after,prg_a4_area,sizeof after));
     assert(strstr(SDL_GetWindowTitle(prg_screen->window),"A Armageddon 80000"));
     for (int tick=0;tick<100 && !core_result;++tick) { game_tick(); assert_live_occupancy(); }
@@ -7879,7 +8025,7 @@ static void test_peep_references(void)
         memcpy(peeps+14,&raw_values[sample],4);
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(peep_reference(0)==decoded_full[sample]);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         no_peeps=1;
         assert(peep_reference(0)==decoded_one[sample]);
     }
@@ -7895,14 +8041,14 @@ static void test_peep_references(void)
         assert(!set_peep_reference(subject,0));
         assert(!set_peep_reference(subject,-1));
         assert(!core_get_heading(subject));
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
     const int targets[]={INT_MIN,-2,1,207,208,INT_MAX};
     heading_fixture(1);
     for (unsigned sample=0;sample<sizeof targets/sizeof targets[0];++sample) {
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(!set_peep_reference(0,targets[sample]));
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
 }
 
@@ -8107,7 +8253,7 @@ static void test_heading_navigation_bounds(void)
         set_peep_word(2,4,0);
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(core_magnet_direction(0)==999 && peep_reference(0)==1);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
     const int counts[]={-1,0,1,208,209};
     const int subjects[]={INT_MIN,-1,0,1,207,208,INT_MAX};
@@ -8118,7 +8264,7 @@ static void test_heading_navigation_bounds(void)
         if (no_peeps>0 && no_peeps<=208 && subject>=0 && subject<no_peeps) continue;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(core_magnet_direction(subject)==999);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
     for (int invalid=0;invalid<6;++invalid) {
         heading_navigation_fixture(0);
@@ -8126,7 +8272,7 @@ static void test_heading_navigation_bounds(void)
         else peeps[1]=invalid==4 ? 2 : 255;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(core_magnet_direction(0)==999);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
 }
 
@@ -8141,15 +8287,15 @@ static void test_heading_navigation_opaque(void)
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(core_magnet_direction(0)==-64); /* Neither acquire nor follow. */
         peeps[21]=0;
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         core_target(owner)=-1;
         memcpy(before,prg_a4_area,sizeof before);
         assert(core_magnet_direction(0)==999);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         core_target(owner)=4096;
         memcpy(before,prg_a4_area,sizeof before);
         assert(core_magnet_direction(0)==999);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
 }
 
@@ -8278,7 +8424,7 @@ static void test_heading_leader_release(void)
         core_leader(0)=invalid[sample]; core_leader(1)=invalid[sample];
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         expect_ai_fixture_picks(before); /* path A: leaders are not read */
-        _move_peeps(); assert(!memcmp(before,prg_a4_area,sizeof before));
+        _move_peeps(); assert(a4_same(before));
     }
     setup_magnet_walker(0); assert(set_peep_reference(0,0));
     set_peep_word(0,4,0); set_peep_word(0,8,-1); core_leader(0)=1;
@@ -8287,7 +8433,7 @@ static void test_heading_leader_release(void)
     assert(!core_leader(0) && core_target(0)==1234 && A4_WORD(0xae78)==2345);
     setup_magnet_walker(0); assert(set_peep_reference(0,0)); core_leader(0)=1; pause=1;
     uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
-    game_tick(); assert(!memcmp(before,prg_a4_area,sizeof before));
+    game_tick(); assert(a4_same(before));
 }
 
 static void test_heading_seeded_encounter(void)
@@ -8917,7 +9063,7 @@ static void test_heading_battle_guards(void)
         assert(!core_battle_over(invalid[sample],2,false));
         assert(!core_battle_over(1,invalid[sample],false));
         assert(!core_battle_over(1,1,false));
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
     for (int variant=0; variant<13; ++variant) {
         setup_heading_battle(1,0); set_peep_word(2,4,0);
@@ -8938,7 +9084,7 @@ static void test_heading_battle_guards(void)
         }
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
         assert(!core_battle_over(1,2,false));
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
         assert(core_battles==17 && !core_settlements && !core_result);
     }
 }
@@ -9022,13 +9168,13 @@ static void test_knight_guards(void)
         else if (gate==39) { A4_LONG(0x849a)=0x7fffffffu; A4_LONG(0x9a02+owner*16)=0x80000000u; }
         else { A4_LONG(0x849a)=0xffffffffu; A4_LONG(0x9a02+owner*16)=0xfffffffeu; }
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
-        assert(!core_knight(side)); assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(!core_knight(side)); assert(a4_same(before));
         /* The core takes int; player is a signed word, so use representative
          * invalid words for extremes which would truncate to a valid owner. */
         player=side==INT_MIN || side==INT_MAX ? -1 : side;
         memcpy(before,prg_a4_area,sizeof before);
         SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_k;
-        game_handle_event(&key); assert(!memcmp(before,prg_a4_area,sizeof before));
+        game_handle_event(&key); assert(a4_same(before));
         assert(core_tool==1 && core_swamp_selected==1 && !core_battles && !core_settlements);
     }
 }
@@ -9104,13 +9250,13 @@ static void test_knight_render(void)
         core_result=state>=3 ? state-2 : 0; pause=state==1; A4_WORD(0xae80)=state==2;
         core_swamp_selected=core_tool=1;
         uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
-        game_render(); assert(!memcmp(before,prg_a4_area,sizeof before));
+        game_render(); assert(a4_same(before));
         const char *title=SDL_GetWindowTitle(prg_screen->window);
         assert(strstr(title,"K knight 7500") && strstr(title,"Esc quit") && strlen(title)<512);
         uint32_t hud[320*56]; memcpy(hud,prg_screen->chunky_buffer+320*200,sizeof hud);
         hud_text(4,222,line);
         assert(!memcmp(hud,prg_screen->chunky_buffer+320*200,sizeof hud));
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
     _closeall(); SDL_Quit();
 }
@@ -9122,7 +9268,7 @@ static void test_knight_input(void)
     memcpy(before,prg_a4_area,sizeof before); knight_expected(expected,0,2);
     SDL_Event key={.type=SDL_KEYDOWN}; key.key.keysym.sym=SDLK_k;
     key.key.repeat=1; game_handle_event(&key);
-    assert(!memcmp(before,prg_a4_area,sizeof before));
+    assert(a4_same(before));
     key.key.repeat=0; game_handle_event(&key);
     assert(!memcmp(expected,prg_a4_area,sizeof expected));
     game_handle_event(&key); assert(!memcmp(expected,prg_a4_area,sizeof expected));
@@ -9306,7 +9452,7 @@ static void test_battle_frame_helper(void)
             assert(peep_word(1,12)==want);
         }
         set_peep_word(1,12,102);
-        assert(!memcmp(before,prg_a4_area,sizeof before));
+        assert(a4_same(before));
     }
     for (int flags=0; flags<256; ++flags) for (int raw=0; raw<2; ++raw)
     for (int population=-1; population<=1; ++population) {
@@ -9863,7 +10009,7 @@ static void test_battle_frame_render_and_entry(void)
         sprite_mask_oracle(expected,bases[owner][heads],destination ? 208 : 192,destination ? 64 : 56);
         map_who[cell+destination]=occupant;
         memcpy(before,prg_a4_area,sizeof before); draw_original(16,16);
-        assert(!memcmp(before,prg_a4_area,sizeof before)); assert_sprite_pixels(expected);
+        assert(a4_same(before)); assert_sprite_pixels(expected);
     }
     _closeall(); SDL_Quit();
 }
@@ -11359,8 +11505,12 @@ static void test_start_reset(void)
     puts("start reset: PASS");
 }
 
+static void no_quake_delay(int ms) { (void)ms; }
+
 int main(int argc, char **argv)
 {
+    /* Shake frames are checked in test_quake_shake; elsewhere skip the 20 ms vblanks. */
+    core_quake_delay = no_quake_delay;
     if (argc==2 && !strcmp(argv[1],"--set-devil-magnet")) { test_set_devil_magnet(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--devil-effect")) { test_devil_effect(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--good-pop")) { test_good_pop(); return 0; }
@@ -11653,6 +11803,7 @@ int main(int argc, char **argv)
     test_flood_input_smoke(); test_flood_cast(); test_flood_delayed_hazards();
     test_original_lower();
     test_quake_cast();
+    test_quake_shake();
     test_volcano_input_smoke(); test_volcano_cast(); test_volcano_lava();
     test_swamp_cast();
     test_swamp_hazard();
@@ -11681,6 +11832,8 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_original_reset();
     test_start_reset();
     test_original_graphics_output();
+    test_toolbar_icon_highlight();
+    test_query_and_shield();
     test_special_sprites(); test_battle_frame_render_and_entry();
     test_isometric_match();
     test_colocated_hostile_encounter();
