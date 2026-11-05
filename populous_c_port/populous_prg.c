@@ -669,12 +669,18 @@ static const uint8_t demo_levels[8][9] = {
 
 static int current_start_pop_you = 12;
 static int current_start_pop_enemy = 10;
-typedef enum { START_SYNTHETIC, START_ORIGINAL, START_TUTORIAL } StartKind;
+typedef enum { START_SYNTHETIC, START_ORIGINAL, START_TUTORIAL, START_CUSTOM } StartKind;
 typedef struct { StartKind kind; int number; } StartSelection;
+/* START_CUSTOM: _setup_display(0, arg) with in_conquest -1 entered with
+ * _seed and _ground_in (asm:430-457); the last one started (or asked). */
+typedef struct { int16_t from, arg, ground; } CustomLand;
+static CustomLand core_land;
 static StartSelection current_start, requested_start;
 static int requested_world;   /* --conquest: _start_of_game == 2 */
+static int core_custom_live;  /* the live A4 holds _stats/_game_mode of a started game */
 static int current_scenario;
 static int game_reset(int scenario);
+static int core_custom_start(int16_t from, int16_t arg);
 static int game_reset_start(StartSelection selection);
 static void game_tick(void);
 static void game_render(void);
@@ -743,6 +749,12 @@ void prg_main(void)
      * 2 opens the world screen (asm:536-551), 3 the tutorial (asm:13975). */
     if (g_argc <= 1 && g_start_of_game == 2) { requested_start = (StartSelection){START_ORIGINAL, 0}; requested_world = 1; }
     else if (g_argc <= 1 && g_start_of_game == 3) requested_start = (StartSelection){START_TUTORIAL, 0};
+    /* 1: _animate's _setup_display(0,1) (asm:503-512) on the boot data:
+     * in_conquest -1, _seed 0, _ground_in 0, i.e. custom landscape 0. */
+    else if (g_argc <= 1 && g_start_of_game == 1) {
+        requested_start = (StartSelection){START_CUSTOM, 0}; core_land = (CustomLand){0, 1, 0};
+    }
+    core_custom_live = 0;   /* a fresh boot: the _stats/_game_mode data values */
     _main();
 }
 
@@ -2345,6 +2357,44 @@ static int tutorial_generate(void)
     return 1;
 }
 
+/* Boot values of _stats/strABC (asm:24171-24232) and _game_mode with
+ * LAB_518A7 (asm:24310-24312): rating 1/5, powers $ffff, speed 1/3. */
+static const uint8_t core_boot_stats[2][46] = {
+    {'a','b','c',0, 0,0,0,0, 0,1,0,0, 0,1,0xff,0xff, 0,1,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,5},
+    {'a','b','c',0, 0,0,0,1, 0,1,0,0, 0,5,0xff,0xff, 0,3,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,1}};
+#define CORE_BOOT_GAME_MODE 0x0010
+
+/* _setup_display(0, arg) with in_conquest -1, asm:430-457 then 458-500:
+ * _start_seed = _seed; a nonzero _seed draws one ___newrand and, for
+ * arg -1 and an odd draw, steps _ground_in 0..3 (___load_ground is the
+ * caller's). No conq_ byte is read: _stats powers/rating/speed and
+ * _game_mode stay as _options/_set_options left them. _clear_map
+ * (asm:1023-1188) skips the level mana; _make_alt, _make_map(0,0,63,63),
+ * _make_woods_rocks, then _place_first_people's custom counts
+ * (asm:7664-7678, 7766-7780): 1, or 3 when _serial_off and the side's
+ * _stats+$c rating > 4. Returns 0 if the people cannot be placed. */
+static int custom_generate(int16_t arg, int counts[2])
+{
+    in_conquest = -1;
+    start_seed = seed;
+    if (seed && (___newrand() & 1) && arg == -1 && ++ground_in > 3) ground_in = 0;
+    for (int owner = 0; owner < 2; ++owner) {   /* LAB_516B6/LAB_516C0, asm:1122-1129 */
+        A4_WORD(0x82c8 + owner*46) = 0; A4_WORD(0x82d2 + owner*46) = 0;
+    }
+    original_clear(___newrand, 0);
+    original_make_thing(2, 4, ___newrand);
+    original_make_thing(4, 2, ___newrand);
+    original_make_thing(3, 3, ___newrand);
+    _make_map();
+    original_woods(___newrand);
+    for (int owner = 0; owner < 2; ++owner)
+        counts[owner] = serial_off ? (A4_WORD(0x82c2 + owner*46) > 4 ? 3 : 1) : 1;
+    if (!original_place_people(counts[0], counts[1])) return 0;
+    A4_LONG(0xae72) = (uint32_t)counts[player ? 1 : 0] * 10;   /* asm:7679-7686, 7781-7788 */
+    seed = (int16_t)((uint16_t)seed + 1u);
+    return 1;
+}
+
 /* _end_text asm:24790-24843 (A4 0x8e7e): 7 rows x 46 bytes, word x, word y,
  * word (0x48/0x18, unused here), then text. strLOST is text+5 and
  * strScoreboard text+19 of each row (asm:14025,14102). */
@@ -2519,8 +2569,9 @@ static void core_enter_end(void)
 /* After the click (asm:14386-14402): won conquest -> _level_number and
  * _message = the next world's code (asm:14492-14501), the lord screen
  * (core_lord_open), then _show_world until != -1 (asm:14766-14772); a
- * lost conquest keeps in_conquest, i.e. the same world; non-conquest ->
- * restart the current start. */
+ * lost conquest keeps in_conquest, i.e. the same world; in_conquest -1
+ * -> _setup_display(0,-1) from the live _seed, the next custom landscape
+ * (asm:14410-14432); synthetic fixtures restart. */
 static int core_leave_end(void)
 {
     if (!core_end_shown) return 0;
@@ -2533,7 +2584,7 @@ static int core_leave_end(void)
         return 1;
     }
     StartSelection next = current_start;
-    if (!game_reset_start(next)) {
+    if (in_conquest == -1 && current_start.kind != START_SYNTHETIC ? !core_custom_start(seed, -1) : !game_reset_start(next)) {
         fprintf(stderr, "End of game: next world could not be started.\n");
         return 0;
     }
@@ -2571,6 +2622,16 @@ static void _animate(void)
     }
 }
 
+/* A custom start from the live _ground_in; a failure keeps the old land. */
+static int core_custom_start(int16_t from, int16_t arg)
+{
+    CustomLand old = core_land;
+    core_land = (CustomLand){from, arg, ground_in};
+    if (game_reset_start((StartSelection){START_CUSTOM, 0})) return 1;
+    core_land = old;
+    return 0;
+}
+
 static int game_reset(int scenario)
 {
     return game_reset_start((StartSelection){START_SYNTHETIC, scenario});
@@ -2580,7 +2641,8 @@ static int game_reset_start(StartSelection selection)
 {
     int scenario = selection.number;
     if (scenario < 0 || (selection.kind != START_SYNTHETIC && selection.kind != START_ORIGINAL &&
-        selection.kind != START_TUTORIAL) || (selection.kind == START_TUTORIAL && scenario) ||
+        selection.kind != START_TUTORIAL && selection.kind != START_CUSTOM) ||
+        ((selection.kind == START_TUTORIAL || selection.kind == START_CUSTOM) && scenario) ||
         scenario >= (selection.kind == START_ORIGINAL ? LEVEL_COUNT : 8)) return 0;
     ensure_prg_screen();
     if (!prg_screen) return 0;
@@ -2595,7 +2657,37 @@ static int game_reset_start(StartSelection selection)
     if (!directory) directory = default_data;
     LevelStart original = {0};
     unsigned terrain;
-    if (selection.kind == START_ORIGINAL) {
+    _Alignas(4) uint8_t staged[sizeof prg_a4_area] = {0};
+    if (selection.kind == START_CUSTOM) {
+        /* The original keeps all of A4 between maps; the port carries the
+         * custom inputs: _stats (both records), _game_mode, _player. */
+        uint8_t kept_stats[92]; int16_t modes = game_mode, side = player;
+        if (core_custom_live) memcpy(kept_stats, A4_DISP(0x82b6), 92);
+        uint8_t *live = prg_a4;
+        prg_a4 = staged + 32768;
+        if (core_custom_live) memcpy(A4_DISP(0x82b6), kept_stats, 92);
+        else {
+            for (int owner = 0; owner < 2; ++owner) {
+                memcpy(A4_DISP(0x82b6 + owner*46), core_boot_stats[owner], 4);
+                for (int field = 4; field < 46; field += 2)
+                    A4_WORD(0x82b6 + owner*46 + field) = (int16_t)(core_boot_stats[owner][field] << 8 | core_boot_stats[owner][field+1]);
+            }
+            modes = CORE_BOOT_GAME_MODE; side = 0;
+        }
+        game_mode = modes; player = side; serial_off = 1;   /* asm:24135-24138 */
+        seed = core_land.from; ground_in = core_land.ground;
+        int counts[2];
+        int generated = custom_generate(core_land.arg, counts);
+        terrain = (unsigned)ground_in;
+        int16_t speed = A4_WORD(0x82c6 + 46);   /* LAB_516E2 */
+        original.record.speed = speed > 0 && speed < 256 ? (uint8_t)speed : 0;
+        original.record.your_count = (uint8_t)counts[0]; original.record.enemy_count = (uint8_t)counts[1];
+        prg_a4 = live;
+        if (!generated || terrain > 3 || !original.record.speed) {
+            fprintf(stderr, "Custom landscape %d rejected: unsupported starting population or speed\n", (int)core_land.from);
+            return 0;
+        }
+    } else if (selection.kind == START_ORIGINAL) {
         LevelTable levels;
         if (!level_data_load(directory, &levels, error, sizeof error) ||
             !level_data_select(&levels, (unsigned)scenario, &original)) {
@@ -2625,7 +2717,6 @@ static int game_reset_start(StartSelection selection)
     game_font_loaded = font_file && fread(game_font, 1, sizeof game_font, font_file) == sizeof game_font &&
                        fgetc(font_file) == EOF;
     if (font_file) fclose(font_file);
-    _Alignas(4) uint8_t staged[sizeof prg_a4_area] = {0};
     if (selection.kind == START_ORIGINAL) {
         uint8_t *live = prg_a4;
         prg_a4 = staged + 32768;
@@ -2649,6 +2740,7 @@ static int game_reset_start(StartSelection selection)
     diagnostic_view = 0;
     current_start = selection;
     current_scenario = scenario;
+    if (selection.kind != START_SYNTHETIC) core_custom_live = 1;
     /* _clear_map (asm:1023-1188) and _clear_send (asm:18234-18254) never write
      * 0x99fc, good_pop/bad_pop or _stats+0x14/+0x16/+0x22/+0x26/+0x2a; only
      * _move_peeps zeroes them (asm:3280-3320), after _devil_effect (asm:3268). */
@@ -2715,9 +2807,11 @@ static int game_reset_start(StartSelection selection)
      * score reads it (asm:14239). _score was cleared with the staged A4. */
     serial_off = 1;
     core_end_shown = 0; core_end_next = -1;
-    A4_WORD(0x82bc) = 0; A4_WORD(0x82bc + 46) = 1;
-    A4_WORD(0x82be) = 1; A4_WORD(0x82be + 46) = 0;
-    A4_WORD(0x82c6) = 1; A4_WORD(0x82c6 + 46) = selected_speed;
+    if (selection.kind != START_CUSTOM) {   /* the custom _stats stand (asm:430-457) */
+        A4_WORD(0x82bc) = 0; A4_WORD(0x82bc + 46) = 1;
+        A4_WORD(0x82be) = 1; A4_WORD(0x82be + 46) = 0;
+        A4_WORD(0x82c6) = 1; A4_WORD(0x82c6 + 46) = selected_speed;
+    }
     if (selection.kind == START_TUTORIAL) {
         /* The copied _stats words stand; _start_game sets _pause (asm:13988). */
         for (int owner = 0; owner < 2; ++owner)
@@ -3381,15 +3475,22 @@ static void core_game_side(int side)
     core_set_pointer();
 }
 static void core_set_options_open(void);
+/* _do_action's _new_map (asm:18917-18932) with in_conquest -1: 1 (MOVE
+ * TO NEXT MAP, CONQUEST's number) keeps the live _seed, anything else
+ * (RESTART, ground_in+2) reloads _start_seed; _setup_display(0, new_map-2). */
+static int core_custom_new_map(int16_t new_map)
+{
+    return core_custom_start(new_map == 1 ? seed : start_seed, (int16_t)(new_map - 2));
+}
 /* Leaving _game_options: _return_to_game, then _do_action's _new_map
  * (asm:18917-18932): _setup_display restarts the map. A conquest start
  * restarts the current world (both 1 and ground_in+2 rebuild the same
- * conquest level); the custom map generator is not ported, so with
- * in_conquest -1 the request stays inert. */
+ * conquest level); with in_conquest -1 it builds a custom landscape. */
 static void core_game_options_close(void)
 {
     core_req.kind = CORE_REQ_NONE; left_button = 2;
-    if (A4_WORD(0x309a) && in_conquest != -1 && !game_reset_start(current_start))
+    int16_t new_map = A4_WORD(0x309a);
+    if (new_map && !(in_conquest == -1 ? core_custom_new_map(new_map) : game_reset_start(current_start)))
         fprintf(stderr, "Game options: map restart failed; keeping the current game.\n");
 }
 /* _game_options click, asm:12878-13350. In a conquest game entries 0..8
@@ -3761,12 +3862,16 @@ static int core_world_read(int record)
 /* The callers' MOVE.W D0,_in_conquest: the conquest start (asm:543-551)
  * and _won_conquest (asm:14766-14772) loop while it is -1, then start
  * the world; _game_options (asm:13236-13239) sets _new_map, whose restart
- * cannot build a custom (-1) map in the port. */
+ * with -1 (a number) builds that custom landscape from _seed. */
 static void core_world_return(int result)
 {
     in_conquest = (int16_t)result;
     if (result == -1 && core_world.origin != CORE_WORLD_OPTIONS) { core_world_open(core_world.origin); return; }
     if (core_world.origin == CORE_WORLD_OPTIONS) A4_WORD(0x309a) = 1;
+    if (result == -1 && !core_custom_new_map(1)) {
+        fprintf(stderr, "World selection: landscape %d could not be started.\n", (int)seed);
+        in_conquest = core_req.saved_conquest;
+    }
     if (result != -1 && !game_reset_start((StartSelection){START_ORIGINAL, result / 5})) {
         fprintf(stderr, "World selection: world %d could not be started.\n", result);
         in_conquest = (int16_t)A4_WORD(0xae7e);
@@ -3790,7 +3895,7 @@ static void core_world_entry(void)
 /* LAB_4712A..LAB_47236, asm:12262-12378. */
 static void core_world_evaluate(void)
 {
-    int value = atoi(core_message);
+    int16_t value = (int16_t)atoi(core_message);   /* ___atoi's low word, TST.W */
     if (value) {   /* a number: landscape seed for a custom game */
         start_seed = seed = (int16_t)value; core_message[0] = 0;
         core_world_return(-1); return;

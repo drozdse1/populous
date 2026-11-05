@@ -643,10 +643,44 @@ make -C populous_c_port test-sanitize
 Without arguments the original launcher screens run first (see "Launcher and
 intro"); its choice selects the start. Every argument bypasses the launcher and
 goes straight to the game. The optional positional argument is a decimal integer
-from 0 through `INT_MAX`; selection is `N % 8`, so 8 selects slot 0. The
-launcher's "normal game" choice also selects slot 0. These eight configurations
-retain their synthetic terrain and low-byte seed offsets. `--tutorial` (port
-flag) starts the tutorial like the launcher's tutorial button.
+from 0 through `INT_MAX`; selection is `N % 8`, so 8 selects slot 0. These
+eight configurations are port test fixtures: they retain their synthetic
+terrain and low-byte seed offsets and are not the original custom path. The
+launcher's "normal game" choice starts the original custom landscape 0 (see
+"Custom games"). `--tutorial` (port flag) starts the tutorial like the
+launcher's tutorial button.
+
+### Custom games
+
+The original boots with `_in_conquest` -1 (asm:24313) and `_seed` 0, so
+`_animate`'s first `_setup_display(0,1)` (asm:503-512) builds a custom
+landscape; only `_start_of_game` 2 (world screen) and 3 (tutorial) differ.
+`_setup_display` with `_in_conquest` -1 (asm:430-457) sets `_start_seed =
+_seed`; a nonzero `_seed` draws one `___newrand`, and when the argument is -1
+and the draw is odd `_ground_in` steps 0,1,2,3,0 (no `conq_05`). No `conq_`
+byte is read: powers, rating and speed stay in `_stats` (`_options`) and the
+rules in `_game_mode` (`_set_options`). Then `_clear_map` (asm:1023-1188,
+without the level mana), `_make_alt`, `_make_map(0,0,63,63)`,
+`_make_woods_rocks` and `_place_first_people`, whose custom counts are 1, or 3
+when `_serial_off` and that side's `_stats+$c` rating is above 4
+(asm:7664-7678, 7766-7780); `_seed` + 1. The port runs the shared conquest
+generator for this (`custom_generate`). Entry points:
+
+| entry | original | `_seed` / argument |
+| --- | --- | --- |
+| launcher "normal game" (choice 1) | asm:503-512 | 0 / 1 (boot `_stats`, `_game_mode` $10) |
+| MOVE TO NEXT MAP | `_new_map` 1, asm:18917-18932 | the live `_seed` / -1 |
+| RESTART THIS MAP | `_new_map` `_ground_in`+2 | `_start_seed` / `_ground_in` (same land) |
+| CONQUEST, a number typed | asm:12262-12272, 13236-13239 | that number (`___atoi` low word) / -1 |
+| end of a custom game | asm:14410-14432 | the live `_seed` / -1 |
+
+`r` restarts the same landscape. Port deviations: the original never reloads
+A4, the port carries `_stats` (both records), `_game_mode` and `_player` into a
+custom start (boot values after a fresh `prg_main` or before any non-synthetic
+start; a synthetic fixture does not count); `_paint_map` and two-player state
+are not carried. The tutorial's end now also continues with the next custom
+landscape, as the original. `prg_main` without the launcher
+(`_start_of_game` 0, the tests) keeps synthetic slot 0.
 
 ### Original world starts
 
@@ -694,7 +728,7 @@ picks the choice that `SUB_16E` stores at `$42` and `populous.prg` reads as
 | --- | --- | --- |
 | X >= 231, 156 <= Y < 170 | 3 tutorial | `_start_game` asm:13975-13999: `_tutorial`/`LAB_5172E` stats, seed `0x69bc`, `_tutorial_game_mode` 1, `_pause`, 10000 mana (asm:1134), 15 vs 3 people, ground 0, custom game (`in_conquest` -1) |
 | X >= 231, 170 <= Y < 184 | 2 conquest | world selection first, as `--conquest` |
-| X >= 241, Y >= 184 | 1 game | the default start (synthetic slot 0) |
+| X >= 241, Y >= 184 | 1 game | the default start: custom landscape 0 (see "Custom games") |
 | elsewhere, or no click for ~5 s | 0 | the intro, then `load.pic` again |
 
 The labels of the three bottom-right buttons were not read from the picture; the
@@ -1065,6 +1099,8 @@ Continuing (see Controls):
   screen opens with `_message` set to the next world's code (asm:14492-14501,
   14766-14772), and START GAME starts it through the normal reset;
 - conquest loss: the same world again;
+- a custom game (`_in_conquest` -1, also the tutorial): the next custom
+  landscape from the live `_seed` (asm:14410-14432);
 - synthetic scenarios are no conquest: the selected scenario restarts.
 
 Each start re-derives `_level_number`/`_in_conquest` from the selected world and
@@ -1132,7 +1168,7 @@ swamps, water, population and YES/NO per power for YOU/HIM.
   rejected name the entry continues after it (strlen), as the original.
 - A number (`atoi` != 0) sets `_start_seed`/`_seed` and returns -1: the start
   and conquest-win loops show the screen again; from the game options it makes
-  a custom game (`_in_conquest` -1), whose map generator is not ported (inert).
+  a custom game (`_in_conquest` -1) on that landscape (see "Custom games").
 
 Opened from `--conquest`, game options CONQUEST (asm:13221-13239, also sets
 `_new_map`) and after a conquest win. Keys are SDL key-down symbols (no text
@@ -1170,7 +1206,8 @@ when a requester opens rather than on every draw.
   (`_stats+6`), ONE PLAYER (tick only, `_serial_off` is always 1), CUSTOM GAME
   (`_in_conquest` -1), GAME OPTIONS, MOVE TO NEXT MAP / RESTART THIS MAP
   (`_new_map`; a conquest start restarts the current world, which is what
-  `_setup_display` builds for both), SURRENDER (`_surender` = `_player`, the
+  `_setup_display` builds for both; a custom game builds the next landscape
+  from the live `_seed` or restarts `_start_seed`, see "Custom games"), SURRENDER (`_surender` = `_player`, the
   next tick loses). Entries 0..8 are ignored in a conquest game. CANCEL
   restores `_serial_off`, `_paint_map`, `_player`, its `_stats+6` and
   `_in_conquest` as the original.
@@ -1179,10 +1216,9 @@ when a requester opens rather than on every draw.
   swamps bottomless, cannot build, only build up, build near towns); CANCEL
   restores `_game_mode`; it shows `LANDSCAPE NO <_start_seed>`.
 - CONQUEST opens the world selection (see "World selection").
-- Shown but inert: TWO PLAYERS (`_two_players`, serial), SAVE A GAME / LOAD A GAME (`_save_load`), MOVE TO
-  NEXT MAP / RESTART THIS MAP in a custom game (the custom map generator is
-  not ported), the two-player serial exchange after both dialogs, and the
-  message requester (y=2).
+- Shown but inert: TWO PLAYERS (`_two_players`, serial), SAVE A GAME / LOAD A GAME (`_save_load`),
+  the two-player serial exchange after both dialogs, and the message
+  requester (y=2).
 
 ## Verification
 

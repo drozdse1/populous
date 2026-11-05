@@ -11998,10 +11998,10 @@ static void test_requesters(void)
         toolbar_fixture(); for (int k=0;k<5;++k) game_tick();
         core_game_options_open(); entry_click(core_game_entry(entry),16,16);
         assert(!core_req.kind && !game_turn && !core_result);
-        /* A custom game cannot be generated: inert. */
+        /* in_conquest -1: a custom landscape (test_custom_game has the seeds). */
         toolbar_fixture(); for (int k=0;k<5;++k) game_tick(); in_conquest=-1;
         core_game_options_open(); entry_click(core_game_entry(entry),16,16);
-        assert(!core_req.kind && game_turn==5 && A4_WORD(0x309a)==(entry==14 ? 1 : ground_in+2));
+        assert(!core_req.kind && !game_turn && current_start.kind==START_CUSTOM && in_conquest==-1);
     }
     _closeall(); SDL_Quit();
 }
@@ -12158,6 +12158,114 @@ static void test_end_transition(void)
 }
 
 /* _show_world asm:12190-12773 with _get_name asm:10307-10488. */
+/* The shared conquest generator (original_generate) entered with the
+ * _seed the custom path builds from: one ___newrand when nonzero (asm:430-436,
+ * computed here with core_code_rand), and the custom people counts. */
+static uint8_t custom_reference[4096*3 + 208*22];
+static int16_t custom_reference_seed;
+static void custom_reference_build(int16_t from, int you, int him)
+{
+    static _Alignas(4) uint8_t scratch[sizeof prg_a4_area];
+    memset(scratch, 0, sizeof scratch);
+    uint8_t *live = prg_a4; prg_a4 = scratch + 32768;
+    LevelStart start = {0};
+    start.record = (LevelRecord){5, 3, 0, 0, 0, 0, (uint8_t)you, (uint8_t)him, 0};
+    start.initial_seed = from ? core_code_rand((uint16_t)from) : 0;
+    assert(original_generate(&start));
+    memcpy(custom_reference, map_alt, 4096); memcpy(custom_reference+4096, map_blk, 4096);
+    memcpy(custom_reference+8192, map_who, 4096); memcpy(custom_reference+12288, peeps, 208*22);
+    custom_reference_seed = seed;
+    prg_a4 = live;
+}
+static int custom_matches_reference(void)
+{
+    return !memcmp(custom_reference, map_alt, 4096) && !memcmp(custom_reference+4096, map_blk, 4096) &&
+           !memcmp(custom_reference+8192, map_who, 4096) && !memcmp(custom_reference+12288, peeps, 208*22) &&
+           seed == custom_reference_seed;
+}
+
+/* _setup_display with in_conquest -1 (asm:430-500): seeds, ground, people,
+ * _new_map's next/restart (asm:18917-18932), the end of a game (asm:14410-
+ * 14432), the _options/_set_options inputs and the synthetic fixtures. */
+static void test_custom_game(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    core_custom_live = 0;
+    /* Boot data: landscape 0 (no draw), 1 + 3 people (ratings 1/5), score 10. */
+    assert(core_custom_start(0, 1));
+    assert(current_start.kind==START_CUSTOM && in_conquest==-1 && !start_seed && !ground_in);
+    assert(game_mode==0x10 && (uint16_t)A4_WORD(0x82c4)==0xffff && A4_WORD(0x82c6+46)==3 && A4_WORD(0x82f0)==5);
+    assert(no_peeps==4 && A4_LONG(0xae72)==10 && A4_LONG(0x9a02)==399 && A4_LONG(0x9a12)==399);
+    custom_reference_build(0, 1, 3); assert(custom_matches_reference());
+    /* Seeds 1234 and 0x69bc: one draw, then the shared generator; arg 1 keeps ground 2. */
+    static const int16_t seeds[] = {1234, 0x69bc, 77};
+    for (int k=0;k<3;++k) {
+        ground_in = 2; assert(core_custom_start(seeds[k], 1));
+        assert(start_seed==seeds[k] && ground_in==2 && no_peeps==4);
+        custom_reference_build(seeds[k], 1, 3); assert(custom_matches_reference());
+        /* arg -1 steps ground on an odd draw; the same inputs give the same land. */
+        ground_in = 3; assert(core_custom_start(seeds[k], -1));
+        assert(ground_in == ((core_code_rand((uint16_t)seeds[k]) & 1) ? 0 : 3) && custom_matches_reference());
+        static uint8_t first[sizeof prg_a4_area]; memcpy(first, prg_a4_area, sizeof first);
+        ground_in = 3; assert(core_custom_start(seeds[k], -1) && !memcmp(first, prg_a4_area, sizeof first));
+    }
+    /* The tutorial is _setup_display(0,1) on 0x69bc with 15/3 people. */
+    assert(game_reset_start((StartSelection){START_TUTORIAL, 0}));
+    custom_reference_build(0x69bc, 15, 3); assert(custom_matches_reference());
+    /* A4 is never reloaded: its _stats (ratings 10, powers $3f) stay for custom. */
+    assert(core_custom_start(5, 1) && no_peeps==6 && A4_WORD(0x82c4)==0x3f && game_mode==1);
+    custom_reference_build(5, 3, 3); assert(custom_matches_reference());
+    core_custom_live = 0;   /* back to the boot data */
+
+    /* MOVE TO NEXT MAP: _new_map 1 keeps the live _seed, arg -1. */
+    ground_in = 2; assert(core_custom_start(1234, 1));
+    for (int k=0;k<40;++k) game_tick();
+    int16_t live = seed; assert(live != 1234);
+    core_game_options_open(); entry_click(core_game_entry(14),16,16);
+    assert(!core_req.kind && current_start.kind==START_CUSTOM && start_seed==live && !game_turn);
+    assert(ground_in == ((core_code_rand((uint16_t)live) & 1) ? 3 : 2));
+    custom_reference_build(live, 1, 3); assert(custom_matches_reference());
+    /* RESTART THIS MAP: _start_seed, arg ground_in: the same landscape and ground. */
+    static uint8_t lands[4096*3 + 208*22]; memcpy(lands, custom_reference, sizeof lands);
+    int16_t ground = ground_in;
+    for (int k=0;k<40;++k) game_tick();
+    core_game_options_open(); entry_click(core_game_entry(15),16,16);
+    assert(!core_req.kind && start_seed==live && ground_in==ground && !game_turn && custom_matches_reference());
+    /* The host R key restarts the same landscape. */
+    for (int k=0;k<5;++k) game_tick();
+    SDL_Event reset = {.type = SDL_KEYDOWN}; reset.key.keysym.sym = SDLK_r; game_handle_event(&reset);
+    assert(start_seed==live && !game_turn && custom_matches_reference());
+
+    /* _set_options bit 0, an _options power, a rating > 4, the speed and
+     * EVIL carry into the next map; no conq_ byte is read. */
+    int16_t modes = game_mode;
+    core_game_options_open(); entry_click(core_game_entry(11),16,16);
+    entry_click(core_set_entry(1),0x20,0x18); ok_click();
+    entry_click(core_game_entry(6),16,16); ok_click();
+    assert(!core_req.kind && game_mode==(modes ^ 1) && player==1 && start_seed==live);  /* no _new_map */
+    core_options_open(0); entry_click(core_option_entry(4),16,16); ok_click();
+    assert(!core_req.kind && (uint16_t)A4_WORD(0x82c4)==0xfff7);
+    A4_WORD(0x82c2) = 7; A4_WORD(0x82c6+46) = 9; conq_04_mode = 0x12; conq_02_enemypow = 0;
+    live = seed;
+    core_game_options_open(); entry_click(core_game_entry(14),16,16);
+    assert(start_seed==live && game_mode==(modes ^ 1) && (uint16_t)A4_WORD(0x82c4)==0xfff7 && (uint16_t)A4_WORD(0x82c4+46)==0xffff);
+    assert(A4_WORD(0x82c2)==7 && A4_WORD(0x82c6+46)==9 && player==1 && not_player==0 && pointer==4);
+    assert(no_peeps==6 && A4_LONG(0xae72)==30);   /* 3 + 3, score from the enemy count as _player 1 */
+    custom_reference_build(live, 3, 3); assert(custom_matches_reference());
+    core_game_options_open(); entry_click(core_game_entry(5),16,16); ok_click(); assert(player==0);
+
+    /* End of a custom game: _setup_display(0,-1) from the live _seed. */
+    for (int k=0;k<10;++k) game_tick();
+    live = seed; A4_WORD(0x8258) = player; game_tick(); assert(core_result==2);
+    core_enter_end(); assert(core_end_next==-1 && core_leave_end());
+    assert(!core_result && current_start.kind==START_CUSTOM && start_seed==live && in_conquest==-1);
+
+    /* The scenario numbers stay port fixtures. */
+    assert(game_reset(3) && current_start.kind==START_SYNTHETIC && in_conquest==15 && current_start_pop_you==10);
+    assert(game_reset(0) && num_demo_peeps==22);
+    _closeall(); SDL_Quit();
+}
+
 static void test_world_screen(void)
 {
     if (getenv("POPULOUS_TEST_REAL_DATA")) return;
@@ -12252,6 +12360,17 @@ static void test_world_screen(void)
     for (int x = 0; x < 16; ++x) assert(game_pixels[188*320+16+x] == icon_pixel(15, x, 12));
     world_new_click(); core_code(name, core_code_rand(10)); world_type(name); world_type("\n"); world_ok_click();
     assert(!core_req.kind && current_start.kind == START_ORIGINAL && current_start.number == 2 && in_conquest == 10);
+    /* A number there: -1 with _seed set, _new_map 1 builds that landscape
+     * (asm:12262-12272, 13236-13239, 18917-18932). */
+    toolbar_fixture(); in_conquest = -1;
+    core_game_options_open(); entry_click(core_game_entry(9),16,16); world_new_click(); world_type("4321\n");
+    assert(!core_req.kind && current_start.kind == START_CUSTOM && in_conquest == -1 && start_seed == 4321 && !game_turn);
+    assert(ground_in == (core_code_rand(4321) & 1));   /* from ground 0, arg -1 */
+    /* ___atoi's low word: 65536 is not a number but a (bad) name. */
+    toolbar_fixture(); in_conquest = -1;
+    core_game_options_open(); entry_click(core_game_entry(9),16,16); world_new_click(); world_type("65536\n");
+    assert(core_req.kind == CORE_REQ_WORLD && core_world.error && current_start.kind == START_SYNTHETIC);
+    core_req.kind = CORE_REQ_NONE;
     /* _animate with --conquest opens the screen before the first frame. */
     requested_world = 1; requested_start = (StartSelection){START_ORIGINAL, 0};
     SDL_Event quit = {.type = SDL_QUIT}; assert(SDL_PushEvent(&quit) == 1);
@@ -12273,7 +12392,7 @@ static int sound_playing(int ch, int sound)
 
 /* Sound triggers against the extracted gmusic1 (asm:19620-19672,20307-20518). */
 /* The launcher's $42 word becomes _start_of_game without arguments (prg
- * asm:94-96): 1 the default start, 2 the world screen, 3 the tutorial
+ * asm:94-96): 1 the default (custom landscape 0), 2 the world screen, 3 the tutorial
  * (_start_game asm:13975-13999). Arguments always win (CLI bypass). */
 static void test_launcher_start(void)
 {
@@ -12295,8 +12414,10 @@ static void test_launcher_start(void)
         assert(prg_exit_status() == 0 && prg_screen == NULL);
         int world = run == 1 || run == 3, tutorial = run == 2 || run == 4;
         assert(requested_world == world);
-        assert(current_start.kind == (tutorial ? START_TUTORIAL : world ? START_ORIGINAL : START_SYNTHETIC));
+        assert(current_start.kind == (tutorial ? START_TUTORIAL : world ? START_ORIGINAL : START_CUSTOM));
         if (world) assert(current_start.number == 0 && core_req.kind == CORE_REQ_WORLD);
+        /* 1: _setup_display(0,1) on the boot data, custom landscape 0. */
+        if (!run) assert(in_conquest == -1 && !start_seed && !ground_in && game_mode == 0x10 && no_peeps == 4);
         if (!tutorial) continue;
         /* seed 0x69bc, _tutorial_game_mode, _pause, LAB_5188C mana, the
          * copied _stats powers/speeds and conq_06/07 people (score 15*10). */
@@ -12939,6 +13060,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_lord_screen();
     test_world_screen();
     test_requesters();
+    test_custom_game();
     test_original_graphics_output();
     test_toolbar_icon_highlight();
     test_query_and_shield();
