@@ -11507,6 +11507,281 @@ static void test_start_reset(void)
 
 static void no_quake_delay(int ms) { (void)ms; }
 
+/* _end_game rows and score (asm:14019-14316). */
+static void end_stats_fixture(void)
+{
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    player = 0; not_player = 1;
+    A4_WORD(0x82c4) = 0x1ff;       /* every bonus bit owned: no +1000 */
+}
+static void test_end_stats(void)
+{
+    end_stats_fixture();
+    assert(core_end_stats(0) == 500 && A4_LONG(0xae72) == 500);   /* floor */
+    for (int r = 0; r < 7; ++r) {
+        assert(A4_WORD(0x8e7e + r*46) == core_end_template[r].x && A4_WORD(0x8e80 + r*46) == core_end_template[r].y);
+    }
+    assert(!strcmp(core_end_row(0), "GAME LOST"));
+    assert(!strcmp(core_end_row(1), "                   YOU  HIM"));
+    assert(!strcmp(core_end_row(2), "BATTLES WON        0    0"));
+    assert(!strcmp(core_end_row(5), "NUMBER OF CASTLES  0    0"));
+    assert(!strcmp(core_end_row(6), "YOUR SCORE         500"));
+    end_stats_fixture(); A4_LONG(0xae72) = 501; assert(core_end_stats(0) == 501);
+    end_stats_fixture(); A4_LONG(0xae72) = 0x80000000u; assert(core_end_stats(0) == 500); /* signed BGE */
+    end_stats_fixture(); A4_LONG(0xae72) = 1000; assert(core_end_stats(1) == 10000);
+    assert(!strcmp(core_end_row(0), "GAME WON") && !strcmp(core_end_row(6), "YOUR SCORE         10000"));
+    end_stats_fixture(); A4_LONG(0xae72) = 555555; assert(core_end_stats(0) == 555555);
+    end_stats_fixture(); A4_LONG(0xae72) = 555556; assert(core_end_stats(0) == 515090);
+    end_stats_fixture(); A4_LONG(0xae72) = 55556; assert(core_end_stats(1) == 515090);
+    for (int bit = 8; bit <= 256; bit <<= 1) {
+        end_stats_fixture(); A4_LONG(0xae72) = 10000;
+        A4_WORD(0x82c4) = (int16_t)(0x1ff & ~bit); assert(core_end_stats(0) == 11000);
+        end_stats_fixture(); A4_LONG(0xae72) = 10000;
+        A4_WORD(0x82c4 + 46) = (int16_t)bit; assert(core_end_stats(0) == 11000);
+    }
+    end_stats_fixture(); A4_WORD(0x82c4) = 7; A4_WORD(0x82c4 + 46) = 0x1ff; /* bits 1..4 ignored */
+    assert(core_end_stats(0) == 12000);
+    end_stats_fixture(); A4_LONG(0xae72) = 1000; A4_WORD(0xae7a) = 3; A4_WORD(0xae7c) = 2;
+    assert(core_end_stats(0) == 6000 && !strcmp(core_end_row(2), "BATTLES WON        3    2"));
+    end_stats_fixture(); A4_LONG(0xae72) = 1000; A4_WORD(0xae7a) = 2; A4_WORD(0xae7c) = 2;
+    assert(core_end_stats(0) == 1000);
+    end_stats_fixture(); A4_LONG(0xae72) = 1000; A4_WORD(0xae7a) = -1; A4_WORD(0xae7c) = 0;
+    assert(core_end_stats(0) == 1000 && !strcmp(core_end_row(2), "BATTLES WON        -1   0"));
+    end_stats_fixture(); A4_WORD(0xae7a) = 12345; A4_WORD(0xae7c) = 7;
+    assert(core_end_stats(1) == 50000 && !strcmp(core_end_row(2), "BATTLES WON        123457"));
+    /* asm:14239-14247: (10 - computer speed) * 15 when _serial_off. */
+    end_stats_fixture(); A4_LONG(0xae72) = 1000; A4_WORD(0x82c6 + 46) = 3;
+    assert(core_end_stats(0) == 1000); serial_off = 1; A4_LONG(0xae72) = 1000;
+    assert(core_end_stats(0) == 1105);
+    /* Swapped sides read the other words. */
+    end_stats_fixture(); player = 1; not_player = 0; A4_WORD(0x82c4) = 0; A4_WORD(0x82c4 + 46) = 0x1ff;
+    A4_WORD(0xae7c) = 4; A4_LONG(0xae72) = 1000;
+    assert(core_end_stats(0) == 6000 && !strcmp(core_end_row(2), "BATTLES WON        4    0"));
+    /* Knights: heading (+0xe) and population; towns/castles: flag 1, frame 0x2a. */
+    end_stats_fixture();
+    struct { int flag, owner, pop, frame, heading; } fixture[] = {
+        {2,0,5,0,1},{2,1,5,0,1},{2,1,5,0,1},{2,0,0,0,1},{8,0,-3,0,9},
+        {1,0,10,0x29,0},{1,0,10,0x29,0},{1,1,10,0x29,0},{1,0,0,0x29,0},{3,0,10,0x29,0},
+        {1,0,10,0x2a,0},{1,1,10,0x2a,0},{1,1,10,0x2a,0},{1,1,10,0x2a,0},{1,2,1,0x2a,0}};
+    no_peeps = sizeof fixture / sizeof fixture[0];
+    for (int p = 0; p < no_peeps; ++p) {
+        peeps[p*22] = (uint8_t)fixture[p].flag; peeps[p*22+1] = (uint8_t)fixture[p].owner;
+        set_peep_word(p,4,(int16_t)fixture[p].pop); set_peep_word(p,12,(int16_t)fixture[p].frame);
+        uint32_t heading = (uint32_t)fixture[p].heading; memcpy(peeps+p*22+14,&heading,4);
+    }
+    core_end_stats(0);
+    assert(!strcmp(core_end_row(3), "NUMBER OF KNIGHTS  2    2"));
+    assert(!strcmp(core_end_row(4), "NUMBER OF TOWNS    2    1"));
+    assert(!strcmp(core_end_row(5), "NUMBER OF CASTLES  1    4"));
+    no_peeps = 3; core_end_stats(0); assert(!strcmp(core_end_row(3), "NUMBER OF KNIGHTS  1    2"));
+    no_peeps = -1; core_end_stats(0); assert(!strcmp(core_end_row(3), "NUMBER OF KNIGHTS  2    2")); /* clamped */
+}
+
+/* _code/_decode (asm:14793-15118). */
+static void test_level_codes(void)
+{
+    char name[16];
+    seed = 1234;
+    for (int n = 0; n <= 2470; n += 5) {
+        core_code(name, core_code_rand(n));
+        assert(strlen(name) <= 12 && core_decode(name) == n);
+    }
+    assert(seed == 1234);
+    core_code(name, core_code_rand(0)); assert(!strcmp(name, "SHISODING"));
+    core_code(name, core_code_rand(2470)); assert(!strcmp(name, "WEAVUSPERT"));   /* asm:14488 */
+    assert(core_decode("GENESIS") == 0);
+    assert(core_decode("") == -1 && core_decode("XRING") == -1);
+    assert(core_decode("RINGX") == -2 && core_decode("RING") == -2);
+    assert(core_decode("RINGOUTX") == -3 && core_decode("RINGOUT") == -3);
+    assert(core_decode("RINGOUTHILLS") == -4);
+    static uint8_t produced[32768];
+    for (int n = 0; n <= 5000; n += 5) produced[core_code_rand(n)] = 1;
+    int unused = 0;
+    while (produced[unused]) ++unused;
+    core_code(name, (uint16_t)unused);
+    if (core_decode(name) != -5) {   /* a prefix may decode as another code */
+        for (int code = unused; code < 32768; ++code) {
+            core_code(name, (uint16_t)code);
+            int result = core_decode(name);
+            if (result == -5) break;
+            assert(result >= -5);
+        }
+    }
+    assert(core_decode(name) == -5);
+    StartSelection selection;
+    char *arguments[] = {"populous", "--code", "shisoding", NULL};
+    assert(parse_start(3, arguments, &selection) && selection.kind == START_ORIGINAL && selection.number == 0);
+    arguments[2] = "GENESIS"; assert(parse_start(3, arguments, &selection) && selection.number == 0);
+    arguments[2] = "WEAVUSPERT"; assert(parse_start(3, arguments, &selection) && selection.number == 494);
+    core_code(name, core_code_rand(25)); arguments[2] = name;
+    assert(parse_start(3, arguments, &selection) && selection.number == 5);
+    int beyond = -1;
+    for (int n = 2475; n <= 5000 && beyond < 0; n += 5) {
+        core_code(name, core_code_rand(n)); if (core_decode(name) == n) beyond = n;
+    }
+    assert(beyond > 0 && !parse_start(3, arguments, &selection));
+    const char *bad[] = {"", "RINGOUT", "XYZ", "SHISODINGSHISODING"};
+    for (int index = 0; index < 4; ++index) { arguments[2] = (char *)bad[index]; assert(!parse_start(3, arguments, &selection)); }
+    assert(!parse_start(2, arguments, &selection));
+}
+
+/* _won_conquest asm:14466-14491. */
+static void test_next_level(void)
+{
+    const struct { int level; int32_t score; int next, finished; } cases[] = {
+        {0,500,5,0},{0,4999,5,0},{0,5000,5,0},{0,24999,5,0},{0,25000,10,0},{0,29999,10,0},
+        {5,500,10,0},{10,515090,115,0},{2460,500,2465,0},{2465,500,2470,0},{2465,515090,2470,0},
+        {2469,0,2470,0},{2470,500,0,1},{2470,515090,0,1},{1000,50000,1015,0}};
+    for (size_t index = 0; index < sizeof cases / sizeof cases[0]; ++index) {
+        int finished = -1;
+        assert(core_next_level(cases[index].level, cases[index].score, &finished) == cases[index].next);
+        assert(finished == cases[index].finished);
+    }
+    char lines[2][48];
+    core_conquest_text(0, 5, 0, lines);
+    char next[16]; core_code(next, core_code_rand(5));
+    char expected[48]; snprintf(expected, sizeof expected, "GENESIS NOW BATTLE AT %s", next);
+    assert(!strcmp(lines[0], "WELL DONE MORTAL YOU CONQUERED ") && !strcmp(lines[1], expected));
+    core_conquest_text(2465, 2470, 0, lines);
+    assert(!strcmp(lines[0], "WELL DONE ETERNAL GOD YOU CONQUERED "));
+    assert(strstr(lines[1], " NOW BATTLE AT WEAVUSPERT"));
+    core_conquest_text(2470, 0, 1, lines);
+    assert(!strcmp(lines[0], "WELL DONE YOU HAVE CONQUERED EVIL") &&
+           !strcmp(lines[1], "THE BATTLE IS OVER BUT TRY SHISODING"));
+}
+
+static const uint8_t asm_glyph_A[40] = {   /* _font_data 'A', asm:21949+ */
+    0xff,0x00,0x00,0x00,0x00,0xff,0x00,0x00,0x00,0x00,0xc3,0x1c,0x20,0x00,0x3c,0x99,0x26,0x40,0x00,0x66,
+    0x81,0x3e,0x40,0x00,0x7e,0x99,0x62,0x04,0x00,0x66,0x99,0x66,0x00,0x00,0x66,0xff,0x00,0x00,0x00,0x00};
+
+static void write_font_fixture(void)
+{
+    uint8_t font[4400];
+    for (int glyph = 0; glyph < 110; ++glyph) {
+        memcpy(font + glyph*40, asm_glyph_A, 40);
+        if (!glyph) for (int row = 0; row < 8; ++row) { font[row*5] = 0xff; memset(font+row*5+1, 0, 4); }
+    }
+    char path[512]; snprintf(path, sizeof path, "%s/font.dat", test_data_directory);
+    FILE *file = fopen(path, "wb");
+    assert(file && fwrite(font, 1, sizeof font, file) == sizeof font && !fclose(file));
+}
+
+static void test_amiga_text(void)
+{
+    uint8_t saved[sizeof game_font]; memcpy(saved, game_font, sizeof saved);
+    int loaded = game_font_loaded;
+    for (int glyph = 0; glyph < 110; ++glyph) memcpy(game_font + glyph*40, asm_glyph_A, 40);
+    game_font_loaded = 1;
+    uint8_t pixels[sizeof game_pixels], before[sizeof game_pixels];
+    for (size_t index = 0; index < sizeof pixels; ++index) pixels[index] = (uint8_t)(index * 7 % 16);
+    memcpy(before, pixels, sizeof before);
+    amiga_text(pixels, 13, 5, "A\nA");    /* x 13 -> byte 1 */
+    for (int y = 0; y < 200; ++y) for (int x = 0; x < 320; ++x) {
+        int expected = before[y*320+x];
+        int glyph_row = y >= 5 && y < 13 ? y-5 : y >= 13 && y < 21 ? y-13 : -1;
+        if (glyph_row >= 0 && x >= 8 && x < 16) {
+            const uint8_t *g = asm_glyph_A + glyph_row*5; int b = 15 - x;
+            expected = 0;
+            for (int plane = 0; plane < 4; ++plane)
+                expected |= ((((before[y*320+x] >> plane) & (g[0] >> b)) | (g[1+plane] >> b)) & 1) << plane;
+        }
+        assert(pixels[y*320+x] == expected);
+    }
+    /* Glyph row 2 {0xc3,0x1c,0x20,0x00,0x3c}: x 10 -> planes 1+3, x 11 -> 0+3, x 8 kept. */
+    assert(pixels[7*320+10] == 10 && pixels[7*320+11] == 9 && pixels[7*320+8] == before[7*320+8]);
+    /* Linear plane memory: column 40 wraps to the next line, past 8000 bytes is dropped. */
+    memcpy(pixels, before, sizeof pixels);
+    amiga_text(pixels, 39*8, 0, "AA");
+    assert(pixels[2*320+315] == 9 && pixels[3*320+3] == 9 && pixels[2*320+3] == before[2*320+3]);
+    memcpy(pixels, before, sizeof pixels);
+    amiga_text(pixels, 0, 196, "A");
+    assert(!memcmp(pixels+200*320, before+200*320, sizeof pixels - 200*320));
+    game_font_loaded = 0; memcpy(pixels, before, sizeof pixels);
+    amiga_text(pixels, 0, 0, "A"); assert(!memcmp(pixels, before, sizeof pixels));
+    memcpy(game_font, saved, sizeof saved); game_font_loaded = loaded;
+}
+
+static void end_kill(int owner)
+{
+    for (int p = 0; p < no_peeps; ++p) if (peep_owner(p) == owner) set_peep_word(p,4,0);
+    for (int tick = 0; tick < 4 && !core_result; ++tick) game_tick();
+    assert(!core_end_shown);
+    if (core_result && !core_end_shown) core_enter_end();   /* as _animate */
+    assert(core_result == (owner == player ? 2 : 1) && core_end_shown);
+}
+
+/* Result -> stats once -> click/key -> next world (asm:14386-14402, 14460-14491). */
+static void test_end_transition(void)
+{
+    if (getenv("POPULOUS_TEST_REAL_DATA")) return;
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    write_level_fixture(1, 1);
+    write_font_fixture();
+    SDL_Event key = {.type = SDL_KEYDOWN}, click = {.type = SDL_MOUSEBUTTONDOWN};
+    key.key.keysym.sym = SDLK_x; click.button.button = SDL_BUTTON_LEFT;
+    /* Conquest win. */
+    assert(game_reset_start((StartSelection){START_ORIGINAL, 2}) && game_font_loaded);
+    assert(A4_WORD(0xae7e) == 10 && serial_off == 1 && !core_end_shown);
+    end_kill(1);
+    int32_t score = (int32_t)A4_LONG(0xae72);
+    assert(score >= 5000 && !strcmp(core_end_row(0), "GAME WON"));
+    int finished, next = core_next_level(10, score, &finished);
+    assert(core_end_next == next && !finished && next > 10 && !(next % 5));
+    char code[16]; core_code(code, core_code_rand(next));
+    assert(strstr(core_end_conquest[1], code));
+    uint8_t stopped[sizeof prg_a4_area]; memcpy(stopped, prg_a4_area, sizeof stopped);
+    game_tick(); assert(!memcmp(stopped, prg_a4_area, sizeof stopped));   /* finished: no tick */
+    key.key.repeat = 1; game_handle_event(&key); key.key.repeat = 0;
+    assert(core_result == 1 && !memcmp(stopped, prg_a4_area, sizeof stopped));
+    SDL_Event escape = key; escape.key.keysym.sym = SDLK_ESCAPE;
+    game_handle_event(&escape); assert(prg_quit && core_result == 1); prg_quit = 0;
+    game_handle_event(&key);
+    assert(!core_result && !core_end_shown && current_start.kind == START_ORIGINAL && current_start.number == next/5);
+    assert(A4_WORD(0xae7e) == next && in_conquest == next && A4_LONG(0xae72) == 10 && !A4_WORD(0x82bc));
+    /* Conquest loss: the same world again, by mouse click. */
+    end_kill(player);
+    assert(!strcmp(core_end_row(0), "GAME LOST") && core_end_next == -1 && !core_end_conquest[0][0]);
+    game_handle_event(&click);
+    assert(!core_result && current_start.number == next/5 && A4_WORD(0xae7e) == next);
+    /* The last world wraps to 0 (asm:14482-14491). */
+    assert(game_reset_start((StartSelection){START_ORIGINAL, 494}));
+    end_kill(1);
+    assert(core_end_next == 0 && core_end_finished && strstr(core_end_conquest[0], "EVIL"));
+    game_handle_event(&click);
+    assert(current_start.kind == START_ORIGINAL && !current_start.number && !A4_WORD(0xae7e));
+    /* Synthetic scenarios are not conquest: restart them. */
+    assert(game_reset(3));
+    end_kill(1);
+    assert(core_end_next == -1 && !core_end_conquest[0][0]);
+    game_handle_event(&key);
+    assert(!core_result && current_start.kind == START_SYNTHETIC && current_start.number == 3);
+    /* A result set without the end path keeps the old gating (no transition). */
+    core_result = 1; memcpy(stopped, prg_a4_area, sizeof stopped);
+    game_handle_event(&key); game_handle_event(&click);
+    assert(core_result == 1 && !memcmp(stopped, prg_a4_area, sizeof stopped));
+    /* End screen pixels: the box and the font text appear only with the result. */
+    assert(game_reset_start((StartSelection){START_ORIGINAL, 2}));
+    draw_original(xoff, yoff);
+    uint8_t playing[sizeof game_pixels]; memcpy(playing, game_pixels, sizeof playing);
+    end_kill(1);
+    draw_original(xoff, yoff);
+    int text = 0;
+    for (int y = 26; y < 34; ++y) for (int x = 128; x < 192; ++x) {
+        /* "GAME WON" at _end_text (0x70,0x0a)+16 over the cleared box: glyph A colours. */
+        const uint8_t *g = asm_glyph_A + (y-26)*5; int b = 7 - (x & 7), colour = 0;
+        if (x >= 128+32 && x < 128+40) continue;   /* the space */
+        for (int plane = 0; plane < 4; ++plane) colour |= ((g[1+plane] >> b) & 1) << plane;
+        assert(game_pixels[y*320+x] == colour);
+        text |= colour;
+    }
+    assert(text && memcmp(playing, game_pixels, sizeof playing));
+    assert(game_pixels[16*320+16] == 15 && game_pixels[20*320+20] == 0);
+    char path[512]; snprintf(path, sizeof path, "%s/font.dat", test_data_directory); assert(!unlink(path));
+    snprintf(path, sizeof path, "%s/level.dat", test_data_directory); assert(!unlink(path));
+    assert(game_reset(0) && !game_font_loaded);
+    _closeall(); SDL_Quit();
+}
+
 int main(int argc, char **argv)
 {
     /* Shake frames are checked in test_quake_shake; elsewhere skip the 20 ms vblanks. */
@@ -11815,6 +12090,7 @@ int main(int argc, char **argv)
     test_phased_move();
     test_walker_extras();
     test_original_selection();
+    test_end_stats(); test_level_codes(); test_next_level(); test_amiga_text();
     test_original_generator();
     test_original_placement();
     prepare_rule_data();
@@ -11831,6 +12107,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_swamp_render();
     test_original_reset();
     test_start_reset();
+    test_end_transition();
     test_original_graphics_output();
     test_toolbar_icon_highlight();
     test_query_and_shield();

@@ -58,6 +58,7 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <limits.h>
+#include <ctype.h>
 
 #include "land_data.h"
 #include "level_data.h"
@@ -90,6 +91,8 @@ static int prg_status = EXIT_SUCCESS;
 static void *host_buffers[8];
 static GraphicsAssets *game_assets;
 static uint8_t game_pixels[GFX_WIDTH * GFX_HEIGHT];
+static uint8_t game_font[4400];
+static int game_font_loaded;
 static int diagnostic_view;
 
 /* Forward so we can use it in prg_main for the immediate test pattern */
@@ -634,6 +637,7 @@ static void game_tick(void);
 static void game_render(void);
 static void game_handle_event(const SDL_Event *event);
 
+static int core_decode(const char *name);
 static int parse_scenario(int argc, char **argv, int *scenario)
 {
     *scenario = 0;
@@ -661,6 +665,16 @@ static int parse_start(int argc, char **argv, StartSelection *out)
         unsigned long number = strtoul(argv[2], &end, 10);
         if (errno == ERANGE || *end || number >= LEVEL_COUNT) return 0;
         selected = (StartSelection){START_ORIGINAL, (int)number};
+    } else if (argc == 3 && argv && argv[1] && !strcmp(argv[1], "--code")) {
+        /* _show_world world-name entry (asm:12278-12300); uppercased for the
+         * host shell. Worlds above 2470 have no level.dat record. */
+        char name[16];
+        size_t length = argv[2] ? strlen(argv[2]) : 0;
+        if (!length || length >= sizeof name) return 0;
+        for (size_t index = 0; index <= length; ++index) name[index] = (char)toupper((unsigned char)argv[2][index]);
+        int world = core_decode(name);
+        if (world < 0 || world / 5 >= LEVEL_COUNT) return 0;
+        selected = (StartSelection){START_ORIGINAL, world / 5};
     } else if (!parse_scenario(argc, argv, &selected.number)) return 0;
     *out = selected;
     return 1;
@@ -671,7 +685,7 @@ void prg_main(void)
     prg_status = EXIT_SUCCESS;
     prg_quit = 0;
     if (!parse_start(g_argc, g_argv, &requested_start)) {
-        fprintf(stderr, "Usage: populous_init_port [nonnegative integer <= INT_MAX | --level 0..494]\n");
+        fprintf(stderr, "Usage: populous_init_port [nonnegative integer <= INT_MAX | --level 0..494 | --code WORLDNAME]\n");
         prg_status = EXIT_FAILURE;
         return;
     }
@@ -2112,6 +2126,186 @@ static int original_generate(const LevelStart *start)
     return 1;
 }
 
+/* _end_text asm:24790-24843 (A4 0x8e7e): 7 rows x 46 bytes, word x, word y,
+ * word (0x48/0x18, unused here), then text. strLOST is text+5 and
+ * strScoreboard text+19 of each row (asm:14025,14102). */
+static const struct { int16_t x, y, w; const char *text; } core_end_template[7] = {
+    {0x70,0x0a,0x48,"GAME LOST"},
+    {0x10,0x14,0x18,"                   YOU  HIM"},
+    {0x10,0x23,0x18,"BATTLES WON        0000 0000"},
+    {0x10,0x2d,0x18,"NUMBER OF KNIGHTS  0000 0000"},
+    {0x10,0x37,0x18,"NUMBER OF TOWNS    0000 0000"},
+    {0x10,0x41,0x18,"NUMBER OF CASTLES  0000 0000"},
+    {0x10,0x50,0x18,"YOUR SCORE         000000000"},
+};
+#define core_end_row(r) ((char *)A4_DISP(0x8e84 + (r)*46))
+static int core_end_shown, core_end_next, core_end_finished;
+static char core_end_conquest[2][48];
+
+/* ___long_asc/___word_asc asm:21046-21110: signed decimal, no padding. */
+static void core_long_asc(char *out, int32_t value) { sprintf(out, "%ld", (long)value); }
+
+/* _end_game asm:14019-14316: fill the seven rows and the final _score.
+ * Row 1 keeps its template; rows 2-5 pad "you" to 5 then append "him". */
+static int32_t core_end_stats(int won)
+{
+    for (int r = 0; r < 7; ++r) {
+        A4_WORD(0x8e7e + r*46) = core_end_template[r].x;
+        A4_WORD(0x8e80 + r*46) = core_end_template[r].y;
+        A4_WORD(0x8e82 + r*46) = core_end_template[r].w;
+        memset(core_end_row(r), 0, 40);
+        strcpy(core_end_row(r), core_end_template[r].text);
+    }
+    strcpy(core_end_row(0) + 5, won ? "WON" : "LOST");  /* asm:14022-14044 */
+    int you = player, him = not_player;
+    for (int r = 2; r <= 5; ++r) {
+        int16_t mine = 0, theirs = 0;
+        if (r == 2) { mine = A4_WORD(0xae7a + you*2); theirs = A4_WORD(0xae7a + him*2); } /* asm:14046-14061 */
+        else {
+            /* asm:14063-14202 counts low words; the port clamps the unsigned
+             * no_peeps loop to the 208-record pool. */
+            int n = (uint16_t)no_peeps < 208 ? (uint16_t)no_peeps : 208;
+            for (int p = 0; p < n; ++p) {
+                uint32_t heading; memcpy(&heading, peeps + p*22 + 14, 4);
+                int hit = r == 3 ? heading != 0 && peep_word(p,4) != 0 :
+                    peeps[p*22] == 1 && peep_word(p,4) != 0 &&
+                    (r == 4 ? peep_word(p,12) != 0x2a : peep_word(p,12) == 0x2a);
+                if (hit) { if (peep_owner(p) == you) ++mine; else ++theirs; }
+            }
+        }
+        char a[16], b[16];
+        core_long_asc(a, mine); core_long_asc(b, theirs);
+        size_t length = strlen(a);
+        while (length < 5) a[length++] = ' ';
+        a[length] = 0;
+        strcpy(core_end_row(r) + 19, a); strcat(core_end_row(r), b);   /* asm:14280-14316 */
+    }
+    /* Score row asm:14204-14272. */
+    uint32_t score = A4_LONG(0xae72);
+    if (A4_WORD(0xae7a + you*2) > A4_WORD(0xae7a + him*2)) score += 5000;
+    for (uint16_t bit = 8; bit <= 0x100; bit <<= 1) {
+        if (!(A4_WORD(0x82c4 + you*46) & bit)) score += 1000;
+        if (A4_WORD(0x82c4 + him*46) & bit) score += 1000;
+    }
+    /* asm:14239-14247: set for every single-player start (asm:12768). */
+    if (serial_off) score += (uint32_t)(int32_t)(int16_t)((10 - A4_WORD(0x82c6 + him*46)) * 15);
+    if (won) score *= 10u;
+    if ((int32_t)score < 500) score = 500;
+    if ((int32_t)score > 555555) score = 515090;
+    A4_LONG(0xae72) = score;
+    core_long_asc(core_end_row(6) + 19, (int32_t)score);
+    return (int32_t)score;
+}
+
+/* _start/_mid/_end syllables asm:25075-25173. */
+static const char *const core_code_start[32] = {
+    "RING","VERY","KILL","SHAD","HURT","WEAV","MIN","EOA","COR","JOS","ALP","HAM","BUR","BIN","TIM","BAD",
+    "FUT","MOR","SAD","CAL","IMM","SUZ","NIM","LOW","SCO","HOB","DOU","BIL","QAZ","SWA","BUG","SHI"};
+static const char *const core_code_end[32] = {
+    "HILL","TORY","HOLE","PERT","MAR","CON","LOW","DOR","LIN","ING","HAM","OLD","PIL","BAR","MET","END",
+    "LAS","OUT","LUG","ILL","ICK","PAL","DON","ORD","OND","BOY","JOB","ER","ED","ME","AL","T"};
+static const char *const core_code_mid[32] = {
+    "OUT","QAZ","ING","OGO","QUE","LOP","SOD","HIP","KOP","WIL","IKE","DIE","IN","AS","MP","DI",
+    "OZ","EA","US","GB","CE","ME","DE","PE","OX","A","E","I","O","U","T","Y"};
+
+/* ___newrand of a given seed, without touching the A4 seed. */
+static uint16_t core_code_rand(int level) { return (uint16_t)((uint16_t)level * 0x24a1u + 0x24dfu) & 0x7fff; }
+
+/* _code asm:14793-14895: buffer needs 13 bytes. */
+static void core_code(char *out, uint16_t n)
+{
+    strcpy(out, core_code_start[n & 31]);
+    strcat(out, core_code_mid[(n >> 5) & 31]);
+    strcat(out, core_code_end[(n >> 10) & 31]);
+}
+
+/* _decode asm:14900-15118: first matching syllable wins, then the world
+ * whose seed n=0,5,..,5000 yields the code. The original leaves _seed=n;
+ * the port does not. "GENESIS" is _show_world's case (asm:12280-12288). */
+static int core_decode(const char *name)
+{
+    if (!strcmp(name, "GENESIS")) return 0;
+    const char *const *tables[3] = {core_code_start, core_code_mid, core_code_end};
+    size_t used = 0;
+    int code = 0;
+    for (int t = 0; t < 3; ++t) {
+        int s = 0;
+        for (; s < 32; ++s) {
+            size_t k = 0;
+            while (tables[t][s][k] && name[used+k] == tables[t][s][k]) ++k;
+            if (!tables[t][s][k]) { used += k; break; }
+        }
+        if (s == 32) return -1 - t;
+        code |= s << (5*t);
+    }
+    if (strlen(name) != used) return -4;
+    for (int n = 0; n <= 5000; n += 5) if (core_code_rand(n) == code) return n;
+    return -5;
+}
+
+/* _won_conquest asm:14460-14491: skip score/5000 worlds, round up to a
+ * multiple of 5, cap at 2470; winning 2470 again wraps to 0 (finished). */
+static int core_next_level(int level, int32_t score, int *finished)
+{
+    int16_t next = (int16_t)(level + (int16_t)(score / 5000 + 1));
+    if (next % 5) next = (int16_t)(next + 5 - next % 5);
+    *finished = 0;
+    if (next > 0x9a6) {
+        if (level == 0x9a6) { next = 0; *finished = 1; }
+        else next = 0x9a6;
+    }
+    return next;
+}
+
+/* _won_conquest message asm:14520-14582 (_con_text ranks asm:24751-24760). */
+static void core_conquest_text(int old_level, int level, int finished, char line[2][48])
+{
+    static const char *const ranks[10] = {"MORTAL","IMMORTAL","ETERNAL","DEVA","GREATER BEING",
+        "DEITY","GREATER DEITY","MORTAL GOD","GREATER GOD","ETERNAL GOD"};
+    char next[16], old[16];
+    core_code(next, core_code_rand(level));
+    if (finished) {
+        strcpy(line[0], "WELL DONE YOU HAVE CONQUERED EVIL");
+        snprintf(line[1], 48, "THE BATTLE IS OVER BUT TRY %s", next);
+        return;
+    }
+    snprintf(line[0], 48, "WELL DONE %s YOU CONQUERED ", ranks[level / 250 % 10]);
+    if (old_level) core_code(old, core_code_rand(old_level)); else strcpy(old, "GENESIS");
+    snprintf(line[1], 48, "%s NOW BATTLE AT %s", old, next);
+}
+
+static int core_conquest_game(void) { return current_start.kind == START_ORIGINAL && in_conquest != -1; }
+
+/* _end_game entry: stats once after the result appears. A conquest win
+ * precomputes _won_conquest's next world, shown before the click. */
+static void core_enter_end(void)
+{
+    int won = core_result == 1;
+    int32_t score = core_end_stats(won);
+    core_end_shown = 1; core_end_next = -1; core_end_finished = 0;
+    core_end_conquest[0][0] = core_end_conquest[1][0] = 0;
+    if (won && core_conquest_game()) {
+        core_end_next = core_next_level(A4_WORD(0xae7e), score, &core_end_finished);
+        core_conquest_text(A4_WORD(0xae7e), core_end_next, core_end_finished, core_end_conquest);
+    }
+}
+
+/* After the click (asm:14386-14402): won conquest -> next world (the
+ * _show_world name entry is skipped); a lost conquest keeps in_conquest,
+ * i.e. the same world; non-conquest -> restart the current start. */
+static int core_leave_end(void)
+{
+    if (!core_end_shown) return 0;
+    A4_WORD(0x82bc + player*46) = 0;
+    StartSelection next = current_start;
+    if (core_end_next >= 0) next = (StartSelection){START_ORIGINAL, core_end_next / 5};
+    if (!game_reset_start(next)) {
+        fprintf(stderr, "End of game: next world could not be started.\n");
+        return 0;
+    }
+    return 1;
+}
+
 static void _animate(void)
 {
     if (!game_reset_start(requested_start)) { prg_status = EXIT_FAILURE; return; }
@@ -2126,6 +2320,9 @@ static void _animate(void)
             game_tick(); next_tick += 50;
         }
         if ((Sint32)(now-next_tick) >= 0) next_tick = now+50;
+        /* ___end_game, called by _move_peeps (asm:4323-4347); deferred to
+         * after the tick so game_tick's own A4 effects stay unchanged. */
+        if (core_result && !core_end_shown) core_enter_end();
         game_render();
         SDL_Delay(10);
     }
@@ -2172,6 +2369,14 @@ static int game_reset_start(StartSelection selection)
         fprintf(stderr,"Original LAND data: %s. Set POPULOUS_DATA_DIR to extracted land0..3.\n",error);
         return 0;
     }
+    /* raw/font.dat is byte-identical to _font_data (asm:21949-22372);
+     * optional, the end screen omits its text without it. */
+    char font_path[4160];
+    snprintf(font_path, sizeof font_path, "%s/font.dat", directory);
+    FILE *font_file = fopen(font_path, "rb");
+    game_font_loaded = font_file && fread(game_font, 1, sizeof game_font, font_file) == sizeof game_font &&
+                       fgetc(font_file) == EOF;
+    if (font_file) fclose(font_file);
     _Alignas(4) uint8_t staged[sizeof prg_a4_area] = {0};
     if (selection.kind == START_ORIGINAL) {
         uint8_t *live = prg_a4;
@@ -2245,6 +2450,10 @@ static int game_reset_start(StartSelection selection)
     /* Every start: _setup_display clears _surender (asm:1149) and
      * _two_players derives _not_player from _player (asm:11779-11786). */
     A4_WORD(0x8258) = -1; not_player = player ? 0 : 1;
+    /* Single-player conquest start sets _serial_off (asm:12768); the end
+     * score reads it (asm:14239). _score was cleared with the staged A4. */
+    serial_off = 1;
+    core_end_shown = 0; core_end_next = -1;
     A4_WORD(0x82bc) = 0; A4_WORD(0x82bc + 46) = 1;
     A4_WORD(0x82be) = 1; A4_WORD(0x82be + 46) = 0;
     A4_WORD(0x82c6) = 1; A4_WORD(0x82c6 + 46) = selected_speed;
@@ -2565,6 +2774,69 @@ static void _move_mana(void)
     /* Original _move_mana is presentation only, never mana generation. */
 }
 
+/* ___text/_text asm:19973-20052 on the 320x200 game_pixels: x is byte
+ * aligned, '\n' moves 8 lines down, each 8x8 glyph is 8 x {mask, plane0..3}
+ * from char 0x20. Kept pixels: (old & mask) | planes, as the bitplane AND/OR.
+ * Linear plane addressing is emulated: overflowing columns wrap like the
+ * original, beyond 8000 bytes per plane is skipped. */
+static void amiga_text(uint8_t *pixels, int x, int y, const char *text)
+{
+    if (!game_font_loaded || !text) return;
+    long line = (long)y * 40 + (x >> 3), at = line;
+    for (; *text; ++text) {
+        unsigned c = (unsigned char)*text;
+        if (c == '\n') { line += 320; at = line; continue; }
+        if (c >= 0x20 && c - 0x20 < sizeof game_font / 40) {
+            const uint8_t *glyph = game_font + (c - 0x20) * 40;
+            for (int row = 0; row < 8; ++row, glyph += 5) {
+                long byte = at + row * 40;
+                if (byte < 0 || byte >= 8000) continue;
+                uint8_t *out = pixels + (byte / 40) * 320 + (byte % 40) * 8;
+                for (int bit = 0; bit < 8; ++bit) {
+                    int b = 7 - bit, colour = 0;
+                    for (int plane = 0; plane < 4; ++plane)
+                        colour |= ((((out[bit] >> plane) & (glyph[0] >> b)) | (glyph[1+plane] >> b)) & 1) << plane;
+                    out[bit] = (uint8_t)colour;
+                }
+            }
+        }
+        ++at;
+    }
+}
+
+static void core_fill(int left, int top, int width, int height, int colour)
+{
+    for (int y = top; y < top+height; ++y) for (int x = left; x < left+width; ++x)
+        if (x >= 0 && x < 320 && y >= 0 && y < 200) game_pixels[y*320+x] = (uint8_t)colour;
+}
+
+static void core_frame(int left, int top, int width, int height, int colour)
+{
+    core_fill(left,top,width,1,colour); core_fill(left,top+height-1,width,1,colour);
+    core_fill(left,top,1,height,colour); core_fill(left+width-1,top,1,height,colour);
+}
+
+/* _end_game display asm:14317-14369. The original _requester frame and
+ * button are not ported: a plain box at the requester rectangle (16,16,
+ * 288x166) holds the rows at _end_text+16 and a host-placed button. A
+ * conquest win adds _won_conquest's lines (x 8, y 0xb2/0xba, asm:14531-14582)
+ * here, before the click, instead of on the lord screen. */
+static void core_draw_end_screen(void)
+{
+    core_fill(16,16,288,166,0); core_frame(16,16,288,166,15);
+    for (int r = 0; r < 7; ++r)
+        amiga_text(game_pixels, A4_WORD(0x8e7e + r*46) + 16, A4_WORD(0x8e80 + r*46) + 16, core_end_row(r));
+    const char *button = core_result == 2 && core_conquest_game() ? "TRY IT AGAIN" : "NEW GAME";
+    int width = (int)strlen(button) * 8, left = (16 + (288 - width) / 2) & ~7;
+    core_frame(left-4,148,width+8,16,15);
+    amiga_text(game_pixels, left, 152, button);
+    if (core_end_conquest[0][0]) {
+        core_fill(0,176,320,20,0);
+        amiga_text(game_pixels, 8, 0xb2, core_end_conquest[0]);
+        amiga_text(game_pixels, 8, 0xba, core_end_conquest[1]);
+    }
+}
+
 /* A compact port HUD font, not an interpretation of the original font.dat. */
 static void hud_text(int left, int top, const char *text)
 {
@@ -2802,12 +3074,13 @@ static void draw_original(int view_x, int view_y)
             if (sy+delta>=0 && sy+delta<200 && sx>=64 && sx<320) game_pixels[(sy+delta)*320+sx]=5;
         }
     }
+    if (core_end_shown && core_result) core_draw_end_screen();
     for (size_t pixel=0; pixel<sizeof game_pixels; ++pixel)
         prg_screen->chunky_buffer[pixel]=prg_screen->palette[game_pixels[pixel]];
     char status[80];
-    snprintf(status,sizeof status,"%s  BLUE %d RED %d MANA %d",core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : A4_WORD(0xae80) ? "WAR" : "PLAY",core_population(0),core_population(1),core_mana(0));
+    snprintf(status,sizeof status,"%s  BLUE %d RED %d MANA %d",core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : pause ? "PAUSED" : A4_WORD(0xae80) ? "WAR" : "PLAY",core_population(0),core_population(1),core_mana(0));
     hud_text(4,204,status);
-    hud_text(4,213,A4_WORD(0xae80) ?
+    hud_text(4,213,core_end_shown && core_result ? "GAME OVER - CLICK OR PRESS A KEY TO CONTINUE / ESC QUIT" : A4_WORD(0xae80) ?
         "WAR - TERRAIN AND MAGNET INPUT LOCKED / ARROWS SCROLL / MAP CLICK" : core_swamp_selected ?
         "S SWAMP ARMED 5000 / LMB TARGET / RMB INERT" :
         "LMB RAISE / RMB LOWER / ARROWS SCROLL / MAP CLICK");
@@ -2876,7 +3149,7 @@ static void _draw_it(int16_t y, int16_t x)
     } else draw_original(x,y);
     char title[512];
     snprintf(title,sizeof title,"Populous | %s | cyan %d / red %d | mana %d | %s | 0 gather 1 settle 2 join 3 fight; M magnet; S swamp 5000; K knight 7500; Q quake 2500; F flood 40000; V volcano 10000; A Armageddon 80000; Space pause R reset Esc quit",
-        core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : core_result==3 ? "DRAW" : pause ? "PAUSED" : A4_WORD(0xae80) ? "WAR" : "RUNNING",
+        core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : pause ? "PAUSED" : A4_WORD(0xae80) ? "WAR" : "RUNNING",
         core_population(0),core_population(1),core_mana(0),A4_WORD(0xae80) ?
         "TERRAIN AND MAGNET INPUT LOCKED / ARROWS SCROLL / MAP CLICK" : core_swamp_selected ?
         (core_tool == 1 ? "SWAMP ARMED (5000) LMB target then MAGNET / RMB inert" : core_tool == 2 ?
@@ -3303,6 +3576,8 @@ static void game_handle_event(const SDL_Event *event)
     if (event->type == SDL_KEYDOWN) {
         SDL_Keycode key = event->key.keysym.sym;
         if (key == SDLK_ESCAPE) { prg_quit = 1; return; }
+        /* _end_game waits for the requester (asm:14370-14385): any other key. */
+        if (core_end_shown && core_result) { if (!event->key.repeat) core_leave_end(); return; }
         if (!event->key.repeat) {
             if (key == SDLK_SPACE) pause = !pause;
             if (key == SDLK_p) paint_map = !paint_map;
@@ -3345,6 +3620,7 @@ static void game_handle_event(const SDL_Event *event)
             if (!event->motion.state && !diagnostic_view) core_interogate(mousex,mousey,0);
         }
     }
+    if (event->type == SDL_MOUSEBUTTONDOWN && core_end_shown && core_result) { core_leave_end(); return; }
     if (event->type == SDL_MOUSEBUTTONDOWN && prg_screen) {
         int width,height; SDL_GetWindowSize(prg_screen->window,&width,&height);
         if (width <= 0 || height <= 0 || event->button.x < 0 || event->button.y < 0 ||

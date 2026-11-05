@@ -408,7 +408,8 @@ The original `_load_ground` reads gameplay tables from `landN` files, including
 (`src/populous_prg.asm:16468-16514`). Reset validates the selected file before
 changing A4 and installs its actual values plus original initialized tables.
 Missing/invalid files fail startup: there is no invented-rule fallback.
-Audio, campaign, save/load and multiplayer remain absent. The original toolbar
+Audio, save/load and multiplayer remain absent; the conquest campaign is
+partially ported (see "Game end, score and conquest"). The original toolbar
 is clickable (see Controls); the options, game-options and message requesters
 it opens in the original are not ported. Selected tendency, mode, music, FX
 and pause icons are highlighted with the original `_toggle_icon` diamond XOR;
@@ -630,6 +631,18 @@ eight configurations retain their synthetic terrain and low-byte seed offsets.
 overflow, unknown options and extra arguments fail. `r` repeats the selected
 original level or synthetic scenario. Original starts load `level.dat` from the
 same raw-data directory as LAND; the synthetic path does not need that file.
+
+```sh
+./populous_c_port/populous_init_port --code GENESIS
+./populous_c_port/populous_init_port --code shisoding
+```
+
+`--code NAME` enters a world name like `_show_world` (asm:12278-12300): `GENESIS`
+is world 0, any other name is decoded by `_decode` (first matching start, middle
+and end syllable, then the world `n = 0,5,..,5000` whose `_newrand` seed yields
+the code). The name is uppercased; unknown syllables, extra characters, unused
+codes and worlds above 2470 (no `level.dat` record) fail like other bad arguments.
+World `n` starts `--level n/5`.
 
 `level_data.c` decodes exactly 990 bytes into 99 ten-byte records. Selection uses
 record `N/5`, internal level `5*N`, and seed `(seed_offset + ((5*N) & 7)) & 0xffff`.
@@ -873,12 +886,49 @@ there is no terrain/population injection after the cast.
   Space: pause. `r`: reset the selected start and original graphics; synthetic
   starts return to view (6,6), original starts center near the friendly leader.
   Escape/window close: quit. Pause/outcome stop rules, not navigation/drawing.
+- After the game ends the end screen appears; any mouse click or key except
+  Escape continues (key repeats are ignored), Escape still quits.
 
 The opponent independently settles, grows, explores, merges and fights. Flatten
 plots to encourage settlement, wait for population/mana, and lower the four
 corners of hostile plots to deny land. The goal is to remove the opposing living
 population, including settlements.
 No timer or population target declares a winner.
+
+## Game end, score and conquest
+
+`game_tick` detects the result like `_move_peeps` (asm:4323-4347): your own empty
+population or surrender loses first, then the opponent's wins. There is no draw.
+Right after that tick the main loop runs the `_end_game` statistics once
+(asm:14019-14316; deferred from inside the tick so its A4 effects stay as before):
+the seven `_end_text` rows (A4 0x8e7e, 46 bytes each) receive `GAME WON/LOST`,
+battles won, knights (peeps with a heading and population), towns (flag 1,
+frame other than 0x2a) and castles (frame 0x2a), "you" padded to five characters.
+
+The final `_score` (A4 0xae72) adds to the accumulated power/placement score:
++5000 if you won more battles; per power bit 8..256 of the permission words
++1000 if yours is clear and +1000 if the opponent's is set; with `_serial_off`
+(set by every single-player start, asm:12768) `(10 - opponent speed) * 15`
+(asm:14239-14247); x10 on a win; at least 500; above 555555 it becomes 515090.
+
+The end screen draws these rows with the original 8x8 font (`raw/font.dat`,
+byte-identical to `_font_data`; without the file the box has no text) at the
+`_end_text` positions +16, plus `TRY IT AGAIN` (conquest loss) or `NEW GAME`.
+Continuing (see Controls):
+
+- conquest win (an original `--level`/`--code` start): `_won_conquest`
+  (asm:14460-14491) advances `_level_number` by `score/5000 + 1`, rounds up to
+  a multiple of 5 and caps at 2470; winning 2470 wraps to world 0. The box shows
+  `WELL DONE <rank> YOU CONQUERED` and `<old> NOW BATTLE AT <new code>` before
+  the click; the next world then starts through the normal reset;
+- conquest loss: the same world again;
+- synthetic scenarios are no conquest: the selected scenario restarts.
+
+Each start re-derives `_level_number`/`_in_conquest` from the selected world and
+clears `_score`. Not ported: the `_requester` frame and button (a plain box and a
+host-placed button text stand in), the lord/mouth animation, speech and music,
+the `_show_world` name-entry loop after a conquest win, and the end screen in
+the diagnostic view.
 
 ## Verification
 

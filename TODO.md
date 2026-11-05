@@ -267,19 +267,23 @@ Belege: `populous_c_port/populous_init.c:265-290`, `:363-378`;
 
 ## P2 - Spielende, Punkte und Conquest
 
-- [ ] **Teilweise:** Originale Endbedingungen einschliesslich Aufgabe und gleichzeitiger Ausloeschung abgleichen. C zeigt derzeit DRAW; das Original prueft zunaechst die eigene Ausloeschung als Niederlage.
-- [ ] **Fehlt:** Ergebnisstatistik, originale Punkteberechnung und Endbildschirm.
-- [ ] **Fehlt:** Conquest-Welt-/Levelauswahl, Levelcodes und Kodieren/Dekodieren.
-- [ ] **Fehlt:** Fortschrittsentscheidung nach Sieg, naechster Level, Wiederholung und zugehoerige Sequenzen.
-- [ ] **Pruefen:** Grenzen der Kampagnentabelle, ungueltige Codes und alle originalen Spiel-/Optionsmodi.
+- [x] **Erledigt:** Endbedingungen wie `_move_peeps` (eigene Ausloeschung/Aufgabe zuerst als Niederlage, dann Sieg); es gibt kein Unentschieden, die tote DRAW-Anzeige ist entfernt.
+- [x] **Erledigt:** Ergebnisstatistik (`_end_text`-Zeilen), originale Punkteberechnung inkl. Serial-Bonus, Endbildschirm mit Originalschrift (`font.dat` = `_font_data`).
+- [x] **Erledigt:** Levelcodes `_code`/`_decode`, `GENESIS`, CLI `--code NAME`.
+- [x] **Erledigt:** Fortschritt nach Sieg (`_won_conquest`: naechster Level, Obergrenze 2470, Umlauf auf 0), Wiederholung nach Niederlage, Neustart bei synthetischen Szenarien.
+- [ ] **Fehlt:** `_requester`-Rahmen/Knopf, Lord-/Mund-Animation, Sprache/Musik, Namenseingabe `_show_world` nach dem Sieg, Endbildschirm in der Diagnoseansicht.
+- [ ] **Pruefen:** Gleichzeitige Ausloeschung und Aufgabe gegen Referenzlaeufe; Punktestand gegen einen echten Amiga-Lauf; alle originalen Spiel-/Optionsmodi.
 
-**Abhaengigkeiten:** Level-Loader, Regeln/KI, Original-UI und Statistikzaehler.
+**Abhaengigkeiten:** Original-UI (Requester), Audio, Lord-Bilder.
 **Abnahme:** Mehrere aufeinanderfolgende Original-Level lassen sich ohne
-Demo-Reset spielen; Codes, Ergebnisse und Fortschritt stimmen mit Referenzen ueberein.
+Demo-Reset spielen (Testabdeckung: `test_end_transition`); Codes, Ergebnisse
+und Fortschritt stimmen mit Referenzen ueberein.
 
-Belege: `populous_c_port/populous_prg.c:1055-1062`, `:1590`;
-`src/populous_prg.asm:4323-4350`, `:12190`, `:14019`, `:14204-14272`,
-`:14460-14501`, `:14793`, `:14900`.
+Belege: `populous_c_port/populous_prg.c` (`core_end_stats`, `core_code`,
+`core_decode`, `core_next_level`, `core_enter_end`, `core_leave_end`,
+`amiga_text`, `core_draw_end_screen`);
+`src/populous_prg.asm:4323-4350`, `:12278-12300`, `:14019-14455`,
+`:14460-14790`, `:14793-15118`, `:19973-20052`, `:24726-24843`, `:25075-25173`.
 
 ## P2 - Audio
 
