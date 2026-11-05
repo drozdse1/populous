@@ -11200,14 +11200,15 @@ static void test_devil_effect(void)
         ai_run(expected);
         if (cell!=1234) break;
     }
-    /* _do_computer_effect asm:9526-9567: a leader and an enemy on the own
-     * magnet cell 2000 aim at (16,31); a friendly occupant falls back. */
-    for (int foe=1; foe>=0; --foe) {
-        ai_fixture(); A4_WORD(0x82f2)=0x40; A4_LONG(0x9a12)=901; core_leader(1)=1;
+    /* _do_computer_effect asm:9526-9567: TST.W _magnet; BNE LAB_450B8. Only
+     * WITHOUT an own leader and with an enemy on the own magnet cell 2000 is
+     * (16,31) aimed at; a leader or a friendly occupant falls back to (15,16). */
+    for (int leader=0; leader<2; ++leader) for (int foe=1; foe>=0; --foe) {
+        ai_fixture(); A4_WORD(0x82f2)=0x40; A4_LONG(0x9a12)=901; core_leader(1)=leader;
         core_target(1)=2000; ai_peep(0,2,1,100,600); ai_peep(2,1,0,50,1234); A4_LONG(0x830a)=3;
         ai_peep(4,2,foe ? 0 : 1,10,2000); map_who[2000]=5;
         memcpy(expected,prg_a4_area,65536); ai_expect_pass(expected);
-        if (foe) ai_expect_mail(expected,6,16,31,1); else ai_expect_mail(expected,6,15,16,1);
+        if (foe && !leader) ai_expect_mail(expected,6,16,31,1); else ai_expect_mail(expected,6,15,16,1);
         ai_run(expected);
     }
     /* asm:9420-9482: swamp on the enemy leader (slot 1 at 700 = 60,10),
@@ -11247,6 +11248,116 @@ static void test_computer_effect(void)
     core_do_computer_effect(1);
     assert(A4_DISP(0x82e4)[0]==6 && A4_DISP(0x82e5)[0]==60 && A4_DISP(0x82e6)[0]==60);
     puts("computer_effect: PASS");
+}
+/* Every _devil_effect / _set_devil_magnet choice tied to the _stats+$e bit
+ * the asm BTSTs before writing it (asm:9317-9524, 9784-9898). */
+static int ai_power_bit(const uint8_t *mail)
+{
+    if (mail[0]==14) return mail[2]==3 ? 0x100 : mail[2]==4 ? 0x80 : mail[2]==5 ? 0x20 : mail[2]==1 ? -1 : 0;
+    return mail[0]==6 ? 0x40 : mail[0]==4 ? 0x10 : mail[0]==3 ? 0x08 : 0;
+}
+/* Every branch eligible: rich, more populous, a 3001 own leader under a
+ * stronger enemy leader, an old town (flags 1) as the +$26 subject. */
+static void ai_power_fixture(uint16_t powers)
+{
+    ai_fixture(); A4_WORD(0x82f2)=(int16_t)powers; A4_LONG(0x9a12)=100000;
+    A4_LONG(0x9a0e)=5; A4_LONG(0x99fe)=4;
+    core_leader(1)=1; core_leader(0)=2; no_peeps=3;
+    ai_peep(0,2,1,3001,600); ai_peep(1,2,0,5000,700); ai_peep(2,1,0,50,1234);
+    A4_LONG(0x830a)=3; A4_WORD(0x82fe)=1; A4_WORD(0x82fc)=3;
+}
+static void test_ai_level_parameters(void)
+{
+    /* 1. Allowed powers (_stats+$e): over all 512 masks the computer only
+     * ever queues a power whose bit is set; each power is reached. */
+    int seen=0;
+    for (unsigned powers=0; powers<0x200; ++powers) {
+        ai_power_fixture((uint16_t)powers); core_devil_effect(1);
+        int bit=ai_power_bit(A4_DISP(0x82e4));
+        assert(bit>=0 && (!bit || (powers&(unsigned)bit)));
+        seen|=bit;
+        /* Without the knight's early return the order continues. */
+        ai_power_fixture((uint16_t)(powers&~0x20u)); peeps[0*22]=0; core_leader(1)=0;
+        core_devil_effect(1); bit=ai_power_bit(A4_DISP(0x82e4));
+        assert(bit>=0 && (!bit || (powers&(unsigned)bit)));
+        seen|=bit;
+    }
+    assert(seen==(0x100|0x80|0x40|0x20|0x10|0x08));
+    /* Consumers re-check the bit (asm:7863ff,8046ff,8295ff,7567ff,8392ff,
+     * 8482ff): a forged disallowed mailbox costs nothing and changes nothing. */
+    static const uint8_t forged[6][3]={{3,10,10},{4,10,10},{6,10,10},{14,0,3},{14,0,4},{14,0,5}};
+    for (int f=0; f<6; ++f) {
+        ai_power_fixture(0x7); int bit=ai_power_bit(forged[f]);
+        A4_WORD(0x82f2)=(int16_t)(0x1ff&~bit);
+        memcpy(A4_DISP(0x82e4),forged[f],3);
+        int16_t heights=A4_WORD(0xae86+(10*65+10)*2); uint16_t war=A4_WORD(0xae80);
+        core_consume_terrain_mailboxes();
+        assert(A4_LONG(0x9a12)==100000 && core_leader(1)==1 && A4_WORD(0xae80)==war &&
+               A4_WORD(0xae86+(10*65+10)*2)==heights);
+    }
+    /* Level records install rating/speed/powers exactly as asm:406-427. */
+    LevelStart start={{7,4,0x15,0x3,0,0,1,1,0},0,123};
+    memset(prg_a4_area,0,sizeof prg_a4_area); start_state();
+    original_generate(&start);
+    assert(A4_WORD(0x82f0)==7 && A4_WORD(0x82f4)==4 &&
+           A4_WORD(0x82f2)==((0x15<<3)|7) && A4_WORD(0x82c4)==((0x3<<3)|7));
+
+    /* 2. Reaction speed (_stats+$10): _get_message asm:17932-17950 clears the
+     * latch of a controller-1 side only when game_turn % speed == 0, so the
+     * computer re-decides exactly once per `speed` turns. */
+    for (int speed=1; speed<=6; ++speed) {
+        uint16_t trace[2][60]={{0}}; int decisions[2]={0,0};
+        for (int run=0; run<2; ++run) {
+            ai_fixture(); A4_WORD(0x82ea)=1; A4_WORD(0x82f4)=(int16_t)speed; game_turn=0;
+            for (int turn=0; turn<60; ++turn) {
+                core_tendency(1)=0;                     /* keep the tendency path live */
+                int latched_before=A4_WORD(0x82ec)!=0;
+                ++game_turn; _move_peeps();             /* game_tick order: ADDQ game_turn (asm:3248) first */
+                int decided=!latched_before && A4_WORD(0x82ec);
+                assert(decided==(A4_DISP(0x82e4)[0]==14));
+                decisions[run]+=decided;
+                trace[run][turn]=decided ? (uint16_t)(seed ^ A4_DISP(0x82e5)[0]<<8) : 0;
+                core_consume_terrain_mailboxes();
+                assert(!A4_WORD(0x82ec)==((uint16_t)game_turn%speed==0));
+            }
+        }
+        /* First pass decides (latch clear), then every turn after a multiple. */
+        int expected=1;
+        for (int t=1; t<60; ++t) if (t%speed==0) ++expected;
+        assert(decisions[0]==expected);
+        /* 4. Deterministic: same seed, same decisions and same RNG trace. */
+        assert(decisions[0]==decisions[1] && !memcmp(trace[0],trace[1],sizeof trace[0]));
+    }
+    /* A human side (controller 0) never has its latch cleared by cadence. */
+    ai_fixture(); A4_WORD(0x82ea)=0; A4_WORD(0x82ec)=1; A4_WORD(0x82f4)=1;
+    for (int turn=0; turn<10; ++turn) { ++game_turn; core_consume_terrain_mailboxes(); assert(A4_WORD(0x82ec)==1); }
+
+    /* 3. Rating (_stats+$c): asm:9612-9627 keeps the computer passive
+     * (tendency path) while towns < 2*rating+15 or game_turn%90 < rating+10;
+     * otherwise its leader goes after the youngest own town (+$2a). */
+    for (int rating=0; rating<=10; ++rating) for (int dt=-1; dt<=0; ++dt) for (int dturn=-1; dturn<=0; ++dturn) {
+        ai_fixture(); core_tendency(1)=0; A4_WORD(0x82f0)=(int16_t)rating;
+        A4_WORD(0x82f8)=0; A4_WORD(0x82fa)=(int16_t)(2*rating+15+dt);
+        game_turn=(int16_t)(90*3+rating+10+dturn);
+        core_leader(1)=1; ai_peep(0,2,1,100,600); ai_peep(3,1,1,90,300); A4_LONG(0x830e)=4;
+        uint16_t before=seed; core_set_devil_magnet(1);
+        const uint8_t *mail=A4_DISP(0x82e4);
+        if (dt<0 || dturn<0) {
+            assert(mail[0]==14 && mail[2]==1 && seed!=before);   /* passive, one newrand */
+        } else {
+            assert(mail[0]==5 && mail[1]==44 && mail[2]==4 && seed==before);
+            assert(A4_WORD(0x8302)==300 && A4_WORD(0x8300)==2);
+        }
+        assert(A4_WORD(0x82ec)==1);
+    }
+    /* Same world and turn: rating 0 attacks, rating 10 stays passive. */
+    for (int rating=0; rating<=10; rating+=10) {
+        ai_fixture(); core_tendency(1)=0; A4_WORD(0x82f0)=(int16_t)rating; A4_WORD(0x82fa)=20; game_turn=15;
+        core_leader(1)=1; ai_peep(0,2,1,100,600); ai_peep(3,1,1,90,300); A4_LONG(0x830e)=4;
+        core_set_devil_magnet(1);
+        assert(A4_DISP(0x82e4)[0]==(rating ? 14 : 5));
+    }
+    puts("ai_level_parameters: PASS");
 }
 static void test_make_level(void)
 {
@@ -11475,7 +11586,7 @@ static void test_good_pop(void)
 }
 static void test_computer_ai(void)
 {
-    test_set_devil_magnet(); test_devil_effect(); test_good_pop(); test_computer_effect(); test_make_level();
+    test_set_devil_magnet(); test_devil_effect(); test_good_pop(); test_computer_effect(); test_ai_level_parameters(); test_make_level();
     test_ai_opcode_magnet(); test_ai_opcode_action(); test_ai_opcode_effects();
 }
 
@@ -11853,6 +11964,221 @@ static void world_type(const char *text)
 static void ok_click(void) { screen_click(core_rec_w(core_end_ok,0)+4, core_rec_w(core_end_ok,2)+8, SDL_BUTTON_LEFT); }
 static void cancel_click(void) { screen_click(core_rec_w(core_end_cancel,0)+4, core_rec_w(core_end_cancel,2)+8, SDL_BUTTON_LEFT); }
 
+/* SAVE A GAME / LOAD A GAME: _save_game/_checksum/_load_game file format
+ * (asm:17123-17703) and the _save_load requester (asm:10493-10972). */
+static char save_directory[] = "/tmp/populous-save-XXXXXX";
+static void save_file_path(char *path, size_t size, const char *name)
+{
+    snprintf(path, size, "%s/%s", save_directory, name);
+}
+static size_t save_read(const char *name, uint8_t *bytes, size_t size)
+{
+    char path[512]; save_file_path(path, sizeof path, name);
+    FILE *in = fopen(path, "rb"); assert(in);
+    size_t count = fread(bytes, 1, size, in); fclose(in);
+    return count;
+}
+static void save_write(const char *name, const uint8_t *bytes, size_t size)
+{
+    char path[512]; save_file_path(path, sizeof path, name);
+    FILE *out = fopen(path, "wb"); assert(out && fwrite(bytes, 1, size, out) == size && !fclose(out));
+}
+static void save_remove(const char *name)
+{
+    char path[512]; save_file_path(path, sizeof path, name); assert(!unlink(path));
+}
+static uint16_t be16_at(const uint8_t *p) { return (uint16_t)(p[0] << 8 | p[1]); }
+static uint32_t be32_at(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+static void save_fixture(void)
+{
+    toolbar_fixture();
+    for (int k = 0; k < 4; ++k) game_tick();
+    A4_WORD(0xae86) = 0x1234; A4_WORD(0xae86 + 2*4224) = -2;   /* first and last _alt word */
+    ((uint8_t *)map_alt)[0] = 0xab; ((uint8_t *)map_blk)[1] = 0xcd;
+    ((uint8_t *)map_bk2)[4095] = 0xef; ((uint8_t *)map_who)[2] = 0x5a;
+    core_good_pop(0) = 0x01020304; core_good_pop(1) = 0x00011000;
+    A4_LONG(0x9a02) = 0x0a0b0c0d;   /* mana */
+    A4_WORD(0x82b6 + 46 + 0x10) = 0x0607;
+    A4_LONG(0x82b6 + 46 + 0x22) = 2;   /* _stats pointer: slot 1 */
+    A4_LONG(0xae72) = 0xdeadbeef; game_turn = 0x2345; A4_WORD(0xae7a) = 3; A4_WORD(0xae7c) = 0x104;
+    A4_WORD(0xae7e) = 77; conq_08_seed = 0x4321; conquest = 0x9a; A4_WORD(0x8256) = 2;
+    start_seed = 0x0bad; seed = 0x0bee; A4_WORD(0xae80) = 0;
+}
+static void test_save_load(void)
+{
+    assert(mkdtemp(save_directory));
+    assert(!setenv("POPULOUS_SAVE_DIR", save_directory, 1));
+    static uint8_t file[CORE_SAVE_SIZE + 8], again[CORE_SAVE_SIZE + 8];
+    static uint8_t snapshot[sizeof prg_a4_area], loaded[sizeof prg_a4_area];
+    assert(CORE_SAVE_SIZE == 29646 && CORE_SAVE_SCALARS_AT + 42 == CORE_SAVE_SIZE);
+
+    /* Byte layout: _Write order, big-endian, peep pointers as _peeps addresses. */
+    save_fixture();
+    int16_t person = (int16_t)(no_peeps - 1);
+    assert(no_peeps >= 2 && set_peep_reference(person, 0));
+    uint32_t reference = 1;
+    memcpy(peeps + 200*22 + 14, &reference, 4);   /* beyond no_peeps: kept as an address */
+    assert(core_save_game("LAYOUT"));
+    assert(save_read("LAYOUT.GAM", file, sizeof file) == CORE_SAVE_SIZE);
+    assert(be32_at(file) == 0xffffb615u);
+    assert(be16_at(file+4) == 0x1234 && be16_at(file+4+2*4224) == 0xfffe);
+    int maps = 4 + 0x2102;
+    assert(file[maps] == 0xab && file[maps+0x1000+1] == 0xcd && file[maps+0x2000+4095] == 0xef &&
+           file[maps+0x3000+2] == 0x5a);
+    int magnet = maps + 0x4000;
+    assert(be16_at(file+magnet) == (uint16_t)core_leader(0) && be16_at(file+magnet+2) == (uint16_t)core_target(0) &&
+           be32_at(file+magnet+8) == 0x01020304 && be32_at(file+magnet+12) == 0x0a0b0c0d &&
+           be32_at(file+magnet+16+8) == 0x00011000);
+    int records = magnet + 0x20;
+    assert(file[records + person*22] == peeps[person*22] && file[records + person*22 + 1] == peeps[person*22 + 1]);
+    assert(be16_at(file + records + person*22 + 4) == (uint16_t)peep_word(person, 4) &&
+           be16_at(file + records + person*22 + 8) == (uint16_t)peep_word(person, 8));
+    assert(be32_at(file + records + person*22 + 14) == 0x53014u);
+    assert(be32_at(file + records + 200*22 + 14) == 0x53014u);
+    int stats_at = records + 0x1222;
+    assert(be16_at(file + stats_at + 46 + 0x10) == 0x0607 && be32_at(file + stats_at + 46 + 0x22) == 0x53014u + 22);
+    const uint8_t *s = file + CORE_SAVE_SCALARS_AT;
+    assert(be16_at(s) == 2 && be16_at(s+2) == 0x0bee && be16_at(s+4) == 0x0bad && be16_at(s+6) == (uint16_t)player &&
+           be16_at(s+8) == (uint16_t)ground_in && be16_at(s+10) == 0 && be16_at(s+12) == 0x2345);
+    assert(s[14] == 0x9a && be16_at(s+22) == 0x4321 && be16_at(s+24) == (uint16_t)in_conquest &&
+           be16_at(s+26) == (uint16_t)paint_map && be16_at(s+28) == 3 && be16_at(s+30) == 0x104 &&
+           be16_at(s+32) == (uint16_t)game_mode && be16_at(s+34) == 77 && be32_at(s+36) == 0xdeadbeefu);
+    /* _checksum: word sums of _alt and the maps plus good_pop+bad_pop. */
+    uint16_t sum = 0;
+    for (int at = 4; at < magnet; at += 2) sum = (uint16_t)(sum + be16_at(file+at));
+    sum = (uint16_t)(sum + 0x01020304u + 0x00011000u);
+    assert(be16_at(s+40) == sum && (uint16_t)A4_WORD(0x3082) == sum);
+    assert(core_save_encode(again) == sum && !memcmp(again, file, CORE_SAVE_SIZE));
+    /* An existing ".GAM" is not doubled. */
+    assert(core_save_game("LAYOUT.GAM") && save_read("LAYOUT.GAM", again, sizeof again) == CORE_SAVE_SIZE);
+    save_remove("LAYOUT.GAM");
+
+    /* Round trip: everything saved comes back; _load_game's own steps
+     * (no_peeps, cleared mailboxes, _get_heading, magnets) are applied. */
+    save_fixture();
+    A4_DISP(0x82b6)[0] = 7;   /* mailbox, cleared by the load */
+    memcpy(snapshot, prg_a4_area, sizeof snapshot);
+    StartSelection start = current_start; GraphicsAssets *assets = game_assets;
+    assert(core_save_game("ROUND"));
+    assert(game_reset(1)); for (int k = 0; k < 6; ++k) game_tick();
+    core_tool = 1; core_set_pointer(); core_result = 1;
+    assert(core_load_game("ROUND"));
+    assert(!core_result && !core_tool && game_assets && current_start.kind == start.kind);
+    memcpy(loaded, prg_a4_area, sizeof loaded);
+    for (size_t r = 0; r < sizeof core_save_regions / sizeof *core_save_regions; ++r) {
+        size_t at = (size_t)(A4_DISP(core_save_regions[r].offset) - prg_a4_area);
+        for (int k = 0; k < core_save_regions[r].size; ++k) {
+            int field = k % 22;
+            if (core_save_regions[r].kind == CORE_SAVE_PEEPLIST && k/22 < no_peeps && field >= 14 && field < 18) continue;
+            if (core_save_regions[r].kind == CORE_SAVE_STATS && k < 3) { assert(!prg_a4_area[at+k]); continue; }
+            assert(prg_a4_area[at+k] == snapshot[at+k]);
+        }
+    }
+    int16_t peeps_now = no_peeps;
+    for (int i = 0; i < peeps_now; ++i) {   /* references are _get_heading's, which is stable */
+        uint32_t raw; memcpy(&raw, peeps + i*22 + 14, 4);
+        if (!raw) continue;
+        uint8_t record[22]; memcpy(record, peeps + i*22, 22);
+        core_get_heading(i); assert(!memcmp(record, peeps + i*22, 22));
+    }
+    assert(peep_word(peeps_now-1, 4) && not_player == (player ? 0 : 1) &&
+           A4_WORD(0xae78) == core_target(0) && A4_WORD(0xae76) == core_target(1));
+    /* Loading again over a changed game gives the identical state. */
+    assert(game_reset(2)); for (int k = 0; k < 3; ++k) game_tick();
+    assert(core_load_game("ROUND.GAM"));
+    for (size_t r = 0; r < sizeof core_save_regions / sizeof *core_save_regions; ++r) {
+        size_t at = (size_t)(A4_DISP(core_save_regions[r].offset) - prg_a4_area);
+        assert(!memcmp(loaded + at, prg_a4_area + at, (size_t)core_save_regions[r].size));
+    }
+    static const int derived[] = {0xae5e, 0xae76, 0xae78, 0x825a, 0x3082, 0x84b6};   /* no_peeps.._pointer */
+    for (size_t k = 0; k < sizeof derived / sizeof *derived; ++k) {
+        size_t at = (size_t)(A4_DISP(derived[k]) - prg_a4_area);
+        assert(!memcmp(loaded + at, prg_a4_area + at, 2));
+    }
+    /* Saving the loaded game reproduces the file bit for bit. */
+    assert(save_read("ROUND.GAM", file, sizeof file) == CORE_SAVE_SIZE);
+    assert(core_save_game("AGAIN") && save_read("AGAIN.GAM", again, sizeof again) == CORE_SAVE_SIZE);
+    for (int k = 0; k < CORE_SAVE_SIZE; ++k) {
+        int at = k - (magnet + 0x20);
+        if (at >= 0 && at < 0x1222 && at/22 < peeps_now && at%22 >= 14 && at%22 < 18) continue;   /* _get_heading */
+        if (k >= stats_at && k < stats_at + 92 && (k - stats_at) % 46 < 3) continue;           /* mailboxes */
+        assert(file[k] == again[k]);
+    }
+    save_remove("AGAIN.GAM");
+
+    /* Invalid files are rejected before anything changes. */
+    memcpy(snapshot, prg_a4_area, sizeof snapshot); assets = game_assets;
+    memcpy(again, file, CORE_SAVE_SIZE); again[0] = 0; save_write("BAD.GAM", again, CORE_SAVE_SIZE);
+    assert(!core_load_game("BAD"));
+    save_write("BAD.GAM", file, CORE_SAVE_SIZE - 1); assert(!core_load_game("BAD"));
+    memcpy(again, file, CORE_SAVE_SIZE); again[CORE_SAVE_SIZE] = 0;
+    save_write("BAD.GAM", again, CORE_SAVE_SIZE + 1); assert(!core_load_game("BAD"));
+    memcpy(again, file, CORE_SAVE_SIZE); again[maps + 7] ^= 1;   /* checksum mismatch */
+    save_write("BAD.GAM", again, CORE_SAVE_SIZE); assert(!core_load_game("BAD"));
+    memcpy(again, file, CORE_SAVE_SIZE); again[CORE_SAVE_SCALARS_AT + 9] = 4;   /* _ground_in 4 */
+    save_write("BAD.GAM", again, CORE_SAVE_SIZE); assert(!core_load_game("BAD"));
+    memcpy(again, file, CORE_SAVE_SIZE); again[CORE_SAVE_SCALARS_AT + 7] = 2;   /* _player 2 */
+    save_write("BAD.GAM", again, CORE_SAVE_SIZE); assert(!core_load_game("BAD"));
+    assert(!core_load_game("MISSING"));
+    assert(!memcmp(snapshot, prg_a4_area, sizeof snapshot) && game_assets == assets);
+    save_remove("BAD.GAM");
+
+    /* The requester: SAVE A GAME, type the name, OK. */
+    save_fixture(); core_game_options_open();
+    entry_click(core_game_entry(12),16,16);
+    assert(core_req.kind == CORE_REQ_FILE && core_file.save && core_file.count == 1 && !strcmp(core_file.names[0], "ROUND"));
+    assert(!strcmp(core_rec_text(core_file_ok), "SAVE") && core_rec_w(core_file_ok,0) == 80 &&
+           core_rec_w(core_file_ok,2) == 176 && core_rec_w(core_end_cancel,2) == 176);
+    core_draw_requester();
+    screen_click(0x60, 0xa2, SDL_BUTTON_LEFT); assert(core_file.field == 2);
+    world_type("slot\b\bved\n"); assert(!core_file.field && !strcmp(core_filename, "SLVED"));
+    memcpy(snapshot, prg_a4_area, sizeof snapshot);
+    screen_click(core_rec_w(core_file_ok,0)+4, core_rec_w(core_file_ok,2)+8, SDL_BUTTON_LEFT);
+    assert(core_req.kind == CORE_REQ_NONE && A4_WORD(0x3054) == 1);
+    assert(save_read("SLVED.GAM", file, sizeof file) == CORE_SAVE_SIZE);
+    /* LOAD A GAME lists the drawer (upper-cased .GAM files, sorted), a row
+     * picks the name; the arrows scroll while top+5 < count. */
+    save_write("b.gam", file, 4); save_write("note.txt", file, 4);
+    for (int k = 0; k < 4; ++k) { char name[16]; snprintf(name, sizeof name, "Z%d.GAM", k); save_write(name, file, 4); }
+    char sub[512]; save_file_path(sub, sizeof sub, "DIR.GAM"); assert(!mkdir(sub, 0700));
+    assert(game_reset(1)); serial_off = 1; core_game_options_open();
+    entry_click(core_game_entry(13),16,16);
+    assert(core_req.kind == CORE_REQ_FILE && !core_file.save && core_file.count == 7);
+    assert(!strcmp(core_file.names[0], "B") && !strcmp(core_file.names[1], "ROUND") &&
+           !strcmp(core_file.names[2], "SLVED") && !strcmp(core_file.names[6], "Z3"));
+    screen_click(0xdc, 0x7c, SDL_BUTTON_LEFT); screen_click(0xdc, 0x7c, SDL_BUTTON_LEFT);
+    screen_click(0xdc, 0x7c, SDL_BUTTON_LEFT); assert(core_file.top == 2);
+    screen_click(0xdc, 0x24, SDL_BUTTON_LEFT); assert(core_file.top == 1);
+    core_draw_requester();
+    screen_click(0x60, 0x22 + 8 + 2, SDL_BUTTON_LEFT); assert(!strcmp(core_filename, "SLVED"));
+    screen_click(core_rec_w(core_file_ok,0)+4, core_rec_w(core_file_ok,2)+8, SDL_BUTTON_LEFT);
+    assert(core_req.kind == CORE_REQ_NONE && !memcmp(map_who, snapshot + (map_who - prg_a4_area), 4096));
+    assert(A4_LONG(0xae72) == 0xdeadbeef && game_turn == 0x2345 && A4_WORD(0xae86) == 0x1234);
+    /* A failed save shows ERROR IN SAVING until a click; a bad drawer lists
+     * nothing; an empty name or CANCEL return to the game options. */
+    core_game_options_open(); entry_click(core_game_entry(12),16,16);
+    screen_click(0x60, 0x8f, SDL_BUTTON_LEFT); assert(core_file.field == 1);
+    world_type("nodir\n"); assert(!strcmp(core_drawer, "NODIR") && !core_file.count);
+    memcpy(snapshot, prg_a4_area, sizeof snapshot);
+    screen_click(core_rec_w(core_file_ok,0)+4, core_rec_w(core_file_ok,2)+8, SDL_BUTTON_LEFT);
+    assert(core_req.kind == CORE_REQ_FILE && core_file.error);
+    core_draw_requester();
+    screen_click(10, 10, SDL_BUTTON_LEFT); assert(!core_file.error && core_req.kind == CORE_REQ_FILE);
+    char missing[512]; save_file_path(missing, sizeof missing, "NODIR/SLVED.GAM"); assert(access(missing, F_OK));
+    screen_click(0x60, 0x8f, SDL_BUTTON_LEFT);
+    /* CANCEL in _get_name empties the field and ends the requester on the same press. */
+    cancel_click(); assert(core_req.kind == CORE_REQ_GAME && !core_drawer[0] && !core_file.field);
+    core_filename[0] = 0; entry_click(core_game_entry(12),16,16);
+    screen_click(core_rec_w(core_file_ok,0)+4, core_rec_w(core_file_ok,2)+8, SDL_BUTTON_LEFT);
+    assert(core_req.kind == CORE_REQ_GAME);
+    core_req.kind = CORE_REQ_NONE;
+
+    const char *names[] = {"ROUND.GAM","SLVED.GAM","b.gam","note.txt","Z0.GAM","Z1.GAM","Z2.GAM","Z3.GAM"};
+    for (size_t k = 0; k < sizeof names / sizeof *names; ++k) save_remove(names[k]);
+    assert(!rmdir(sub) && !rmdir(save_directory));
+    assert(!setenv("POPULOUS_SAVE_DIR", "/nonexistent-populous-saves", 1));
+}
+
 /* _requester/_check_cancel/_options/_game_options/_set_options. */
 static void test_requesters(void)
 {
@@ -11967,11 +12293,19 @@ static void test_requesters(void)
     assert(player==0 && not_player==1 && core_rec_w(core_stats(0),6)==0 && core_rec_w(core_stats(1),6)==1 && pointer==1);
     entry_click(core_game_entry(8),16,16); assert(core_rec_w(core_stats(0),6)==1 && core_rec_w(core_stats(1),6)==1);
     entry_click(core_game_entry(7),16,16); assert(core_rec_w(core_stats(0),6)==0 && core_rec_w(core_stats(1),6)==1);
-    /* Inert: TWO PLAYERS, SAVE, LOAD (CONQUEST opens _show_world, test_world_screen). */
+    /* Inert: TWO PLAYERS (CONQUEST opens _show_world, test_world_screen).
+     * SAVE A GAME / LOAD A GAME open _save_load; CANCEL changes nothing
+     * (test_save_load); LOAD only while _serial_off. */
     memcpy(before,prg_a4_area,sizeof before);
     entry_click(core_game_entry(2),16,16);
-    entry_click(core_game_entry(12),16,16); entry_click(core_game_entry(13),16,16);
-    keep_mouse(before); assert(a4_same(before) && core_req.kind==CORE_REQ_GAME);
+    entry_click(core_game_entry(12),16,16); assert(core_req.kind==CORE_REQ_FILE && core_file.save==1);
+    cancel_click(); assert(core_req.kind==CORE_REQ_GAME);
+    entry_click(core_game_entry(13),16,16);
+    assert(core_req.kind==(serial_off ? CORE_REQ_FILE : CORE_REQ_GAME));
+    if (serial_off) { assert(!core_file.save); cancel_click(); assert(core_req.kind==CORE_REQ_GAME); }
+    /* _save_load waits with _left_button 2 (asm:10833, 10907). */
+    keep_mouse(before); assert(left_button==2); memcpy(before+(A4_DISP(0xae62)-prg_a4_area),A4_DISP(0xae62),2);
+    assert(a4_same_but_tables(before) && core_req.kind==CORE_REQ_GAME);
     entry_click(core_game_entry(1),16,16); assert(serial_off==1 && core_rec_text(core_game_entry(1))[0]==(char)0x81);
     /* GAME OPTIONS: _set_options over the setup screen, toggles _game_mode. */
     entry_click(core_game_entry(11),16,16);
@@ -12732,6 +13066,8 @@ leave:
 
 int main(int argc, char **argv)
 {
+    /* Hermetic save drawer; test_save_load uses its own temporary one. */
+    setenv("POPULOUS_SAVE_DIR", "/nonexistent-populous-saves", 1);
     /* Shake frames are checked in test_quake_shake; elsewhere skip the 20 ms vblanks. */
     core_quake_delay = no_quake_delay;
     if (argc==2 && !strcmp(argv[1],"--set-devil-magnet")) { test_set_devil_magnet(); return 0; }
@@ -12741,6 +13077,7 @@ int main(int argc, char **argv)
         prepare_rule_data(); test_start_reset(); cleanup_rule_data(); return 0;
     }
     if (argc==2 && !strcmp(argv[1],"--computer-effect")) { test_computer_effect(); return 0; }
+    if (argc==2 && !strcmp(argv[1],"--ai-level-parameters")) { test_ai_level_parameters(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--devil-magnet")) { test_set_devil_magnet(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--make-level")) { test_make_level(); return 0; }
     if (argc==2 && !strcmp(argv[1],"--opcode-magnet")) { test_ai_opcode_magnet(); return 0; }
@@ -13060,6 +13397,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_lord_screen();
     test_world_screen();
     test_requesters();
+    test_save_load();
     test_custom_game();
     test_original_graphics_output();
     test_toolbar_icon_highlight();

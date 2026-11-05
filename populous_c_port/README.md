@@ -409,7 +409,8 @@ The original `_load_ground` reads gameplay tables from `landN` files, including
 changing A4 and installs its actual values plus original initialized tables.
 Missing/invalid files fail startup: there is no invented-rule fallback.
 Original sound effects, the heartbeat and the in-game `gmusic1` music play
-(see "Sound"); save/load and multiplayer remain absent; the conquest campaign is
+(see "Sound"); SAVE A GAME / LOAD A GAME use the original `.GAM` format (see
+"Save and load"); multiplayer remains absent; the conquest campaign is
 partially ported (see "Game end, score and conquest"). The original toolbar
 is clickable (see Controls); its options and game-options icons open the
 original requesters (see "Requesters and options"); the message requester is
@@ -1236,9 +1237,79 @@ when a requester opens rather than on every draw.
   swamps bottomless, cannot build, only build up, build near towns); CANCEL
   restores `_game_mode`; it shows `LANDSCAPE NO <_start_seed>`.
 - CONQUEST opens the world selection (see "World selection").
-- Shown but inert: TWO PLAYERS (`_two_players`, serial), SAVE A GAME / LOAD A GAME (`_save_load`),
+- SAVE A GAME / LOAD A GAME open the `_save_load` file requester (see "Save
+  and load"); LOAD A GAME only while `_serial_off` (asm:13259-13276).
+- Shown but inert: TWO PLAYERS (`_two_players`, serial),
   the two-player serial exchange after both dialogs, and the message
   requester (y=2).
+
+## Save and load
+
+Sources: `_save_load` (requester, `src/populous_prg.asm:10493-10972`),
+`_get_name` (`:10307-10488`), `_sort` (`:11016-11079`), `_get_a_dir`
+(`:16841-16915`), `_save_game` (`:17123-17385`), `_checksum` (`:17389-17407`),
+`_load_game` (`:17412-17703`), the `_game_options` entries (`:13259-13276`).
+
+**Requester.** `_requester(d_screen,0x48,0x10,0xb0,0xb0)` with SAVE/LOAD and
+CANCEL over the game setup screen: title SAVE GAME / LOAD GAME, 12 rows of the
+drawer listing at x 0x58 (click a row to take its name), arrows 0x88/0x89 at
+x 0xd8 (up while the top row > 0, down while top+5 < count, as the original),
+DIRECTORY (`_drawer`, y 0x8d) and FILE NAME (`_filename`, y 0xa0). Clicking a
+field starts `_get_name` (16 boxes, keys 0x20..0x7a upper-cased, backspace,
+Return; OK ends the entry and acts, CANCEL empties the field and closes).
+`_drawer`/`_filename` keep their A4 places (0x302c/0x3040) between dialogs. The
+listing holds regular files whose upper-cased name (first 29 characters) ends
+in `.GAM`, shown without it, sorted. OK with an empty name or CANCEL returns to
+the game setup. The name is `_drawer` + `/` (unless it ends in `:`/`/` or has
+one character) + `_filename`; `.GAM` is appended unless present. A successful
+save sets `_saved` and, like a load, closes the game setup; a failed save shows
+ERROR IN SAVING until the next click.
+
+**Where files go.** Relative drawers and names are resolved under
+`$POPULOUS_SAVE_DIR`, else `$XDG_DATA_HOME/populous/saves`, else
+`~/.local/share/populous/saves`, else `./saves`; an absolute drawer (`/...`) is
+used as it is. Saving creates the base directory, not sub-drawers.
+
+**Format** (29646 bytes, all big-endian as the 68000 wrote them, in `_Write`
+order):
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | signature `$FFFFB615` |
+| 4 | 0x2102 | `_alt`, 65x65 words |
+| 0x2106 | 4x0x1000 | `_map_alt`, `_map_blk`, `_map_bk2`, `_map_who` bytes |
+| 0x6106 | 0x20 | `_magnet[2]`: 4 words, `good_pop`/`bad_pop` long, mana long |
+| 0x6126 | 0x1222 | `_peeps`, 211 records: bytes 0-3, words 4-12, pointer 14, word 18, bytes 20-21 |
+| 0x7348 | 2x0x2e | `_stats`, strABC: bytes 0-3, words 4-0x20, pointers 0x22/0x26/0x2a |
+| 0x73a4 | 7x2 | `_mode`, `_seed`, `_start_seed`, `_player`, `_ground_in`, `_war`, `_game_turn` |
+| 0x73b2 | 10 | `_conquest` (8 bytes, seed word) |
+| 0x73bc | 2+2+4+2+2 | `_in_conquest`, `_paint_map`, `_battle_won[2]`, `_game_mode`, `_level_number` |
+| 0x73c8 | 4 | `_score` |
+| 0x73cc | 2 | checksum |
+
+The checksum is the 16-bit sum of the big-endian words of `_alt` (0x1081) and
+the four maps (0x800 each) plus the low word of `good_pop + bad_pop`; it is
+also stored in `_land_checksum`. Peep pointers are Amiga addresses of `_peeps`
+records (`$53014 + 22*slot`, the IRA image's `_peeps`), 0 for none; the port's
+host values (slot+1) are converted both ways.
+
+**Load** (after the original): the file data, then `___load_ground(_ground_in)`
+(LAND rules and graphics), `_not_player`, `_god_magnet`/`_devil_magnet` from
+`_magnet`, `no_peeps` = last peep with a non-zero population + 1, the first
+three (mailbox) bytes of both `_stats` cleared, `_get_heading` for every live
+peep with a pointer, and the terrain pointer.
+
+**Deviations.** The original checks only the signature and reads field by
+field; the port reads the whole file and rejects it before any change unless
+it has exactly 29646 bytes, the signature, a matching checksum, `_player` 0..1,
+`_ground_in` 0..3 and loadable LAND/graphics data, then publishes the staged
+state at once (a failed load still closes the setup, as `_save_load` returns 1).
+Saves go to a temporary file renamed into place, so a failed save leaves no
+partial file. A pointer that is not a `_peeps` record address (for example from
+another load address) is read as the peep itself, so `_get_heading` recomputes
+it, or 0 in `_stats`. The `level.dat` disk check after a save is dropped. The
+port's own tool state is reset to the terrain tool; a synthetic demo start
+keeps its restart target. The listing holds at most 256 names.
 
 ## Verification
 
@@ -1330,6 +1401,17 @@ so outcomes appear one pass after the last death. Like `_clear_map` (asm 1023-11
 `r` reset keeps 0x99fc, good_pop/bad_pop and `_stats`+0x14/+0x16/+0x22/+0x26/+0x2a;
 only the next pass clears them, after `_devil_effect` (`--start-reset`). Open: opcodes 7-13, `_toggle` mana,
 edge-of-map targets (host rejects x/y>56) and null pointer reads (address 8).
+Level parameters in AI decisions (`--ai-level-parameters`): rating `_stats`+$c
+keeps the computer on its passive tendency path while towns < 2*rating+15 or
+`game_turn`%90 < rating+10 (`_set_devil_magnet` asm 9612-9627); reaction speed
+`_stats`+$10 is the `_get_message` cadence (asm 17932-17950): a controller-1 side's
+latch clears only when `game_turn` % speed == 0, so it re-decides once per `speed`
+turns; allowed powers `_stats`+$e are BTSTed before each `_devil_effect` choice
+(war $100, flood $80, knight $20, volcano $40, swamp $10, quake $08; magnet $02/$04
+in `_set_devil_magnet`, levelling $01) and again by each power consumer. Level
+records install them as asm 406-427 (rating/speed to the enemy record, powers as
+`pow<<3|7`). Fixed: `_do_computer_effect` aims at the own magnet cell only when the
+computer has NO leader (`TST.W _magnet; BNE`, asm 9530-9536); the port had it inverted.
 The 11928 results below are historical (immediate-commit movement).
 
 Original-data integration is explicit:
