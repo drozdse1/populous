@@ -5954,9 +5954,128 @@ static void test_power_toolbar(void)
     }
     assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,960,768);
     memset(A4_DISP(0x82b6),0,3);
-    for (int line=0;line<3;++line) power_icon_click(3,line+3,SDL_BUTTON_LEFT);
     power_icon_click(0,1,SDL_BUTTON_LEFT); power_icon_click(1,2,SDL_BUTTON_LEFT);
+    power_icon_click(0,0,SDL_BUTTON_MIDDLE);
     assert(!A4_DISP(0x82b6)[0] && !core_swamp_selected);
+    _closeall(); SDL_Quit();
+}
+
+/* Click the centre of cell (icon,line) of a toolbar block in a 960x768 window. */
+static void toolbar_click(int c0, int r0, int icon, int line, int button)
+{
+    int c=c0+16*icon+8, r=r0+16*line+8;
+    SDL_Event click={.type=SDL_MOUSEBUTTONDOWN};
+    click.button.button=button;
+    click.button.x=(c-r+64)*3; click.button.y=(c+r)/2*3;
+    game_handle_event(&click);
+}
+#define grid_click(icon,line,button) toolbar_click(0x60,0x90,icon,line,button)
+#define system_click(icon,line,button) toolbar_click(0x110,0x20,icon,line,button)
+
+static void toolbar_fixture(void)
+{
+    assert(game_reset(0)); SDL_SetWindowSize(prg_screen->window,960,768);
+    xoff=yoff=20; memset(A4_DISP(0x82b6),0,3); memset(A4_DISP(0x82b6+46),0,3);
+    view_who=old_view_who=view_timer=0;
+}
+
+static void test_toolbar_icons(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0);
+    /* Tendency icons post _do_action y=1; the consumer installs the tendency. */
+    static const int tendencies[][3]={{3,3,0},{4,3,1},{4,4,3},{5,3,2}};
+    for (int k=0;k<4;++k) for (int gate=0;gate<2;++gate) {
+        toolbar_fixture(); core_tendency(0)=7; pause=gate;
+        grid_click(tendencies[k][0],tendencies[k][1],SDL_BUTTON_RIGHT);
+        uint8_t *mailbox=A4_DISP(0x82b6);
+        if (gate) { assert(!mailbox[0] && core_tendency(0)==7); continue; }
+        assert(mailbox[0]==14 && mailbox[1]==tendencies[k][2] && mailbox[2]==1);
+        core_consume_terrain_mailboxes();
+        assert(core_tendency(0)==tendencies[k][2] && !mailbox[0]);
+    }
+    /* Mode icons: terrain/magnet act even while paused and disarm the swamp. */
+    for (int paused=0;paused<2;++paused) {
+        toolbar_fixture(); pause=paused;
+        core_tool=0; core_swamp_selected=1; grid_click(6,2,SDL_BUTTON_LEFT);
+        assert(core_tool==1 && !core_swamp_selected);
+        core_swamp_selected=1; grid_click(6,1,SDL_BUTTON_LEFT);
+        assert(core_tool==0 && !core_swamp_selected);
+        core_swamp_selected=1; grid_click(6,0,SDL_BUTTON_LEFT);
+        assert(core_tool==0 && core_swamp_selected);
+    }
+    /* Scroll pad: eight directions, clamped to 0..56. */
+    for (int icon=3;icon<=5;++icon) for (int line=0;line<=2;++line) {
+        if (icon==4 && line==1) continue;
+        int dx=(icon==5)-(icon==3), dy=(line==2)-(line==0);
+        toolbar_fixture(); pause=1;
+        grid_click(icon,line,SDL_BUTTON_LEFT);
+        assert(xoff==20+dx && yoff==20+dy);
+        xoff=dx<0 ? 0 : 56; yoff=dy<0 ? 0 : 56; int ex=xoff, ey=yoff;
+        grid_click(icon,line,SDL_BUTTON_LEFT);
+        assert(xoff==ex && yoff==ey);
+    }
+    /* Centre recentres on view_who; no subject leaves the view alone. */
+    toolbar_fixture(); assert(no_peeps>0);
+    set_peep_word(0,8,30*64+40); view_who=1;
+    grid_click(4,1,SDL_BUTTON_LEFT); assert(xoff==37 && yoff==27);
+    view_who=0; xoff=yoff=20; grid_click(4,1,SDL_BUTTON_LEFT); assert(xoff==20 && yoff==20);
+    /* Leader/magnet view: left prefers the leader and marks a temporary view. */
+    toolbar_fixture(); set_peep_word(0,8,30*64+40); core_leader(0)=1; core_target(0)=10*64+12;
+    view_who=5; grid_click(7,0,SDL_BUTTON_LEFT);
+    assert(xoff==37 && yoff==27 && view_who==1 && old_view_who==5 && view_timer==10);
+    grid_click(7,0,SDL_BUTTON_RIGHT); assert(xoff==9 && yoff==7 && view_who==1);
+    core_leader(0)=0; xoff=yoff=20; grid_click(7,0,SDL_BUTTON_LEFT); assert(xoff==9 && yoff==7);
+    core_target(0)=0; xoff=yoff=20; grid_click(7,0,SDL_BUTTON_RIGHT); assert(xoff==20 && yoff==20);
+    grid_click(7,0,SDL_BUTTON_LEFT); assert(xoff==0 && yoff==0);
+    /* Battle cycle wraps from view_fight+1 and terminates without battles. */
+    toolbar_fixture();
+    for (int person=0;person<no_peeps;++person) peeps[person*22]&=(uint8_t)~0x08;
+    view_fight=(int16_t)(no_peeps-1); grid_click(7,1,SDL_BUTTON_LEFT);
+    assert(xoff==20 && yoff==20 && view_fight==no_peeps-1);
+    peeps[0]|=0x08; set_peep_word(0,4,5); set_peep_word(0,8,12*64+8);
+    grid_click(7,1,SDL_BUTTON_LEFT);
+    assert(view_fight==0 && xoff==5 && yoff==9 && view_who==1 && view_timer==10);
+    /* Own-walker cycle from view_people+1: right needs type 1, left a heading
+     * reference; both skip foreign or empty peeps and wrap past no_peeps. */
+    toolbar_fixture(); player=0; assert(no_peeps>=2);
+    for (int person=0;person<no_peeps;++person) peeps[person*22+1]=1;
+    peeps[1]=0; peeps[0]=1; set_peep_word(0,4,3); set_peep_word(0,8,12*64+8);
+    memset(peeps+14,0,4);
+    view_people=0; grid_click(8,0,SDL_BUTTON_RIGHT);
+    assert(view_people==0 && xoff==5 && yoff==9 && view_who==1 && view_timer==10);
+    xoff=yoff=20; grid_click(8,0,SDL_BUTTON_LEFT); assert(xoff==20 && yoff==20);
+    memcpy(peeps+14,"\x01\x00\x00\x00",4); grid_click(8,0,SDL_BUTTON_LEFT);
+    assert(xoff==5 && yoff==9);
+    set_peep_word(0,4,0); xoff=yoff=20; grid_click(8,0,SDL_BUTTON_RIGHT); assert(xoff==20);
+    /* System icons: sound flags and pause toggle at any time. */
+    toolbar_fixture(); A4_WORD(0x8250)=A4_WORD(0x8252)=0;
+    system_click(0,3,SDL_BUTTON_LEFT); assert(A4_WORD(0x8250)==1 && !A4_WORD(0x8252));
+    system_click(0,4,SDL_BUTTON_RIGHT); assert(A4_WORD(0x8252)==1);
+    system_click(0,3,SDL_BUTTON_LEFT); assert(!A4_WORD(0x8250));
+    A4_WORD(0x9a1a)=1; system_click(1,3,SDL_BUTTON_LEFT); assert(pause==1 && !A4_WORD(0x9a1a));
+    core_result=1; system_click(1,3,SDL_BUTTON_LEFT); assert(pause==0); core_result=0;
+    /* Options, game options and message post their _do_action codes; the
+     * port's consumer leaves those requesters inert and clears the mailbox. */
+    static const int requests[][4]={{0,0,7,1},{1,1,8,0},{2,2,2,0}};
+    for (int k=0;k<3;++k) {
+        toolbar_fixture();
+        system_click(requests[k][0],requests[k][1],SDL_BUTTON_LEFT);
+        uint8_t *mailbox=A4_DISP(0x82b6);
+        assert(mailbox[0]==14 && mailbox[2]==requests[k][2] && mailbox[1]==requests[k][3]);
+        uint8_t before[sizeof prg_a4_area]; memcpy(before,prg_a4_area,sizeof before);
+        core_consume_terrain_mailboxes();
+        memset(before+(mailbox-prg_a4_area),0,3);
+        assert(!memcmp(before,prg_a4_area,sizeof before));
+        toolbar_fixture(); pause=1;
+        system_click(requests[k][0],requests[k][1],SDL_BUTTON_LEFT);
+        assert(!A4_DISP(0x82b6)[0]);
+    }
+    toolbar_fixture(); system_click(0,0,SDL_BUTTON_RIGHT);
+    assert(A4_DISP(0x82b6)[0]==14 && A4_DISP(0x82b6)[1]==0 && A4_DISP(0x82b6)[2]==7);
+    /* A temporary view lapses on the tenth turn. */
+    toolbar_fixture(); old_view_who=0; view_who=(int16_t)(no_peeps+5); view_timer=2;
+    game_tick(); assert(view_timer==1 && view_who==no_peeps+5);
+    game_tick(); assert(view_timer==0 && view_who==0);
     _closeall(); SDL_Quit();
 }
 
@@ -11557,6 +11676,7 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_quake_input();
     test_swamp_input();
     test_power_toolbar();
+    test_toolbar_icons();
     test_swamp_render();
     test_original_reset();
     test_start_reset();

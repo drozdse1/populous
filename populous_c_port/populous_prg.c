@@ -2249,6 +2249,10 @@ static void game_tick(void)
 {
     if (pause || prg_quit || core_result) return;
     game_turn = (int16_t)((uint16_t)game_turn + 1u);
+    /* asm:740-750: a temporary view (_set_temp_view) lapses after 10 turns.
+     * The original also lapses it while a button is held; the port has no
+     * held-button state, so only the countdown applies. */
+    if (view_timer && !--view_timer) view_who = old_view_who;
     _move_peeps();
     /* _move_peeps asm:4323-4347, after the peep loop: the pass's pre-move
      * good_pop or a surrender ends the game, _player first (___end_game(1)
@@ -2672,10 +2676,10 @@ static void draw_original(int view_x, int view_y)
     hud_text(4,231,"Q QUAKE 2500 / F FLOOD 40000 / V VOLCANO 10000 / A ARMAGEDDON 80000");
     hud_text(4,249,"SPACE PAUSE / R RESET / ESC QUIT / D VIEW");
     hud_text(4,240,core_swamp_selected ?
-        (core_tool ? "AFTER TARGET: MAGNET / ORIGINAL TOOLBAR DECORATIVE" :
-                     "AFTER TARGET: TERRAIN / ORIGINAL TOOLBAR DECORATIVE") :
-        (core_tool ? "MAGNET TOOL - ORIGINAL TOOLBAR IS DECORATIVE" :
-                     "TERRAIN TOOL - ORIGINAL TOOLBAR IS DECORATIVE"));
+        (core_tool ? "AFTER TARGET: MAGNET / TOOLBAR ICONS ACTIVE" :
+                     "AFTER TARGET: TERRAIN / TOOLBAR ICONS ACTIVE") :
+        (core_tool ? "MAGNET TOOL - TOOLBAR ICONS ACTIVE" :
+                     "TERRAIN TOOL - TOOLBAR ICONS ACTIVE"));
 }
 
 static void _draw_it(int16_t y, int16_t x)
@@ -2948,28 +2952,140 @@ static void _show_the_shield(void) {}
 static void _sculpt(void) {}
 static void _interogate(void) {}
 static void _zoom_map(int16_t d) {}
-/* Power icons of _zoom_map, asm:1830-2042 (jump table asm:2406-2424, cells 0..2).
- * Either button posts the player's mailbox command; costs, permissions, war and
- * pause stay with the consumer and the power routines. Swamp alone checks
- * mana > cost and permission bit 4 here before arming the map target.
- * Returns whether (sx,sy) hits a power icon; posts only when post is set. */
-static int core_power_icon(int sx, int sy, int post)
+/* _set_temp_view asm:3151-3160; restored by the countdown in game_tick. */
+static void core_set_temp_view(int16_t who)
+{
+    if (!view_timer) old_view_who = view_who;
+    view_timer = 10;
+    view_who = who;
+}
+/* xoff/yoff = cell column/row - 3; ASR.W #6 floors negative rows. */
+static void core_view_cell(int16_t cell)
+{
+    xoff = (int16_t)((cell & 63) - 3);
+    yoff = (int16_t)((cell >= 0 ? cell/64 : -((-cell+63)/64)) - 3);
+}
+#define view_fight  A4_WORD(0x2f92)
+#define view_people A4_WORD(0x2f94)
+/* Battle cycle, asm:2229-2290. The original never stops when no battle exists
+ * and view_fight+1 == no_peeps (the wrap skips the end test); bound the scan. */
+static void core_next_battle(void)
+{
+    if (!no_peeps) return;
+    if (view_fight >= no_peeps) view_fight = 0;
+    int start = view_fight + 1, person = start;
+    for (int seen = 0; seen <= no_peeps; ++seen, ++person) {
+        if (person >= no_peeps) person = 0;
+        if (person == start && seen) return;
+        if ((peeps[person*22] & 0x08) && peep_word(person,4)) {
+            core_view_cell(peep_word(person,8));
+            view_fight = (int16_t)person;
+            core_set_temp_view((int16_t)(person+1));
+            return;
+        }
+    }
+}
+/* Own-walker cycle, asm:2291-2395: left picks peeps with a heading reference,
+ * right picks ordinary walkers (type 1); both need positive population. */
+static void core_next_person(int left)
+{
+    if (!no_peeps) return;
+    if (view_people >= no_peeps) view_people = 0;
+    int start = view_people + 1, person = start;
+    for (int seen = 0; ; ++person) {
+        if (person == start && seen) return;
+        if (person == no_peeps) person = 0;
+        seen = 1;
+        if (peep_owner(person) != player || peep_word(person,4) <= 0) continue;
+        uint32_t reference; memcpy(&reference,peeps+person*22+14,sizeof reference);
+        if (left ? reference != 0 : peeps[person*22] == 1) {
+            core_view_cell(peep_word(person,8));
+            view_people = (int16_t)person;
+            core_set_temp_view((int16_t)(person+1));
+            return;
+        }
+    }
+}
+/* Toolbar clicks of _zoom_map, asm:1700-2451 (power grid jump table asm:2406-2424).
+ * left is the original argument (left button held). Mailbox posts happen only
+ * when post is set; costs, permissions, war and pause stay with the consumer
+ * and the power routines. Swamp alone checks mana > cost and permission bit 4
+ * before arming the map target. Camera, tool and audio-flag icons always act.
+ * Returns whether (sx,sy) hits a handled icon. */
+static int core_toolbar(int sx, int sy, int left, int post)
 {
     int c = sx/2 + sy - 32, r = sy - sx/2 + 32;
-    if (sy >= 200 || c > 0x112 || r < 0x92) return 0;
-    int icon = (c-0x60)/16, line = (r-0x90)/16;
-    if (icon < 0 || icon > 2 || line > 2) return 0;
-    if (!post || player < 0 || player > 1) return 1;
-    uint8_t *mailbox = A4_DISP(0x82b6 + player*46);
-    if (icon == 0 && line == 0) { mailbox[0] = 14; mailbox[2] = 4; }
-    else if (icon == 1 && line == 0) { if (!paint_map) { mailbox[0] = 14; mailbox[2] = 3; } }
-    else if (icon == 1 && line == 1) { mailbox[0] = 6; mailbox[1] = (uint8_t)xoff; mailbox[2] = (uint8_t)yoff; }
-    else if (icon == 2 && line == 0) { mailbox[0] = 3; mailbox[1] = (uint8_t)xoff; mailbox[2] = (uint8_t)yoff; }
-    else if (icon == 2 && line == 1) { mailbox[0] = 14; mailbox[2] = 5; }
-    else if (icon == 2 && line == 2) {
-        if ((core_mana(player) > (int32_t)A4_LONG(0x8496) && (A4_WORD(0x82c4+player*46)&0x10)) || paint_map)
-            core_swamp_selected = 1;
+    if (sy >= 200) return 0;
+    int owner_ok = player >= 0 && player <= 1;
+    uint8_t *mailbox = owner_ok ? A4_DISP(0x82b6 + player*46) : NULL;
+    post = post && owner_ok;
+    if (c > 0x112) {
+        /* System icons asm:1700-1829: options, game options, pause, sound. */
+        int icon = (c-0x110)/16, line = (r-0x20)/16;
+        if (icon == 0 && line == 0) { if (post) { mailbox[0] = 14; mailbox[1] = (uint8_t)left; mailbox[2] = 7; } }
+        else if (icon == 0 && line == 3) A4_WORD(0x8250) = !A4_WORD(0x8250); /* _music_off */
+        else if (icon == 0 && line == 4) A4_WORD(0x8252) = !A4_WORD(0x8252); /* _effect_off */
+        else if (icon == 1 && line == 1) { if (post) { mailbox[0] = 14; mailbox[2] = 8; } }
+        /* _do_action y=6 asm:18591-18608. The port's pause also stops the
+         * mailbox consumer, so this icon toggles directly rather than posting. */
+        else if (icon == 1 && line == 3) { pause = !pause; A4_WORD(0x9a1a) = 0; }
+        else if (icon == 2 && line == 2) { if (post) { mailbox[0] = 14; mailbox[2] = 2; } }
+        else return 0;
+        return 1;
     }
+    if (r < 0x92) return 0;
+    int icon = (c-0x60)/16, line = (r-0x90)/16;
+    if (icon < 0 || icon > 8) return 0;
+    if (icon >= 3 && icon <= 5 && line <= 2) {
+        /* Scroll pad asm:1838-1902; its centre recentres on view_who. */
+        if (icon == 4 && line == 1) {
+            if (view_who > 0 && view_who <= no_peeps) core_view_cell(peep_word(view_who-1,8));
+        } else {
+            xoff = (int16_t)(xoff + (icon == 5) - (icon == 3));
+            yoff = (int16_t)(yoff + (line == 2) - (line == 0));
+        }
+    } else if (icon <= 2) {
+        if (line > 2) return 0;
+        if (!post) return 1;
+        if (icon == 0 && line == 0) { mailbox[0] = 14; mailbox[2] = 4; }
+        else if (icon == 1 && line == 0) { if (!paint_map) { mailbox[0] = 14; mailbox[2] = 3; } }
+        else if (icon == 1 && line == 1) { mailbox[0] = 6; mailbox[1] = (uint8_t)xoff; mailbox[2] = (uint8_t)yoff; }
+        else if (icon == 2 && line == 0) { mailbox[0] = 3; mailbox[1] = (uint8_t)xoff; mailbox[2] = (uint8_t)yoff; }
+        else if (icon == 2 && line == 1) { mailbox[0] = 14; mailbox[2] = 5; }
+        else if (icon == 2 && line == 2) {
+            if ((core_mana(player) > (int32_t)A4_LONG(0x8496) && (A4_WORD(0x82c4+player*46)&0x10)) || paint_map)
+                core_swamp_selected = 1;
+        }
+    } else if (icon <= 5) {
+        /* Tendency icons asm:2043-2089: _do_action y=1 with x = tendency. */
+        static const int8_t tendency[3][2] = {{0,-1},{1,3},{2,-1}};
+        if (line < 3 || line > 4 || tendency[icon-3][line-3] < 0) return 0;
+        if (post) { mailbox[0] = 14; mailbox[1] = (uint8_t)tendency[icon-3][line-3]; mailbox[2] = 1; }
+    } else if (icon == 6) {
+        /* Mode icons asm:2090-2133: 0 query, 1 terrain, 2 papal magnet; both
+         * real tools clear the swamp bit. Query (_interogate) is unported. */
+        if (line == 1 || line == 2) { core_tool = line == 2; core_swamp_selected = 0; }
+        else if (line != 0) return 0;
+    } else if (icon == 7) {
+        /* asm:2134-2228: left views the leader (else the magnet), right the magnet. */
+        if (line == 0) {
+            if (!owner_ok) return 1;
+            int16_t leader = core_leader(player);
+            if (left && leader > 0 && leader <= no_peeps) {
+                core_view_cell(peep_word(leader-1,8));
+                core_set_temp_view(leader);
+            } else if (left || core_target(player)) core_view_cell(core_target(player));
+        } else if (line == 1) core_next_battle();
+        else return 0;
+    } else {
+        if (line != 0) return 0;
+        core_next_person(left);
+    }
+    /* Common tail asm:2425-2440. */
+    if (xoff < 0) xoff = 0;
+    if (xoff > 56) xoff = 56;
+    if (yoff < 0) yoff = 0;
+    if (yoff > 56) yoff = 56;
     return 1;
 }
 static void _do_place_funny(int16_t a) { (void)a; }   /* matches the chunk call */
@@ -3087,8 +3203,12 @@ static void game_handle_event(const SDL_Event *event)
                 return;
             }
         }
-        /* A paused or finished game never consumes mailboxes; drop the post. */
-        if (!diagnostic_view && core_power_icon(sx,sy,!pause && !core_result)) return;
+        /* A paused or finished game never consumes mailboxes; drop the post.
+         * _zoom_map runs only for the left or right button (asm:976-989). */
+        if (!diagnostic_view && (event->button.button == SDL_BUTTON_LEFT ||
+            event->button.button == SDL_BUTTON_RIGHT) &&
+            core_toolbar(sx,sy,event->button.button == SDL_BUTTON_LEFT,
+                         !pause && !core_result)) return;
         /* _sculpt asm:7295 / _do_magnet asm:6784: keep camera usable,
          * but reject world input before consuming an armed target. */
         if (pause || core_result || A4_WORD(0xae80)) return;

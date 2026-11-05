@@ -408,8 +408,9 @@ The original `_load_ground` reads gameplay tables from `landN` files, including
 (`src/populous_prg.asm:16468-16514`). Reset validates the selected file before
 changing A4 and installs its actual values plus original initialized tables.
 Missing/invalid files fail startup: there is no invented-rule fallback.
-Audio, campaign, save/load and multiplayer remain absent. Of the original toolbar
-only the power icons are active (see Controls); its other icons are decorative.
+Audio, campaign, save/load and multiplayer remain absent. The original toolbar
+is clickable (see Controls); the options, game-options and message requesters
+it opens in the original are not ported, and icons are not highlighted.
 
 ## Local original data (required to play)
 
@@ -567,7 +568,7 @@ retain their combat frame and use the original fallback reward of 100; direct
 completion fixtures without entry still exercise retained town-frame rewards.
 Full combat timing parity remains separate work. No
 copper, large-sprite specials, original cursor/font,
-audio or non-power toolbar icon is claimed. A separate compact HUD explains
+audio or toolbar requester/highlight is claimed. A separate compact HUD explains
 the implemented keyboard controls. `--battle-frames` checks all 65,536 stored
 word values for each base, death/zero distinctions and stored-frame pixels;
 the full suite also checks once-per-pair resident updates. Full normal/sanitized
@@ -824,6 +825,21 @@ there is no terrain/population injection after the cast.
   the current viewport. Swamp arms map targeting like `s`. Costs, permissions
   and war are checked by the power routines; paused or finished games ignore
   the icons. In editor mode (`p`) the Armageddon icon posts nothing.
+- Other lower-left toolbar icons (`_zoom_map` asm:1838-2395), left or right button:
+  - Arrow pad: scroll one cell; its centre shield recentres on the viewed figure.
+  - Tendency icons: settle, join, fight and go to magnet, posted as mailbox
+    commands like the powers (ignored while paused or finished).
+  - Mode icons: terrain and papal magnet select the tool (like `m`) and disarm
+    the swamp target. The query (`?`) mode icon is inert: `_interogate` is unported.
+  - Ankh: left views the leader (else the magnet), right the magnet.
+  - Crossed swords: cycle through battles. Walker icon: cycle own walkers;
+    right picks ordinary walkers, left walkers with a heading. The original
+    battle search never ends when no battle exists after the last viewed slot;
+    the port bounds that scan. Viewing marks a 10-turn temporary view.
+- Lower-right system icons: `zzZ` toggles pause (also while paused or after the
+  end); the music and FX icons toggle their flags (no audio yet). Options, game
+  options and the message icon post their original `_do_action` codes 7/8/2,
+  which the port does not handle yet.
 - Left/right mouse: raise/lower the selected vertex. Neighbouring vertices follow
   the original maximum slope of one, height 0..8. Cost is 10 plus 4 per changed
   vertex; the original admission threshold is 10, so a large operation can leave

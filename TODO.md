@@ -226,7 +226,7 @@ Belege: `populous_c_port/populous_prg.c:1030-1062`, `:1509-1543`;
 
 ## P2 - Originalbedienung und Grafik vervollstaendigen
 
-- [ ] **Teilweise:** Toolbar anklickbar machen (Kraefte-Icons erledigt, `_zoom_map` asm:1942-2042), Werkzeug-/Tendenz-/Modusicons und deren aktive/gesperrte Zustaende originalgetreu darstellen.
+- [ ] **Teilweise:** Toolbar anklickbar (alle `_zoom_map`-Icons, asm:1700-2451). Offen: Abfragemodus (`_interogate`), Options-/Spieloptionen-/Nachrichten-Requester (`_do_action` 7/8/2), Icon-Hervorhebung (`_toggle_icon`) sowie aktive/gesperrte Zustaende originalgetreu darstellen.
 - [ ] **Fehlt:** Originale Manaanzeige, Schild, Bewohner-/Siedlungsabfrage und Informationsanzeigen. `_move_mana` ist Praesentation, nicht die bereits vorhandene Manaerzeugung.
 - [ ] **Fehlt:** Requester, Optionen, Namens-/Texteingabe und originale Dialog-/Rueckkehrpfade.
 - [ ] **Fehlt:** Originalschrift dekodieren und verwenden; eingebettetes `_font_data` und separates Launcher-`font.dat` vergleichen, nicht ungeprueft gleichsetzen.
