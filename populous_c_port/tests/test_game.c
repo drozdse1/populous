@@ -5068,6 +5068,92 @@ static int icon_lit(int base, int a, int b)
     return game_pixels[y*320+x]==(game_assets->background[y*320+x]^1);
 }
 
+/* _show_the_shield icons asm:2790-2826 and _icon_data asm:21656: first row
+ * plane words of icons 0..11 copied from the DC.L lines. */
+static int asm_icon_colour(const uint16_t planes[4], int bit)
+{
+    int colour=0;
+    for (int plane=0;plane<4;++plane) colour|=((planes[plane]>>(15-bit))&1)<<plane;
+    return colour;
+}
+static void test_shield_icons(void)
+{
+    static const uint16_t row0[12][4]={
+        {0xffbe,0xff7f,0x0080,0x0000},{0xfffe,0xffff,0x0000,0x0000},{0x8000,0x0000,0x0000,0xffff},
+        {0x8000,0x0000,0x0000,0xffff},{0x8000,0x0000,0x0000,0xffff},{0x8010,0x0008,0x0008,0xfff7},
+        {0x8003,0x0001,0x0001,0xfffe},{0x9100,0x0080,0x1c80,0xe37f},{0x0007,0x6000,0x8000,0x1fff},
+        {0x8000,0x0000,0x0000,0xffff},{0x8000,0x0000,0x0000,0xffff},{0x8001,0x0001,0x0002,0xfffc}};
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    assert(no_peeps>0 && peep_word(0,4)>0);
+    view_who=0; game_render();
+    static uint8_t empty[320*200]; memcpy(empty,game_pixels,sizeof empty);
+    uint8_t saved_owner=peeps[1], saved_weapon=peeps[3];
+    for (int owner=0;owner<2;++owner) for (int weapon=0;weapon<=11;++weapon) {
+        view_who=1; peeps[1]=(uint8_t)owner;
+        /* Slot 0 is a byte no slot 1..10 holds; slot 11 is read but never drawn. */
+        int value=0;
+        if (weapon) value=(uint16_t)A4_WORD(0x2f96+2*weapon);
+        else for (int clash=1; clash; ) { clash=0; for (int d=1;d<=10;++d) if ((uint16_t)A4_WORD(0x2f96+2*d)==value) { clash=1; ++value; } }
+        peeps[3]=(uint8_t)value;
+        int expect=0;
+        for (int d=1;d<=10;++d) if ((uint16_t)A4_WORD(0x2f96+2*d)==peeps[3]) { expect=d; break; }
+        assert(weapon==0 ? !expect : weapon==11 || expect);
+        game_render();
+        for (int bit=0;bit<16;++bit) {
+            assert(game_pixels[4*320+0x110+bit]==asm_icon_colour(row0[owner],bit));
+            int at=4*320+0x120+bit;
+            assert(game_pixels[at]==(expect ? asm_icon_colour(row0[expect+1],bit) : empty[at]));
+        }
+    }
+    peeps[1]=saved_owner; peeps[3]=saved_weapon;
+    view_who=0; game_render(); assert(!memcmp(empty,game_pixels,sizeof empty));
+}
+
+/* _zoom_map flashes: _toggle_icon(d_screen,...) shows for one frame, the
+ * next _clr_wsc restores _back_scr (asm:611,762,989). Diamond of 226 px. */
+static int frame_diff(const uint8_t *a, int *first)
+{
+    int count=0; *first=-1;
+    for (int pixel=0;pixel<320*200;++pixel) if (a[pixel]!=game_pixels[pixel]) { if (*first<0) *first=pixel; ++count; }
+    return count;
+}
+static void test_icon_flashes(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
+    view_who=0; core_tool=0; game_render();
+    static uint8_t base[320*200]; memcpy(base,game_pixels,sizeof base);
+    int first;
+    /* Scroll pad centre (icon 4, line 1) at screen (64,168): base 0x12c0,
+     * x0 = 16*4-16 = 48, y0 = 120+32+8 = 160; mask row 1 is bits 16,17. */
+    assert(core_toolbar(64,168,1,0));
+    game_render(); assert(frame_diff(base,&first)==226 && first==161*320+48+16);
+    assert(game_pixels[168*320+50]==(base[168*320+50]^1) && game_pixels[168*320+49]==base[168*320+49]);
+    game_render(); assert(frame_diff(base,&first)==0);
+    /* Tendency (3,3) at (16,176) is a persistent state icon: no flash. */
+    assert(core_toolbar(16,176,1,0));
+    game_render(); assert(frame_diff(base,&first)==0);
+    /* Message icon (system 2,2) at (304,192): base 0x17e4 = row 152, byte 36,
+     * x0 = 8*36+32-32 = 288, y0 = 152+16+16 = 184. Posts 14/2. */
+    uint8_t *mailbox=A4_DISP(0x82b6+player*46);
+    mailbox[0]=0; mailbox[2]=0;
+    assert(core_toolbar(304,192,1,1));
+    assert(mailbox[0]==14 && mailbox[2]==2);
+    game_render(); assert(frame_diff(base,&first)==226 && first==185*320+288+16);
+    game_render(); assert(frame_diff(base,&first)==0);
+    /* _do_action y=2 (asm:18404-18406): _serial_off set, nothing happens. */
+    assert(serial_off==1);
+    static uint8_t a4_before[0x10000];
+    uint8_t *a4=prg_a4-32768; size_t span=sizeof a4_before;
+    memcpy(a4_before,a4,span);
+    int kind=core_req.kind;
+    A4_DISP(0x82b6+(1-player)*46)[0]=0;
+    core_consume_terrain_mailboxes();
+    assert(core_req.kind==kind && serial_off==1);
+    for (size_t at=0; at<span; ++at)
+        if (at<32768+(int16_t)0x82b6 || at>=32768+(int16_t)0x82b6+92) assert(a4[at]==a4_before[at]);
+    game_render(); assert(frame_diff(base,&first)==0);
+}
+
 static void test_query_and_shield(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO)==0); assert(game_reset(0));
@@ -13798,6 +13884,8 @@ test_knight_render(); test_knight_lifecycle(); test_knight_ordinary_actions();
     test_original_graphics_output();
     test_toolbar_icon_highlight();
     test_query_and_shield();
+    test_shield_icons();
+    test_icon_flashes();
     test_special_sprites(); test_battle_frame_render_and_entry();
     test_funny_objects();
     test_isometric_match();

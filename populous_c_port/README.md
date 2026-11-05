@@ -415,9 +415,20 @@ Original sound effects, the heartbeat and the in-game `gmusic1` music play
 partially ported (see "Game end, score and conquest"). The original toolbar
 is clickable (see Controls); its options and game-options icons open the
 original requesters (see "Requesters and options"); the message requester is
-not ported. Selected tendency, mode, music, FX
-and pause icons are highlighted with the original `_toggle_icon` diamond XOR;
-the short press flashes on the power and view icons are not reproduced.
+serial-only in the original and therefore inert (see Controls). Selected
+tendency, mode, music, FX and pause icons are highlighted with the original
+`_toggle_icon` diamond XOR. The short press flashes are reproduced too:
+`_zoom_map` XORs the clicked icon into `_d_screen`, the frame already shown
+(after `___swap_screens`, asm:762), and the next `_clr_wsc` (asm:611) rebuilds
+it from `_back_scr`, so a flash lasts exactly one frame. The port queues it on
+the click and XORs it into the next frame only. Flashing icons: scroll pad (all
+nine, asm:1842-1851), flood (icon 0 line 0), armageddon (icon 1 line 0,
+unless `_paint_map`) and volcano (icon 1 line 1), quake, knight and swamp
+(icon 2 lines 0..2, swamp also when not armed), ankh and crossed swords
+(asm:2134-2235), walker (asm:2296-2305) and the options, game-options and
+message system icons (asm:1717-1818). Tendency, mode, music, FX and pause have
+no flash (state icons). The original repeats `_zoom_map` every frame while the
+button is held; the port acts once per press.
 
 ## Local original data (required to play)
 
@@ -1123,7 +1134,11 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
   - Shield (top right, `_show_the_shield` asm:2769-3147): for the viewed figure
     the walker/town/battle sprite with its population, capacity or strength bars,
     plus the good/bad population bars. A dead figure clears the view. The owner
-    flag and weapon icons are not drawn: the asset export has no `_icon_data`.
+    flag (`_icon_data` icon = owner byte, at word 0x11, line 4) and the weapon
+    icon (first d in 1..10 with `_weapons_order[d]` == record byte +3 gives icon
+    d+1 at word 0x12; none if no slot matches) are drawn as in asm:2790-2826.
+    Icons 0..11 are transcribed from the `_icon_data` DC.L block
+    (asm:21656-21762), which the asset export does not contain.
   - Ankh: left views the leader (else the magnet), right the magnet.
   - Crossed swords: cycle through battles. Walker icon: cycle own walkers;
     right picks ordinary walkers, left walkers with a heading. The original
@@ -1134,7 +1149,11 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
   switching on stops all channels, asm:1744-1781). Options, game
   options and the message icon post their original `_do_action` codes 7/8/2;
   the consumer opens `_options` (7) and `_game_options` (8) at the next tick,
-  the message requester (2) stays inert. While a requester is open the game
+  the message requester (2) does nothing: `_do_action` y=2 starts with
+  `TST _serial_off` (asm:18405) and returns in single play, which is the only
+  mode the port has (`_serial_off` stays 1). `_get_a_message` (asm:11143-11183),
+  the "waiting for" requester and the serial exchange (asm:18418-18535) are
+  two-player only and not ported. While a requester is open the game
   is paused, keys other than Escape are ignored and left clicks go to it.
 - Left/right mouse: raise/lower the selected vertex. Neighbouring vertices follow
   the original maximum slope of one, height 0..8. Cost is 10 plus 4 per changed
