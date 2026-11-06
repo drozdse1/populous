@@ -97,10 +97,10 @@ PYTHON ?= python3
 .PHONY: test-land test-land-sanitize test-land-local
 
 tests/test_land: tests/test_land.c land_data.c land_data.h
-	$(CC) $(CFLAGS) $(LDFLAGS) tests/test_land.c land_data.c -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_land.c land_data.c -o $@
 
 tests/test_land_sanitize: tests/test_land.c land_data.c land_data.h
-	$(CC) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) tests/test_land.c land_data.c -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) tests/test_land.c land_data.c -o $@
 
 test-land: tests/test_land
 	$(call with_timeout,$(TEST_TIMEOUT)) ./tests/test_land
@@ -123,9 +123,9 @@ test-sanitize: test-land-sanitize test-graphics-sanitize
 
 .PHONY: test-graphics test-graphics-sanitize test-graphics-local
 tests/test_graphics: tests/test_graphics.c graphics.c graphics.h
-	$(CC) $(CFLAGS) $(LDFLAGS) tests/test_graphics.c graphics.c -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_graphics.c graphics.c -o $@
 tests/test_graphics_sanitize: tests/test_graphics.c graphics.c graphics.h
-	$(CC) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) tests/test_graphics.c graphics.c -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) tests/test_graphics.c graphics.c -o $@
 test-graphics: tests/test_graphics
 	$(call with_timeout,$(TEST_TIMEOUT)) ./tests/test_graphics
 test-graphics-sanitize: tests/test_graphics_sanitize
@@ -143,9 +143,9 @@ run: $(TARGET)
 
 .PHONY: test-level test-level-sanitize test-level-local
 tests/test_level: tests/test_level.c level_data.c level_data.h
-	$(CC) $(CFLAGS) $(LDFLAGS) $< level_data.c -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< level_data.c -o $@
 tests/test_level_sanitize: tests/test_level.c level_data.c level_data.h
-	$(CC) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< level_data.c -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< level_data.c -o $@
 test-level: tests/test_level
 	$(call with_timeout,$(TEST_TIMEOUT)) ./tests/test_level
 test-level-sanitize: tests/test_level_sanitize

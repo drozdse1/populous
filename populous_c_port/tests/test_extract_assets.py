@@ -1,4 +1,5 @@
 """Synthetic graphics only. Expected pixels are hand-derived, not decoder round trips."""
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -17,6 +18,17 @@ from test_extract_land import make_disk, make_file_disk, checksum
 PORT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PORT))
 TOOL = PORT / "extract_assets.py"
+
+
+@contextmanager
+def real_temporary_directory():
+    """Yield a temp directory whose path has no symlink components.
+
+    macOS puts temp files under /var/folders, and /var is a symlink.
+    export_assets opens every output component with O_NOFOLLOW.
+    """
+    with tempfile.TemporaryDirectory() as temporary:
+        yield os.path.realpath(temporary)
 
 
 class AssetTests(unittest.TestCase):
@@ -115,7 +127,7 @@ class AssetTests(unittest.TestCase):
 
     def test_export_raw_integrity_manifest_and_no_overwrite(self):
         image, expected = make_disk()
-        with tempfile.TemporaryDirectory() as temporary:
+        with real_temporary_directory() as temporary:
             root = Path(temporary)
             adf = root / "source.adf"
             adf.write_bytes(image)
@@ -145,7 +157,7 @@ class AssetTests(unittest.TestCase):
     def test_directory_swaps_cannot_redirect_export(self):
         # Inject one real rename/symlink at a known mkdir boundary, not a race loop.
         for boundary in ("output", "parent", "raw", "after_directories"):
-            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temporary:
+            with self.subTest(boundary=boundary), real_temporary_directory() as temporary:
                 root = Path(temporary)
                 adf = root / "source.adf"
                 image = make_file_disk(b"original raw bytes")
@@ -198,7 +210,7 @@ class AssetTests(unittest.TestCase):
                         os.fstat(descriptor)
 
     def test_symlink_ancestor_is_refused_before_creating_output(self):
-        with tempfile.TemporaryDirectory() as temporary:
+        with real_temporary_directory() as temporary:
             root = Path(temporary)
             adf = root / "source.adf"
             adf.write_bytes(make_file_disk(b"unselected"))
@@ -263,7 +275,7 @@ class AssetTests(unittest.TestCase):
         image = make_file_disk(payload)
         image[900 * 512 + 432:900 * 512 + 440] = b"\x06popsam\0"
         checksum(image, 900)
-        with tempfile.TemporaryDirectory() as temporary:
+        with real_temporary_directory() as temporary:
             root = Path(temporary)
             adf = root / "source.adf"
             adf.write_bytes(image)
@@ -279,7 +291,7 @@ class AssetTests(unittest.TestCase):
         image = make_file_disk(payload)
         image[900 * 512 + 432:900 * 512 + 441] = b"\x07gmusic1\0"
         checksum(image, 900)
-        with tempfile.TemporaryDirectory() as temporary:
+        with real_temporary_directory() as temporary:
             root = Path(temporary)
             adf = root / "source.adf"
             adf.write_bytes(image)
@@ -315,7 +327,7 @@ class AssetTests(unittest.TestCase):
         image = make_file_disk(bytes(payload))
         image[900 * 512 + 432:900 * 512 + 443] = b"\x0amouths.pic"
         checksum(image, 900)
-        with tempfile.TemporaryDirectory() as temporary:
+        with real_temporary_directory() as temporary:
             root = Path(temporary)
             adf = root / "source.adf"
             adf.write_bytes(image)
@@ -333,7 +345,7 @@ class AssetTests(unittest.TestCase):
         image = make_file_disk(b"unknown")
         image[900 * 512 + 433:900 * 512 + 441] = b"load.pic"
         checksum(image, 900)
-        with tempfile.TemporaryDirectory() as temporary:
+        with real_temporary_directory() as temporary:
             root = Path(temporary)
             adf = root / "source.adf"
             adf.write_bytes(image)
