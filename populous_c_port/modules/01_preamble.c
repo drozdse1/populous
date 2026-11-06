@@ -107,19 +107,31 @@ static int set_peep_reference(int subject, int target)
     return 1;
 }
 static int peep_owner(int index) { return peeps[index * 22 + 1]; }
+/* Named peep-record fields (22-byte slot). Offset 6 stays peep_word: battle
+ * opponent, walker counter and funny-trail reuse the same word. */
+#define peep_flags(index)            (peeps[(index) * 22])
+#define peep_weapon(index)           (peeps[(index) * 22 + 3])
+#define peep_population(index)       peep_word((index), 4)
+#define set_peep_population(index,v) set_peep_word((index), 4, (v))
+#define peep_position(index)         peep_word((index), 8)
+#define set_peep_position(index,v)   set_peep_word((index), 8, (v))
+#define peep_heading(index)          peep_word((index), 10)
+#define set_peep_heading(index,v)    set_peep_word((index), 10, (v))
+#define peep_frame(index)            peep_word((index), 12)
+#define set_peep_frame(index,v)      set_peep_word((index), 12, (v))
 /* _get_heading asm:5469-5536. Used by knight creation and validated heading
  * navigation. The original ASR.W #6 floors negative rows;
  * use division explicitly so signed right shift is not implementation-defined. */
 static int core_get_heading(int subject)
 {
     if (!set_peep_reference(subject,subject)) return 0;
-    int position=peep_word(subject,8), column=(uint16_t)position&63;
+    int position=peep_position(subject), column=(uint16_t)position&63;
     int row=position >= 0 ? position/64 : -((-position+63)/64);
     int nearest=9999;
     for (int candidate=0;candidate<no_peeps;++candidate) {
-        if (peep_owner(candidate)==peep_owner(subject) || peep_word(candidate,4)<=0 ||
-            (peeps[candidate*22]&0x80)) continue;
-        int other=peep_word(candidate,8), other_column=(uint16_t)other&63;
+        if (peep_owner(candidate)==peep_owner(subject) || peep_population(candidate)<=0 ||
+            (peep_flags(candidate)&0x80)) continue;
+        int other=peep_position(candidate), other_column=(uint16_t)other&63;
         int other_row=other >= 0 ? other/64 : -((-other+63)/64);
         int distance=abs(other_column-column)+abs(other_row-row);
         if (distance < nearest) {
@@ -129,8 +141,8 @@ static int core_get_heading(int subject)
     }
     return 1;
 }
-static int peep_screen_x(int index) { return (peep_word(index, 8) % 64) * 4 + 2; }
-static int peep_screen_y(int index) { return (peep_word(index, 8) / 64) * 4 + 2; }
+static int peep_screen_x(int index) { return (peep_position(index) % 64) * 4 + 2; }
+static int peep_screen_y(int index) { return (peep_position(index) / 64) * 4 + 2; }
 
 /* Forward declarations for all the major functions from the map.
  * Complete list taken from the full IRA symbol map (prg entry $3E1E8, A4 at $593EE).

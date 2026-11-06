@@ -679,7 +679,7 @@ static int core_load_game(const char *name)
     not_player = player ? 0 : 1;
     god_magnet = core_target(0); devil_magnet = core_target(1);   /* _god_magnet/_devil_magnet */
     int last = 207;
-    while (last >= 0 && !peep_word(last,4)) --last;
+    while (last >= 0 && !peep_population(last)) --last;
     no_peeps = (int16_t)(last + 1);
     for (int owner = 0; owner < 2; ++owner) memset(stats_bytes(owner), 0, 3);
     for (int person = 0; person < no_peeps; ++person) {
@@ -1425,7 +1425,7 @@ static void core_draw_bar(int x, int y, int height, int value, int colour)
 static int core_shield_state(void)
 {
     if (!view_who) return 1;
-    if (view_who < 0 || view_who > no_peeps || peep_word(view_who-1,4) <= 0) { view_who = 0; return 0; }
+    if (view_who < 0 || view_who > no_peeps || peep_population(view_who-1) <= 0) { view_who = 0; return 0; }
     return 1;
 }
 
@@ -1435,28 +1435,28 @@ static void core_show_the_shield(GraphicsSheet small)
 {
     if (!core_shield_state()) return;
     if (view_who) {
-        int person = view_who-1, flags = peeps[person*22], owner = peeps[person*22+1]&1;
-        int16_t pop = peep_word(person,4);
+        int person = view_who-1, flags = peep_flags(person), owner = peeps[person*22+1]&1;
+        int16_t pop = peep_population(person);
         uint32_t heading; memcpy(&heading,peeps+person*22+14,sizeof heading);
         core_draw_icon(0x11,4,peeps[person*22+1]);
         int weapon = 1;
-        while (weapon < 11 && (uint16_t)land_weapons_order(weapon) != peeps[person*22+3]) ++weapon;
+        while (weapon < 11 && (uint16_t)land_weapons_order(weapon) != peep_weapon(person)) ++weapon;
         if (weapon < 11) core_draw_icon(0x12,4,weapon+1);
         if (flags & 8) {
             /* Battle: sprite +0xC and strength bars, blue left (asm:2840-2895). */
             int other = peep_word(person,6);
             if (other >= 0 && other < no_peeps) {
                 int blue = owner ? other : person, red = owner ? person : other;
-                int32_t sum = peep_word(blue,4) + peep_word(red,4);
-                int frame = peep_word(person,12);
+                int32_t sum = peep_population(blue) + peep_population(red);
+                int frame = peep_frame(person);
                 if (frame >= 0 && frame < 143) graphics_blit(game_pixels,64000,320,200,small,frame,0x110,0x16);
-                core_draw_bar(0x24,0x25,16,(int)___divs(16*peep_word(blue,4),sum),15);
-                core_draw_bar(0x25,0x25,16,(int)___divs(16*peep_word(red,4),sum),8);
+                core_draw_bar(0x24,0x25,16,(int)___divs(16*peep_population(blue),sum),15);
+                core_draw_bar(0x25,0x25,16,(int)___divs(16*peep_population(red),sum),8);
             }
         } else if (flags == 1) {
             /* Town: capacity and fill bars (asm:2896-2953). */
             graphics_blit(game_pixels,64000,320,200,small,0x40+owner*2+(toggle&1),0x10c,0x16);
-            int capacity = core_check_life(owner,peep_word(person,8));
+            int capacity = core_check_life(owner,peep_position(person));
             if (!capacity) capacity = 1;
             core_draw_bar(0x24,0x25,16,capacity == 0xbea ? 16 : (uint16_t)(capacity*16)/0x131,10);
             int fill = (uint16_t)(pop*16)/(uint16_t)capacity;
@@ -1469,7 +1469,7 @@ static void core_show_the_shield(GraphicsSheet small)
             else {
                 static const int16_t dir_sprite[9] = {-65,-64,-63,1,65,64,63,-1,0};
                 int d = 0;
-                while (d < 9 && dir_sprite[d] != peep_word(person,10)) ++d;
+                while (d < 9 && dir_sprite[d] != peep_heading(person)) ++d;
                 if (d > 7) d = 4;
                 frame = d*2 + (toggle&1) + (heading ? 0x20 : 0) + owner*16;
             }
@@ -1506,10 +1506,10 @@ static void core_queue_sprite(int x, int y, int frame, int who)
 }
 static void core_draw_funny(int u, int v, int cell)
 {
-    int who = map_who[cell], slot = who-1, flags = peeps[slot*22];
+    int who = map_who[cell], slot = who-1, flags = peep_flags(slot);
     if (who > CORE_FUNNY_END) return;   /* past the 211-record _peeps */
     if (flags != 2 && (flags == 1 || !(flags & 16))) return;   /* other branches never see funnies */
-    int counter = peep_word(slot,12), step = peep_word(slot,10), left, top;
+    int counter = peep_frame(slot), step = peep_heading(slot), left, top;
     if (counter >= 8 || !graphics_tile(u,v,map_alt[cell],&left,&top)) return;   /* asm:16063: _debug */
     int next = cell+step, sx = left+8, sy = top-8;
     sy += ((int8_t)map_alt[cell] - (next >= 0 && next < 4096 ? (int8_t)map_alt[next] : 0)) * counter;
@@ -1550,11 +1550,11 @@ static void core_emit_sprite(GraphicsSheet small, int x, int y, int frame, int w
 static void core_draw_peep(GraphicsSheet small, int u, int v, int cell)
 {
     int person=(int)map_who[cell]-1;
-    if (person<0 || person>=no_peeps || peep_word(person,4)<=0) return;
-    int left,top,owner=peep_owner(person),flags=peeps[person*22];
+    if (person<0 || person>=no_peeps || peep_population(person)<=0) return;
+    int left,top,owner=peep_owner(person),flags=peep_flags(person);
     if (owner>1 || !graphics_tile(u,v,map_alt[cell],&left,&top)) return;
     int walking = flags==2 || (flags!=1 && (flags&0x10));
-    int position=peep_word(person,8), step=peep_word(person,10);
+    int position=peep_position(person), step=peep_heading(person);
     if (position!=cell && (!walking || (int16_t)(position-step)!=cell)) return;
     /* asm:15965-15982: build permission of every visible occupant. */
     int build = flags&0xf8;
@@ -1562,7 +1562,7 @@ static void core_draw_peep(GraphicsSheet small, int u, int v, int cell)
     ok_to_build = (int16_t)(ok_to_build|build);
     uint32_t raw_heading;
     memcpy(&raw_heading,peeps+person*22+14,sizeof raw_heading);
-    int headed=raw_heading!=0, stored=peep_word(person,12), frame, sx=left+16, sy=top-8;
+    int headed=raw_heading!=0, stored=peep_frame(person), frame, sx=left+16, sy=top-8;
     if (walking) {
         int counter=stored;
         if (counter>=8) return;   /* asm:16061-16069: _debug */
@@ -1639,7 +1639,7 @@ static void draw_original(int view_x, int view_y)
         int cell=row*64+column, mx=64+column-row, my=(column+row)/2;
         int colour=map_colour_data[map_blk[cell]&15];
         int person=(int)map_who[cell]-1;
-        if (person>=0 && person<no_peeps && peep_word(person,4)>0) colour=peep_owner(person) ? 8 : 15;
+        if (person>=0 && person<no_peeps && peep_population(person)>0) colour=peep_owner(person) ? 8 : 15;
         if (column>=view_x && column<=view_x+7 && row>=view_y && row<=view_y+7 &&
             (column==view_x || column==view_x+7 || row==view_y || row==view_y+7)) colour=5;
         game_pixels[my*320+mx]=(uint8_t)colour;
@@ -1713,9 +1713,9 @@ static void _draw_it(int16_t y, int16_t x)
         }
     }
     for (int person = 0; person < no_peeps; ++person) {
-        if (peep_word(person,4) <= 0) continue;
+        if (peep_population(person) <= 0) continue;
         int sx = peep_screen_x(person)-x, sy = peep_screen_y(person)-y;
-        int town = peeps[person*22]&1, battle = peeps[person*22]&8;
+        int town = peep_flags(person)&1, battle = peep_flags(person)&8;
         uint32_t colour = peep_owner(person) ? 0xffff795d : 0xff8cffff;
         int radius = paint_map ? 0 : town ? 3 : 1;
         if (battle) colour = 0xffffff00;

@@ -13,10 +13,10 @@
 
 static int core_frame_walker(int person)
 {
-    if (!peep_word(person,4)) return 0;
-    int flags = peeps[person*22], previous = peep_word(person,12);
+    if (!peep_population(person)) return 0;
+    int flags = peep_flags(person), previous = peep_frame(person);
     if (flags == 2) {
-        set_peep_word(person,12,previous >= 7 ? 0 : previous+1);
+        set_peep_frame(person,previous >= 7 ? 0 : previous+1);
         return previous >= 7;
     }
     /* asm:5833-5845: exact-5/6 simulation consumers, not general mask 0x04.
@@ -24,13 +24,13 @@ static int core_frame_walker(int person)
      * the corresponding original sprites separately. */
     if (flags == 5 || flags == 6) {
         int frame = (int16_t)(previous+1);
-        set_peep_word(person,12,frame);
+        set_peep_frame(person,frame);
         return frame < 85 || frame >= 88;
     }
     if ((flags&0x60) && !(flags&0x1c)) {
         int frame = (int16_t)(previous+1);
         int complete = frame < 101 || frame > 102;
-        set_peep_word(person,12,complete ? 101 : frame);
+        set_peep_frame(person,complete ? 101 : frame);
         return complete;
     }
     return 0;
@@ -42,12 +42,12 @@ static int core_frame_walker(int person)
  * when it stays on a cell represented by another peep. */
 static void core_collision_wait(int person)
 {
-    if (peep_word(person,4) <= 0) return;
-    int other = map_who[peep_word(person,8)]-1;
-    if (other == person || other == -1 || peep_word(other,12) || other >= 208 ||
-        (peeps[other*22]&0x10)) return;
-    peeps[other*22] |= 0x20;
-    set_peep_word(other,12,101); set_peep_word(other,6,0);
+    if (peep_population(person) <= 0) return;
+    int other = map_who[peep_position(person)]-1;
+    if (other == person || other == -1 || peep_frame(other) || other >= 208 ||
+        (peep_flags(other)&0x10)) return;
+    peep_flags(other) |= 0x20;
+    set_peep_frame(other,101); set_peep_word(other,6,0);
 }
 static void _move_peeps(void)
 {
@@ -72,7 +72,7 @@ static void _move_peeps(void)
         int leader = core_leader(owner)-1;
         if (leader < 0 || leader >= no_peeps || leader >= 208) continue;
         if (peep_reference(leader) == -1) continue;
-        int position = peep_word(leader,8);
+        int position = peep_position(leader);
         if (!pause && position >= 0 && position < 4096) {
             core_target(owner) = position;
             owner_magnet(owner) = position;
@@ -90,11 +90,11 @@ static void _move_peeps(void)
     else if (last_fire) --last_fire;
     /* Existing walker/town/battle/remnant consumption; nonwar AI remains disabled. */
     for (int person = 0; person < no_peeps; ++person) {
-        if (peep_word(person,4) <= 0) continue;
+        if (peep_population(person) <= 0) continue;
         /* asm:3459-3474: sum the pre-movement word (EXT.L) by owner byte. */
-        core_good_pop(peeps[person*22+1]) += (uint32_t)(int32_t)peep_word(person,4);
-        int flags = peeps[person*22];
-        int position = peep_word(person,8);
+        core_good_pop(peeps[person*22+1]) += (uint32_t)(int32_t)peep_population(person);
+        int flags = peep_flags(person);
+        int position = peep_position(person);
         /* Entry flag, before water mutation or land recovery (asm:3481-3543).
          * Retain the host battle exemption and existing recovery behavior. */
         if ((flags&16) && !(flags&8) && !(game_mode&GAME_MODE_WATER_FATAL))
@@ -106,15 +106,15 @@ static void _move_peeps(void)
                  * Still wet skips framing and all lower-priority consumers. */
                 if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
                 uint16_t loss = (uint16_t)(2u*(uint16_t)a4_walk_death);
-                set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)-loss));
-                if (peep_word(person,4)<=0) core_remove(person);
+                set_peep_population(person,(uint16_t)((uint16_t)peep_population(person)-loss));
+                if (peep_population(person)<=0) core_remove(person);
                 continue;
             }
             if (flags&1) core_set_town(person,1);
-            peeps[person*22] = 18;
+            peep_flags(person) = 18;
             /* asm:3562-3580: new water entry only reframes; exact 18 then
              * reaches the common positive-population check without other work. */
-            if (peep_word(person,12) >= 8) set_peep_word(person,12,0);
+            if (peep_frame(person) >= 8) set_peep_frame(person,0);
             continue;
         }
         if ((flags == 0x11 || flags == 18 || flags == 0x15 || flags == 0x16 ||
@@ -126,48 +126,48 @@ static void _move_peeps(void)
              * Exact-0x80 framing is inert; even nonpositive loss reaches its timer. */
             if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
             uint16_t loss = (uint16_t)(2u*(uint16_t)a4_walk_death);
-            set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)-loss));
-            peeps[person*22] = flags &= 0xef;
+            set_peep_population(person,(uint16_t)((uint16_t)peep_population(person)-loss));
+            peep_flags(person) = flags &= 0xef;
             /* asm:5728,5810-5832: zero skips this first frame, negative does
              * not. Exact-1 still enters the ordinary town consumer below:
              * evacuation bypasses death; eligible growth can revive the word.
              * This does not enable town AI, candidate selection or funny work. */
             if (flags == 1) {
-                if (peep_word(person,4)!=0)
+                if (peep_population(person)!=0)
                     core_frame_town(person,core_check_life(peep_owner(person),position));
             } else core_frame_walker(person);
-            if (flags == 2 && peep_word(person,4)<=0) { core_remove(person); continue; }
-        } else if (flags&16) { peeps[person*22] = 2; set_peep_word(person,12,0); flags = 2; }
+            if (flags == 2 && peep_population(person)<=0) { core_remove(person); continue; }
+        } else if (flags&16) { peep_flags(person) = 2; set_peep_frame(person,0); flags = 2; }
         /* asm:3584-3599, scoped to exact 5/6 after existing water handling.
          * Completion clears only mask 0x04 and reframes without town maintenance,
          * evacuation or walking movement. Always end this person's tick. */
         if (flags == 5 || flags == 6) {
             if (core_frame_walker(person)) {
-                peeps[person*22] &= 0xfb;
+                peep_flags(person) &= 0xfb;
                 /* Exact-1 _set_frame branch, asm:5810-5832, not _set_town. */
-                if (peeps[person*22] == 1)
+                if (peep_flags(person) == 1)
                     core_frame_town(person,core_check_life(peep_owner(person),position));
                 else core_frame_walker(person);
             }
-            if (peep_word(person,4)<=0) core_remove(person);
+            if (peep_population(person)<=0) core_remove(person);
             continue;
         }
         if (flags&8) {
             int other = peep_word(person,6);
-            if (other > person && other < no_peeps && peep_word(other,4)>0) core_battle(person,other);
+            if (other > person && other < no_peeps && peep_population(other)>0) core_battle(person,other);
         } else if (flags&0x60) {
             /* _move_peeps asm:4213-4268: loss every tick, unsigned old counter. */
             core_frame_walker(person);
-            set_peep_word(person,4,peep_word(person,4)-a4_walk_death);
+            set_peep_population(person,peep_population(person)-a4_walk_death);
             unsigned previous = (uint16_t)peep_word(person,6);
             set_peep_word(person,6,(uint16_t)(previous+1));
             if (previous > 14) {
-                peeps[person*22] &= 0x9f;
+                peep_flags(person) &= 0x9f;
                 core_frame_walker(person);
-                if (peeps[person*22] == 2) core_move(person);
+                if (peep_flags(person) == 2) core_move(person);
             }
             /* A retry can create a reciprocal battle before attrition kills us. */
-            if (peep_word(person,4)<=0) core_remove(person);
+            if (peep_population(person)<=0) core_remove(person);
         } else if (flags == 1) core_settle_tick(person);
         else if (flags == 0x80) {
             /* asm:4283-4315: ordinary remnant, not a knight flag. Water and
@@ -175,14 +175,14 @@ static void _move_peeps(void)
             if (!map_who[position]) map_who[position] = person+1;
             unsigned previous = (uint16_t)peep_word(person,6);
             set_peep_word(person,6,(uint16_t)(previous-1u));
-            if (!previous || peep_word(person,4)<=0) core_remove(person);
+            if (!previous || peep_population(person)<=0) core_remove(person);
         } else {
             /* asm:4040 (CMPI.B #2; BNE LAB_411C0): only exact 2 walks. Other
              * residual flags reach only the signed death check, and are
              * positive here. */
             if (flags != 2) continue;
             if (!core_frame_walker(person)) { core_collision_wait(person); continue; }
-            int position = peep_word(person,8);
+            int position = peep_position(person);
             /* asm:4061-4081: ordinary frame completion, before move/loss.
              * Water cells never get here: they end the turn at the top. */
             if (map_blk[position] == 53) {
@@ -199,11 +199,11 @@ static void _move_peeps(void)
             core_move(person);
             /* asm:4100-4117: drop a stale +0x12 cell, then this path's loss. */
             if (peep_word(person,18) &&
-                (int16_t)(peep_word(person,8)-peep_word(person,10)) != peep_word(person,18))
+                (int16_t)(peep_position(person)-peep_heading(person)) != peep_word(person,18))
                 set_peep_word(person,18,0);
-            set_peep_word(person,4,peep_word(person,4)-a4_walk_death);
+            set_peep_population(person,peep_population(person)-a4_walk_death);
             core_collision_wait(person);
-            if (peep_word(person,4)<=0) core_remove(person);
+            if (peep_population(person)<=0) core_remove(person);
         }
     }
     /* asm:4349-4370: publish this pass's town and city counts. */
@@ -253,8 +253,8 @@ static void core_next_battle(void)
     for (int seen = 0; seen <= no_peeps; ++seen, ++person) {
         if (person >= no_peeps) person = 0;
         if (person == start && seen) return;
-        if ((peeps[person*22] & 0x08) && peep_word(person,4)) {
-            core_view_cell(peep_word(person,8));
+        if ((peep_flags(person) & 0x08) && peep_population(person)) {
+            core_view_cell(peep_position(person));
             view_fight = (int16_t)person;
             core_set_temp_view((int16_t)(person+1));
             return;
@@ -272,10 +272,10 @@ static void core_next_person(int left)
         if (person == start && seen) return;
         if (person == no_peeps) person = 0;
         seen = 1;
-        if (peep_owner(person) != player || peep_word(person,4) <= 0) continue;
+        if (peep_owner(person) != player || peep_population(person) <= 0) continue;
         uint32_t reference; memcpy(&reference,peeps+person*22+14,sizeof reference);
-        if (left ? reference != 0 : peeps[person*22] == 1) {
-            core_view_cell(peep_word(person,8));
+        if (left ? reference != 0 : peep_flags(person) == 1) {
+            core_view_cell(peep_position(person));
             view_people = (int16_t)person;
             core_set_temp_view((int16_t)(person+1));
             return;
@@ -321,7 +321,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
          * nine cells flash first (asm:1842-1851). */
         core_flash_icon(0x12c0,icon,line);
         if (icon == 4 && line == 1) {
-            if (view_who > 0 && view_who <= no_peeps) core_view_cell(peep_word(view_who-1,8));
+            if (view_who > 0 && view_who <= no_peeps) core_view_cell(peep_position(view_who-1));
         } else {
             xoff = (int16_t)(xoff + (icon == 5) - (icon == 3));
             yoff = (int16_t)(yoff + (line == 2) - (line == 0));
@@ -358,7 +358,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
             if (!owner_ok) return 1;
             int16_t leader = core_leader(player);
             if (left && leader > 0 && leader <= no_peeps) {
-                core_view_cell(peep_word(leader-1,8));
+                core_view_cell(peep_position(leader-1));
                 core_set_temp_view(leader);
             } else if (left || core_target(player)) core_view_cell(core_target(player));
         } else if (line == 1) core_next_battle();

@@ -64,7 +64,7 @@ static int core_population(int owner)
 {
     int total = 0;
     for (int person = 0; person < no_peeps; ++person)
-        if (peep_owner(person) == owner && peep_word(person,4) > 0) total += peep_word(person,4);
+        if (peep_owner(person) == owner && peep_population(person) > 0) total += peep_population(person);
     return total;
 }
 /* good_pop/bad_pop: signed longs at A4+$99fe, stride 16 (asm:25331). The
@@ -112,8 +112,8 @@ static int core_check_life(int owner, int position)
 /* _set_town asm:5865-6062. Original block IDs, simplified drawing only. */
 static void core_set_town(int person, int remove)
 {
-    int position = peep_word(person,8), owner = peep_owner(person);
-    int old_city = map_bk2[position] == 42, city = !remove && peep_word(person,12) == 42;
+    int position = peep_position(person), owner = peep_owner(person);
+    int old_city = map_bk2[position] == 42, city = !remove && peep_frame(person) == 42;
     if (remove || (old_city && !city)) {
         for (int index = 0; index < (old_city ? 25 : 17); ++index) {
             if (core_valid_move(position,core_offsets[index]) == 1) continue;
@@ -130,27 +130,27 @@ static void core_set_town(int person, int remove)
         if (index < 9) map_bk2[cell] = city ? core_city[index] : 0;
         if (map_blk[cell] == 15) map_blk[cell] = 31+owner;
     }
-    if (!city && map_blk[position] == 31+owner) map_bk2[position] = peep_word(person,12);
+    if (!city && map_blk[position] == 31+owner) map_bk2[position] = peep_frame(person);
 }
 static void core_remove(int person)
 {
-    int owner = peep_owner(person), position = peep_word(person,8);
-    if (peeps[person*22]&1) core_set_town(person,1);
+    int owner = peep_owner(person), position = peep_position(person);
+    if (peep_flags(person)&1) core_set_town(person,1);
     if (map_who[position] == person+1) map_who[position] = 0;
     /* _zero_population asm:5671-5680: also the previous departure's claim. */
-    int previous = (int16_t)(position-peep_word(person,10));
+    int previous = (int16_t)(position-peep_heading(person));
     if (previous >= 0 && previous < 4096 && map_who[previous] == person+1) map_who[previous] = 0;
-    if (peeps[person*22]&8) {
+    if (peep_flags(person)&8) {
         int partner = peep_word(person,6);
         /* Walking attrition can remove an attacker immediately after entry,
          * outside core_battle's winner path. Release only its reciprocal link. */
         if (partner >= 0 && partner < no_peeps && partner != person &&
-            peep_word(partner,4) > 0 && (peeps[partner*22]&8) &&
+            peep_population(partner) > 0 && (peep_flags(partner)&8) &&
             peep_word(partner,6) == person) {
-            peeps[partner*22] = (peeps[partner*22]&1) ? 1 : 2;
-            set_peep_word(partner,6,0); set_peep_word(partner,10,0);
-            if (!(peeps[partner*22]&1)) set_peep_word(partner,12,0);
-            int cell = peep_word(partner,8);
+            peep_flags(partner) = (peep_flags(partner)&1) ? 1 : 2;
+            set_peep_word(partner,6,0); set_peep_heading(partner,0);
+            if (!(peep_flags(partner)&1)) set_peep_frame(partner,0);
+            int cell = peep_position(partner);
             if (!map_who[cell]) map_who[cell] = partner+1;
         }
         set_peep_word(person,6,0);
@@ -164,7 +164,7 @@ static void core_remove(int person)
         }
     }
     if (view_who == person+1) view_who = 0;
-    set_peep_word(person,4,0); peeps[person*22] = 0;
+    set_peep_population(person,0); peep_flags(person) = 0;
 }
 /* "Funny" objects: peep slots $D1/$D2 (_peeps+$11F6 = LAB_5420A, A4 0xae1c),
  * the only users of the 32x32 sheet. _funny asm:24161-24171 (A4 0x8292),
@@ -179,8 +179,8 @@ static const int16_t core_funny[3][6] = {
 };
 static void core_zero_funny(int slot)
 {
-    set_peep_word(slot,4,0);
-    int position = peep_word(slot,8), previous = (int16_t)(position-peep_word(slot,10));
+    set_peep_population(slot,0);
+    int position = peep_position(slot), previous = (int16_t)(position-peep_heading(slot));
     if (position >= 0 && position < 4096 && map_who[position] == slot+1) map_who[position] = 0;
     if (previous >= 0 && previous < 4096 && map_who[previous] == slot+1) map_who[previous] = 0;
     if (view_who == slot+1) view_who = 0;
@@ -189,20 +189,20 @@ static void core_place_funny(int type, int edge)
 {
     if (type < 0 || type > 2) return;
     for (int slot = CORE_FUNNY_FIRST; slot < CORE_FUNNY_END; ++slot) {
-        if (peep_word(slot,4)) continue;
-        set_peep_word(slot,4,1); peeps[slot*22] = 2;
-        int position = peep_word(slot,8);
+        if (peep_population(slot)) continue;
+        set_peep_population(slot,1); peep_flags(slot) = 2;
+        int position = peep_position(slot);
         if (edge == 0) position = ((int16_t)___newrand()%125)/2 + 0xfc0;
         else if (edge == 1 || edge == 2) {
             int odd = ___newrand() & 1, value = (int16_t)___newrand()%43;
             if (edge == 1) position = (value+20)*64 + (odd ? 63 : 0xfc0);
             else position = odd ? value*64 : value;
         }
-        set_peep_word(slot,8,(int16_t)position);
+        set_peep_position(slot,(int16_t)position);
         if (position >= 0 && position < 4096) map_who[position] = (uint8_t)(slot+1);
-        set_peep_word(slot,10,core_funny[type][0]);
+        set_peep_heading(slot,core_funny[type][0]);
         peeps[slot*22+2] = (uint8_t)core_funny[type][2];
-        peeps[slot*22+3] = (uint8_t)core_funny[type][1];
+        peep_weapon(slot) = (uint8_t)core_funny[type][1];
         peeps[slot*22+21] = 1;
         set_peep_word(slot,6,core_funny[type][1]);
         peeps[slot*22+20] = (uint8_t)type;
@@ -213,21 +213,21 @@ static void core_do_funny(void)
 {
     for (int slot = CORE_FUNNY_FIRST; slot < CORE_FUNNY_END; ++slot) {
         uint8_t *record = peeps+slot*22;
-        if (!peep_word(slot,4)) continue;
-        set_peep_word(slot,12,(int16_t)(peep_word(slot,12)+1));
+        if (!peep_population(slot)) continue;
+        set_peep_frame(slot,(int16_t)(peep_frame(slot)+1));
         int step = (int8_t)record[21];
         set_peep_word(slot,6,(int16_t)(peep_word(slot,6)+step));
         uint16_t frame = (uint16_t)peep_word(slot,6);
         if (frame >= record[2] || frame <= record[3]) record[21] = (uint8_t)-step;
-        if (peep_word(slot,12) <= 7) continue;
-        set_peep_word(slot,12,0);
-        int position = peep_word(slot,8), type = (int8_t)record[20];
+        if (peep_frame(slot) <= 7) continue;
+        set_peep_frame(slot,0);
+        int position = peep_position(slot), type = (int8_t)record[20];
         if (position >= 0 && position < 4096 && map_who[position] == slot+1) map_who[position] = 0;
         if (type < 0 || type > 2) continue;
-        if (!peep_word(slot,10)) set_peep_word(slot,10,core_funny[type][0]);
-        if (core_valid_move(position,peep_word(slot,10)) == 1) { set_peep_word(slot,4,0); continue; }
-        position += peep_word(slot,10);
-        set_peep_word(slot,8,(int16_t)position);
+        if (!peep_heading(slot)) set_peep_heading(slot,core_funny[type][0]);
+        if (core_valid_move(position,peep_heading(slot)) == 1) { set_peep_population(slot,0); continue; }
+        position += peep_heading(slot);
+        set_peep_position(slot,(int16_t)position);
         for (int index = 0; index < 3; ++index) {
             int offset = core_funny[type][3+index];
             if (core_valid_move(position,offset) == 1) continue;
@@ -245,7 +245,7 @@ static void core_do_funny(void)
 }
 static void core_frame_town(int person, int capacity)
 {
-    set_peep_word(person,12,capacity >= 3050 ? 42 : 32+capacity*10/305);
+    set_peep_frame(person,capacity >= 3050 ? 42 : 32+capacity*10/305);
 }
 /* _where_do_i_go asm:4622-4901: rank five choices over nine directional rays. */
 static int core_explore(int person)
@@ -255,7 +255,7 @@ static int core_explore(int person)
     for (int ray = 0; ray < 9; ++ray) {
         if (direction == 0 && ray == 1) direction = (___newrand()&7)+1;
         else if (++direction == 9) direction = 0;
-        int position = peep_word(person,8), delta = core_offsets[direction];
+        int position = peep_position(person), delta = core_offsets[direction];
         for (int depth = 0; depth < peeps[person*22+2]; ++depth) {
             if (core_valid_move(position,delta)) break;
             position += delta;
@@ -271,13 +271,13 @@ static int core_explore(int person)
             if (!direction) continue;
             int other = map_who[position]-1, choice = -1;
             if (other >= 0 && other < no_peeps && other != person) {
-                if (peeps[other*22]&8) choice = 1;
+                if (peep_flags(other)&8) choice = 1;
                 else if (peep_owner(other) != owner) choice = 2;
-                else if (peeps[other*22]&2) choice = 3;
+                else if (peep_flags(other)&2) choice = 3;
             }
             if (choice >= 0 && depth < distance[choice]) { distance[choice] = depth; choices[choice] = delta; continue; }
             int steps = (uint16_t)map_step_word(position);
-            if (delta != peep_word(person,10) && (steps < least_steps || (steps == least_steps && depth < distance[4]))) {
+            if (delta != peep_heading(person) && (steps < least_steps || (steps == least_steps && depth < distance[4]))) {
                 least_steps = steps; distance[4] = depth; choices[4] = delta;
             }
         }
@@ -306,18 +306,18 @@ static void core_queue_terrain_raise(int owner, int position)
 static int core_magnet_direction(int person)
 {
     if (no_peeps < 0 || no_peeps > 208 || person < 0 || person >= no_peeps) return 999;
-    int owner = peep_owner(person), position = peep_word(person,8);
+    int owner = peep_owner(person), position = peep_position(person);
     if (owner > 1 || position < 0 || position >= 4096) return 999;
     int reference = peep_reference(person), present = reference != -1;
     int target;
     if (reference >= 0) {
-        target = peep_word(reference,8);
-        if (target == position || peep_word(reference,4) <= 0 ||
-            peep_owner(reference) == owner || (peeps[reference*22]&0x80) ||
+        target = peep_position(reference);
+        if (target == position || peep_population(reference) <= 0 ||
+            peep_owner(reference) == owner || (peep_flags(reference)&0x80) ||
             target < 0 || target >= 4096) {
             core_get_heading(person);
             reference = peep_reference(person);
-            target = peep_word(reference,8);
+            target = peep_position(reference);
         }
         /* The exact selector intentionally admits all signed word positions.
          * Validate once here, without retrying or changing selector semantics. */
@@ -332,9 +332,9 @@ static int core_magnet_direction(int person)
             }
             /* Invalid/dead/foreign leaders use the magnet without repair. */
             if (leader >= 0 && leader < no_peeps && leader < 208 && leader != person &&
-                peep_word(leader,4) > 0 && peep_owner(leader) == owner &&
-                peep_word(leader,8) >= 0 && peep_word(leader,8) < 4096)
-                target = peep_word(leader,8);
+                peep_population(leader) > 0 && peep_owner(leader) == owner &&
+                peep_position(leader) >= 0 && peep_position(leader) < 4096)
+                target = peep_position(leader);
         } else if (target < 0 || target >= 4096) return 999;
     }
     int dx = (target%64 > position%64)-(target%64 < position%64);
@@ -377,9 +377,9 @@ static int core_battle_over(int winner, int loser, bool raw_loser_nonzero)
 {
     if (no_peeps < 0 || no_peeps > 208 || winner < 0 || winner >= no_peeps ||
         loser < 0 || loser >= no_peeps || winner == loser ||
-        peep_word(winner,4) <= 0 || peep_word(loser,4) > 0) return 0;
+        peep_population(winner) <= 0 || peep_population(loser) > 0) return 0;
     int owner=peep_owner(winner), enemy=peep_owner(loser);
-    int position=peep_word(winner,8), loser_position=peep_word(loser,8);
+    int position=peep_position(winner), loser_position=peep_position(loser);
     if (owner > 1 || enemy > 1 || owner == enemy || position < 0 || position >= 4096 ||
         loser_position < 0 || loser_position >= 4096) return 0;
     uint32_t winner_heading, loser_heading;
@@ -387,17 +387,17 @@ static int core_battle_over(int winner, int loser, bool raw_loser_nonzero)
     memcpy(&loser_heading,peeps+loser*22+14,sizeof loser_heading);
     int32_t reward=A4_WORD(loser_heading ? 0x3012 : core_leader(enemy)==loser+1 ? 0x3014 : 0x3010);
     battle_won(owner)=(uint16_t)((uint16_t)battle_won(owner)+1u);
-    if (peeps[loser*22]&1) {
-        peeps[loser*22]=1;
+    if (peep_flags(loser)&1) {
+        peep_flags(loser)=1;
         /* _do_battle's preliminary combat frames are overwritten here and by
          * winner frame 85. Exact-zero losers skip both frames and life scratch;
          * negative host casualties must still reframe before any terrain edit. */
         if (raw_loser_nonzero) core_frame_town(loser,core_check_life(enemy,loser_position));
-        int level=(int16_t)(peep_word(loser,12)-32);
+        int level=(int16_t)(peep_frame(loser)-32);
         reward=level>=0 && level<=10 ? land_battle_add1(level) : 100;
         if (winner_heading) {
-            peeps[loser*22]=0x80; set_peep_word(loser,4,1); set_peep_word(loser,6,40);
-            peeps[winner*22]=2;
+            peep_flags(loser)=0x80; set_peep_population(loser,1); set_peep_word(loser,6,40);
+            peep_flags(winner)=2;
             int city=map_bk2[loser_position]==42;
             for (int index=0; index<(city ? 25 : 17); ++index) {
                 int cell=loser_position+core_offsets[index];
@@ -415,15 +415,15 @@ static int core_battle_over(int winner, int loser, bool raw_loser_nonzero)
             int capacity=core_check_life(owner,position);
             if (capacity>0) {
                 /* Prevent later loser cleanup from erasing the new town. */
-                peeps[loser*22]=8; peeps[winner*22]=1;
+                peep_flags(loser)=8; peep_flags(winner)=1;
                 set_peep_word(winner,6,game_turn);
                 core_frame_town(winner,capacity); core_set_town(winner,0);
             }
         }
     }
     /* Normalize before core_remove so reciprocal host cleanup cannot undo it. */
-    peeps[winner*22]=((peeps[winner*22]&1) ? 1 : 2)|4;
-    set_peep_word(winner,10,0); set_peep_word(winner,12,85);
+    peep_flags(winner)=((peep_flags(winner)&1) ? 1 : 2)|4;
+    set_peep_heading(winner,0); set_peep_frame(winner,85);
     if (!map_who[position] || map_who[position]==loser+1) map_who[position]=winner+1;
     if (peeps[winner*22+20]) {
         stats_go_to_pos(owner)=position;
@@ -437,7 +437,7 @@ static int core_battle_over(int winner, int loser, bool raw_loser_nonzero)
     if ((core_mana_long(enemy)^0x80000000u) < (mana_floor^0x80000000u))
         core_mana_long(enemy)=mana_floor;
     if (view_who==loser+1) view_who=winner+1;
-    if (peep_word(loser,4)<=0) core_remove(loser);
+    if (peep_population(loser)<=0) core_remove(loser);
     return 1;
 }
 /* _set_frame asm:5759-5809: actual combat partner, opaque heading presence.
@@ -446,33 +446,33 @@ static int core_frame_battle(int person, int partner, bool raw_nonzero)
 {
     if (no_peeps < 0 || no_peeps > 208 || person < 0 || person >= no_peeps ||
         partner < 0 || partner >= no_peeps || person == partner || !raw_nonzero ||
-        !(peeps[person*22]&8) || (peeps[person*22]&0x10)) return 0;
+        !(peep_flags(person)&8) || (peep_flags(person)&0x10)) return 0;
     uint32_t heading, partner_heading;
     memcpy(&heading,peeps+person*22+14,sizeof heading);
     memcpy(&partner_heading,peeps+partner*22+14,sizeof partner_heading);
     int base=heading && partner_heading ? 138 : !heading && !partner_heading ? 70 :
         peeps[(heading ? person : partner)*22+1]==0 ? 130 : 134;
-    int frame=(int16_t)((uint16_t)peep_word(person,12)+1u);
+    int frame=(int16_t)((uint16_t)peep_frame(person)+1u);
     int reset=frame < base || frame >= base+3;
-    set_peep_word(person,12,reset ? base : frame);
+    set_peep_frame(person,reset ? base : frame);
     return reset;
 }
 static void core_battle(int first, int second)
 {
     /* _do_battle:6082-6158: both casualties use the lesser rolled strength. */
-    int second_strength = (___newrand()%3+1)*peep_word(second,4);
-    int first_strength = (___newrand()%3+1)*peep_word(first,4);
+    int second_strength = (___newrand()%3+1)*peep_population(second);
+    int first_strength = (___newrand()%3+1)*peep_population(first);
     int lesser = first_strength < second_strength ? first_strength : second_strength;
     /* SUB.W wraps before TST.W and before either raw-nonzero frame test.
      * Keep host storage normalized without losing the signed source residual. */
-    uint16_t first_bits = (uint16_t)((uint32_t)peep_word(first,4)-
-        ((uint32_t)(lesser/100)*peeps[second*22+3]+10u));
-    uint16_t second_bits = (uint16_t)((uint32_t)peep_word(second,4)-
-        ((uint32_t)(lesser/100)*peeps[first*22+3]+10u));
+    uint16_t first_bits = (uint16_t)((uint32_t)peep_population(first)-
+        ((uint32_t)(lesser/100)*peep_weapon(second)+10u));
+    uint16_t second_bits = (uint16_t)((uint32_t)peep_population(second)-
+        ((uint32_t)(lesser/100)*peep_weapon(first)+10u));
     int first_pop = first_bits <= INT16_MAX ? (int)first_bits : (int)first_bits-65536;
     int second_pop = second_bits <= INT16_MAX ? (int)second_bits : (int)second_bits-65536;
-    set_peep_word(first,4,first_pop > 0 ? first_pop : 0);
-    set_peep_word(second,4,second_pop > 0 ? second_pop : 0);
+    set_peep_population(first,first_pop > 0 ? first_pop : 0);
+    set_peep_population(second,second_pop > 0 ? second_pop : 0);
     core_frame_battle(first,second,first_pop!=0);
     core_frame_battle(second,first,second_pop!=0);
     if (first_pop > 0 && second_pop > 0) return;
@@ -486,31 +486,31 @@ static void core_join_battle(int newcomer, int encountered)
 {
     if (newcomer < 0 || newcomer >= no_peeps || newcomer >= 208 ||
         encountered < 0 || encountered >= no_peeps || encountered >= 208 ||
-        newcomer == encountered || peep_word(newcomer,4) <= 0 ||
-        peeps[newcomer*22] != 2 || peep_owner(newcomer) > 1 ||
-        peep_word(encountered,4) <= 0 || !(peeps[encountered*22]&8) ||
+        newcomer == encountered || peep_population(newcomer) <= 0 ||
+        peep_flags(newcomer) != 2 || peep_owner(newcomer) > 1 ||
+        peep_population(encountered) <= 0 || !(peep_flags(encountered)&8) ||
         peep_owner(encountered) > 1) return;
     int partner = peep_word(encountered,6);
     if (partner < 0 || partner >= no_peeps || partner >= 208 ||
         partner == encountered || partner == newcomer ||
-        peep_word(partner,4) <= 0 || !(peeps[partner*22]&8) ||
+        peep_population(partner) <= 0 || !(peep_flags(partner)&8) ||
         peep_word(partner,6) != encountered ||
         peep_owner(partner) != 1-peep_owner(encountered)) return;
     int owner = peep_owner(newcomer);
     int recipient = peep_owner(encountered) == owner ? encountered : partner;
-    int population = peep_word(recipient,4)+peep_word(newcomer,4);
-    set_peep_word(recipient,4,population > 32000 ? 32000 : population);
+    int population = peep_population(recipient)+peep_population(newcomer);
+    set_peep_population(recipient,population > 32000 ? 32000 : population);
     if (core_leader(owner) == newcomer+1) core_leader(owner) = recipient+1;
     if (view_who == newcomer+1) view_who = recipient+1;
     /* This is an opaque four-byte Amiga field, not a native host pointer. */
     uint32_t metadata;
     memcpy(&metadata,peeps+newcomer*22+14,sizeof metadata);
     if (metadata) memcpy(peeps+recipient*22+14,&metadata,sizeof metadata);
-    if (peeps[newcomer*22+3] > peeps[recipient*22+3])
-        peeps[recipient*22+3] = peeps[newcomer*22+3];
+    if (peep_weapon(newcomer) > peep_weapon(recipient))
+        peep_weapon(recipient) = peep_weapon(newcomer);
     /* asm:6725-6740: a not-yet-visited recipient will count the merged word. */
     if (recipient > newcomer)
-        core_good_pop(peeps[newcomer*22+1]) -= (uint32_t)(int32_t)peep_word(newcomer,4);
+        core_good_pop(peeps[newcomer*22+1]) -= (uint32_t)(int32_t)peep_population(newcomer);
     core_remove(newcomer);
 }
 /* _join_forces asm:5540-5640: ordinary friendly merge, not battle joining. */
@@ -518,44 +518,44 @@ static void core_join_forces(int source, int target)
 {
     if (source < 0 || source >= no_peeps || source >= 208 ||
         target < 0 || target >= no_peeps || target >= 208 || source == target ||
-        peep_word(source,4) <= 0 || peeps[source*22] != 2 ||
-        peep_owner(source) > 1 || peep_word(target,4) <= 0 ||
-        peep_owner(target) != peep_owner(source) || (peeps[target*22]&8)) return;
+        peep_population(source) <= 0 || peep_flags(source) != 2 ||
+        peep_owner(source) > 1 || peep_population(target) <= 0 ||
+        peep_owner(target) != peep_owner(source) || (peep_flags(target)&8)) return;
     /* Opaque Amiga metadata: copy four bytes, never dereference as a pointer. */
     uint32_t metadata;
     memcpy(&metadata,peeps+source*22+14,sizeof metadata);
-    if (metadata && peeps[target*22] == 1) return;
+    if (metadata && peep_flags(target) == 1) return;
     if (metadata) memcpy(peeps+target*22+14,&metadata,sizeof metadata);
-    int population = peep_word(source,4)+peep_word(target,4);
-    set_peep_word(target,4,population > 32000 ? 32000 : population);
+    int population = peep_population(source)+peep_population(target);
+    set_peep_population(target,population > 32000 ? 32000 : population);
     int owner = peep_owner(source);
     if (core_leader(owner) == source+1) core_leader(owner) = target+1;
     if (view_who == source+1) view_who = target+1;
-    if (peeps[source*22+3] > peeps[target*22+3])
-        peeps[target*22+3] = peeps[source*22+3];
-    peeps[target*22] &= 0x9f;
-    set_peep_word(target,12,0);
+    if (peep_weapon(source) > peep_weapon(target))
+        peep_weapon(target) = peep_weapon(source);
+    peep_flags(target) &= 0x9f;
+    set_peep_frame(target,0);
     /* asm:5605-5620: a not-yet-visited target will count the merged word. */
     if (target > source)
-        core_good_pop(peeps[source*22+1]) -= (uint32_t)(int32_t)peep_word(source,4);
+        core_good_pop(peeps[source*22+1]) -= (uint32_t)(int32_t)peep_population(source);
     /* Host cleanup clears only source-owned occupancy; transfer refs first. */
     core_remove(source);
 }
 static void core_move(int person)
 {
-    int owner = peep_owner(person), position = peep_word(person,8);
+    int owner = peep_owner(person), position = peep_position(person);
     int present = peep_reference(person) != -1;
     int use_magnet = present || war_flag || !core_tendency(owner);
     int delta = use_magnet ? core_magnet_direction(person) : core_explore(person);
     /* _move_explorer asm:4425-4437: entry does not change the frame. */
     if (delta == 999) {
-        peeps[person*22] |= 0x40;
+        peep_flags(person) |= 0x40;
         set_peep_word(person,6,7);
         return;
     }
-    peeps[person*22] &= 0xbf;
+    peep_flags(person) &= 0xbf;
     /* asm:4438-4449: release the cell claimed by the previous departure. */
-    int previous = (int16_t)(position-peep_word(person,10));
+    int previous = (int16_t)(position-peep_heading(person));
     if (previous >= 0 && previous < 4096 && map_who[previous] == person+1) map_who[previous] = 0;
     /* asm:4450-4509: a computer-controlled walker on block 0x42 asks for its
      * own cell to be lowered: command byte, x, ASR.W #6 row; no latch write. */
@@ -570,37 +570,37 @@ static void core_move(int person)
     /* asm:4510-4559: the encounter is with the peep named at the walker's
      * own cell. Only -1, self, slot >= 208 and bit 7 are excluded. */
     int occupant = map_who[position]-1;
-    if (occupant != -1 && occupant != person && occupant < 208 && !(peeps[occupant*22]&0x80)) {
-        if (peeps[occupant*22]&8) core_join_battle(person,occupant);
+    if (occupant != -1 && occupant != person && occupant < 208 && !(peep_flags(occupant)&0x80)) {
+        if (peep_flags(occupant)&8) core_join_battle(person,occupant);
         else if (peep_owner(occupant) == owner) core_join_forces(person,occupant);
         else {
-            peeps[person*22] = 8;
-            peeps[occupant*22] = (peeps[occupant*22]&7)|8;
+            peep_flags(person) = 8;
+            peep_flags(occupant) = (peep_flags(occupant)&7)|8;
             set_peep_word(person,6,occupant); set_peep_word(occupant,6,person);
-            core_frame_battle(person,occupant,peep_word(person,4)!=0);
-            core_frame_battle(occupant,person,peep_word(occupant,4)!=0);
+            core_frame_battle(person,occupant,peep_population(person)!=0);
+            core_frame_battle(occupant,person,peep_population(occupant)!=0);
             /* _set_battle asm:6604-6656 (its view_who store is a no-op):
              * release the defender's claims, then a town keeps its cell
              * while a walker is pulled back onto the attacker's cell. */
-            int cell = peep_word(occupant,8);
-            int left = (int16_t)(cell-peep_word(occupant,10));
+            int cell = peep_position(occupant);
+            int left = (int16_t)(cell-peep_heading(occupant));
             if (left >= 0 && left < 4096 && map_who[left] == occupant+1) map_who[left] = 0;
             if (cell >= 0 && cell < 4096 && map_who[cell] == occupant+1) map_who[cell] = 0;
-            if (peeps[occupant*22]&1) {
+            if (peep_flags(occupant)&1) {
                 if (cell >= 0 && cell < 4096) map_who[cell] = person+1;
             } else {
-                set_peep_word(occupant,8,position);
+                set_peep_position(occupant,position);
                 map_who[position] = person+1;
             }
             ++core_battles;
             return;
         }
     }
-    if (peep_word(person,4) <= 0) return;
+    if (peep_population(person) <= 0) return;
     /* asm:4564-4589: settle on a zero heading without metadata. */
     if (!delta && !present) {
         if (!map_who[position]) map_who[position] = person+1;
-        peeps[person*22] = 1; set_peep_word(person,6,game_turn);
+        peep_flags(person) = 1; set_peep_word(person,6,game_turn);
         core_frame_town(person,core_check_life(owner,position)); core_set_town(person,0); ++core_settlements;
         return;
     }
@@ -608,7 +608,7 @@ static void core_move(int person)
      * destination is claimed only by the next departure. */
     map_step_word(position) = (uint16_t)map_step_word(position)+1;
     if (!map_who[position]) map_who[position] = person+1;
-    set_peep_word(person,8,(int16_t)(position+delta)); set_peep_word(person,10,delta);
+    set_peep_position(person,(int16_t)(position+delta)); set_peep_heading(person,delta);
 }
 /* _move_peeps frame local -28 (asm:3331-3335): per-owner oldest town age. */
 static uint16_t core_oldest_town_age[2];
@@ -734,7 +734,7 @@ static void core_do_computer_effect(int owner)
         }
     }
     int subject = (int)stats_oldest_town_ref(owner) - 1;
-    int16_t cell = peep_word(subject, 8);
+    int16_t cell = peep_position(subject);
     int16_t x = (int16_t)((cell & 63) - 3), y = (int16_t)((cell >> 6) - 3);
     if (x < 0) x = 0;
     if (y < 0) y = 0;
@@ -768,7 +768,7 @@ static void core_devil_effect(int owner)
         return;
     }
     /* asm:9366-9396: knight for a leader above 3000; returns either way. */
-    if ((flags & 0x20) && core_leader(owner) && peep_word(core_leader(owner)-1, 4) > 3000) {
+    if ((flags & 0x20) && core_leader(owner) && peep_population(core_leader(owner)-1) > 3000) {
         if (core_ai_mana_above(owner, mana_knight_cost, 500)) {
             stats_cmd_byte(owner) = 14;
             stats_cmd_y(owner) = 5;
@@ -792,16 +792,16 @@ static void core_devil_effect(int owner)
             !(count > stats_ai_seed(owner) && (flags & 0x40))) {
             int16_t theirs = (int16_t)(core_leader(enemy) - 1);
             int16_t ours = (int16_t)(core_leader(owner) - 1);
-            if (theirs != -1 && (ours == -1 || peep_word(theirs, 4) > peep_word(ours, 4))) {
+            if (theirs != -1 && (ours == -1 || peep_population(theirs) > peep_population(ours))) {
                 stats_send_flag(owner) = (int16_t)(count + 1);
-                core_ai_put(s, 4, peep_word(theirs, 8));
+                core_ai_put(s, 4, peep_position(theirs));
                 return;
             }
         }
     }
     /* asm:9483-9524: earthquake on the target town. */
     if (core_ai_mana_above(owner, mana_quake_cost, 500) &&
-        peeps[((int)stats_oldest_town_ref(owner) - 1) * 22] == 1 && (flags & 8)) {
+        peep_flags(((int)stats_oldest_town_ref(owner) - 1)) == 1 && (flags & 8)) {
         if (stats_send_flag(owner) >= stats_ai_delay(owner) && (flags & 0x50)) return;
         stats_cmd_byte(owner) = 3;
         core_do_computer_effect(owner);
@@ -820,7 +820,7 @@ static int core_ai_town_cell(int s, int field, int16_t *cell)
 {
     uint32_t reference = A4_LONG(s+field);
     if (!reference || reference > 208) return 0;
-    *cell = peep_word((int)reference-1,8);
+    *cell = peep_position((int)reference-1);
     return 1;
 }
 /* _set_devil_magnet asm:9601-9800. Called per owner from _move_peeps
@@ -847,10 +847,10 @@ static void core_set_devil_magnet(int owner)
         if (core_tendency(owner)) { core_ai_tendency(s,0); A4_WORD(s+0x1c) = 0; }
         return;
     }
-    if (peep_word(ours,8) == A4_WORD(s+0x1e) && A4_WORD(s+0x1c))
+    if (peep_position(ours) == A4_WORD(s+0x1e) && A4_WORD(s+0x1c))
         A4_WORD(s+0x1c) = (int16_t)(A4_WORD(s+0x1c)-1);
     int16_t cell;
-    if (peep_word(ours,4) < 6000) {
+    if (peep_population(ours) < 6000) {
         if (A4_WORD(s+0x1c)) {
             if (core_target(owner) != A4_WORD(s+0x1e)) {
                 core_ai_put(s,5,A4_WORD(s+0x1e)); A4_WORD(s+8) = 1;
@@ -864,7 +864,7 @@ static void core_set_devil_magnet(int owner)
         return;
     }
     /* asm:9784-9864: a leader 500 above the enemy's, enemy tendency 0. */
-    if (theirs >= 0 && peep_word(ours,4) > (int16_t)(peep_word(theirs,4)+500) && !core_tendency(enemy)) {
+    if (theirs >= 0 && peep_population(ours) > (int16_t)(peep_population(theirs)+500) && !core_tendency(enemy)) {
         if (A4_WORD(s+14)&4) {
             if (core_tendency(owner)) core_ai_tendency(s,0);
             else if (core_target(owner) != core_target(enemy)) {
@@ -882,18 +882,18 @@ static void core_set_devil_magnet(int owner)
 }
 static void core_settle_tick(int person)
 {
-    int owner = peep_owner(person), position = peep_word(person,8), capacity = core_check_life(owner,position);
+    int owner = peep_owner(person), position = peep_position(person), capacity = core_check_life(owner,position);
     /* asm:3600-3633: caller dispatches exact peaceful towns. Metadata is an
      * opaque four-byte Amiga field, never a native pointer. */
     uint32_t metadata;
     memcpy(&metadata,peeps+person*22+14,sizeof metadata);
     if (capacity <= 0 || metadata || war_flag) {
-        peeps[person*22] = (peeps[person*22]&0xfe)|2;
-        set_peep_word(person,12,0); set_peep_word(person,10,0);
+        peep_flags(person) = (peep_flags(person)&0xfe)|2;
+        set_peep_frame(person,0); set_peep_heading(person,0);
         core_set_town(person,1);
         return;
     }
-    int old_frame = peep_word(person,12); /* asm:3634-3636, before reframing. */
+    int old_frame = peep_frame(person); /* asm:3634-3636, before reframing. */
     core_frame_town(person,capacity);
     /* asm:3658-3661: LAB_52DEA counts non-city frames during the pass. */
     if (capacity < 3050) core_town_age(owner) = (uint16_t)core_town_age(owner)+1;
@@ -923,16 +923,16 @@ static void core_settle_tick(int person)
      * cells keep the result in peep +20 and skip an unchanged, unflagged frame. */
     if (owner < 2 && !stats_build_latch(owner)) {
         if (!map_alt[position]) {
-            if (!peeps[person*22+20] || peep_word(person,12) != old_frame || life_water_flag)
+            if (!peeps[person*22+20] || peep_frame(person) != old_frame || life_water_flag)
                 peeps[person*22+20] = core_make_level(position,owner);
         } else if (core_town_strength[owner] < 3 && (uint16_t)game_turn > 250)
             core_make_level(position,owner);
     }
     if (!((uint16_t)game_turn&7)) {
-        int level = peep_word(person,12)-32;
+        int level = peep_frame(person)-32;
         /* asm:3818-3862: local split limits, never reframe or reindex economy. */
-        if (peep_word(person,12) == 42 && stats_build_mode(owner) == 1 &&
-            peep_word(person,4) > 305 && !stats_build_latch(owner)) {
+        if (peep_frame(person) == 42 && stats_build_mode(owner) == 1 &&
+            peep_population(person) > 305 && !stats_build_latch(owner)) {
             capacity = 305;
             stats_build_latch(owner) = 1;
         }
@@ -940,22 +940,22 @@ static void core_settle_tick(int person)
         if (cheat && (uint16_t)owner == (uint16_t)(cheat-1u)) capacity = 50;
         /* asm:3863-3882: EXT.L signed word then ADD.L, without host mana bounds. */
         core_mana_long(owner)+=(uint32_t)(int32_t)(int16_t)land_mana_add(level);
-        peeps[person*22+3] = land_weapons_add(level)&255;
-        if (peep_word(person,4) > capacity) {
+        peep_weapon(person) = land_weapons_add(level)&255;
+        if (peep_population(person) > capacity) {
             int child;
-            for (child = 0; child < 208 && peep_word(child,4)>0; ++child) {}
+            for (child = 0; child < 208 && peep_population(child)>0; ++child) {}
             if (child < 208) {
                 if (child >= no_peeps) no_peeps = child+1;
                 /* asm:3950-3963 leaves this slot's counter and nav history intact. */
-                set_peep_word(child,10,0); set_peep_word(child,12,0);
+                set_peep_heading(child,0); set_peep_frame(child,0);
                 memset(peeps+child*22+14,0,4); peeps[child*22+20] = 0;
-                peeps[child*22] = 2; peeps[child*22+1] = owner;
-                peeps[child*22+2] = peeps[person*22+2]; peeps[child*22+3] = peeps[person*22+3];
-                set_peep_word(child,4,peep_word(person,4)-capacity/2); set_peep_word(person,4,capacity/2);
+                peep_flags(child) = 2; peeps[child*22+1] = owner;
+                peeps[child*22+2] = peeps[person*22+2]; peep_weapon(child) = peep_weapon(person);
+                set_peep_population(child,peep_population(person)-capacity/2); set_peep_population(person,capacity/2);
                 /* asm:3913-3929: the released walker carries the leader. */
                 if (core_leader(owner) == person+1) core_leader(owner) = child+1;
                 if (view_who == person+1) view_who = child+1; /* asm:3931-3937 */
-                set_peep_word(child,8,position); set_peep_word(child,18,position);
+                set_peep_position(child,position); set_peep_word(child,18,position);
                 /* asm:3964-3983: preserve a co-located walker or battle occupant. */
                 if (!map_who[position] || map_who[position] == person+1) map_who[position] = child+1;
                 if (peeps[person*22+2] < 4) ++peeps[person*22+2];
@@ -966,14 +966,14 @@ static void core_settle_tick(int person)
             }
         }
         /* asm:4007-4014: ADD.W can revive or kill; store before maintenance. */
-        set_peep_word(person,4,(uint16_t)((uint16_t)peep_word(person,4)+(uint16_t)land_population_add(level)));
+        set_peep_population(person,(uint16_t)((uint16_t)peep_population(person)+(uint16_t)land_population_add(level)));
     }
     /* asm:4037-4055: use this resident's life-scan scratch after economy.
      * Evacuation bypasses both maintenance and signed cleanup (asm:3633). */
-    int frame = peep_word(person,12);
+    int frame = peep_frame(person);
     if (frame != old_frame || life_water_flag || (frame == 42 && (int16_t)life_swamp_count < 9))
         core_set_town(person,0);
-    if (peep_word(person,4)<=0) core_remove(person);
+    if (peep_population(person)<=0) core_remove(person);
 }
 /* _raise_point/_lower_point: the same 8-neighbour slope constraint, bounded work. */
 static int core_sculpt(int owner, int column, int row, int direction)
@@ -987,8 +987,8 @@ static int core_sculpt(int owner, int column, int row, int direction)
     if ((game_mode&GAME_MODE_BUILD_NEAR_TOWNS) && original > 0) {
         int near = 0;
         for (int person = 0; person < no_peeps; ++person) {
-            int position = peep_word(person,8);
-            if (peep_word(person,4)>0 && peep_owner(person)==owner && (peeps[person*22]&1) &&
+            int position = peep_position(person);
+            if (peep_population(person)>0 && peep_owner(person)==owner && (peep_flags(person)&1) &&
                 abs(position%64-column)<=2 && abs(position/64-row)<=2) near = 1;
         }
         if (!near) return 0;
@@ -1014,7 +1014,7 @@ static int core_sculpt(int owner, int column, int row, int direction)
      * (_move_peeps asm:4269-4281); _sculpt/_make_map (asm:7271-7420,
      * 1420-1593) never call _set_town. */
     for (int person = 0; person < no_peeps; ++person)
-        if (peep_word(person,4)>0 && (peeps[person*22]&1) && !(peeps[person*22]&8))
+        if (peep_population(person)>0 && (peep_flags(person)&1) && !(peep_flags(person)&8))
             core_set_town(person,0);
     return 1;
 }
@@ -1029,13 +1029,13 @@ static void _place_first_people(void)
         int owner = index >= current_start_pop_you;
         int local = owner ? index-current_start_pop_you : index;
         int position = (8+(local/5)*7)*64 + 8+(local%5)*8+owner*3;
-        peeps[index * 22] = 2;
+        peep_flags(index) = 2;
         peeps[index * 22 + 1] = index >= current_start_pop_you;
         peeps[index * 22 + 2] = 1;
-        peeps[index * 22 + 3] = 1;
-        set_peep_word(index, 4, 45);
-        set_peep_word(index, 8, position);
-        set_peep_word(index, 12, 255);
+        peep_weapon(index) = 1;
+        set_peep_population(index, 45);
+        set_peep_position(index, position);
+        set_peep_frame(index, 255);
         map_who[position] = index + 1;
     }
 }
@@ -1123,14 +1123,14 @@ static void core_place_people(int side, int x, int y, int leader)
     if (leader && magnet > 0 && magnet <= no_peeps) { person = magnet-1; core_remove(person); }
     else person = no_peeps++;
     int cell = y*64+x;
-    set_peep_word(person,6,0); set_peep_word(person,4,45); set_peep_word(person,8,cell);
+    set_peep_word(person,6,0); set_peep_population(person,45); set_peep_position(person,cell);
     map_who[cell] = person+1;
-    peeps[person*22+1] = (uint8_t)side; peeps[person*22] = 2;
-    set_peep_word(person,12,255); peeps[person*22+2] = 1;
-    set_peep_word(person,10,0); peeps[person*22+3] = 1;
+    peeps[person*22+1] = (uint8_t)side; peep_flags(person) = 2;
+    set_peep_frame(person,255); peeps[person*22+2] = 1;
+    set_peep_heading(person,0); peep_weapon(person) = 1;
     memset(peeps+person*22+14,0,4);
     if (leader) core_leader(side) = person+1;
-    set_peep_word(person,12,0);   /* _set_frame on frame 255, asm:5728-5743 */
+    set_peep_frame(person,0);   /* _set_frame on frame 255, asm:5728-5743 */
 }
 /* _rotate_all_map asm:6823-6922: "mirror the landscape". Both halves of
  * _alt take the higher (signed) height, trees 50..55 are copied across. */
@@ -1376,8 +1376,8 @@ static int core_knight(int owner)
     if (!paint_map && (pause || war_flag)) return 0;
     int leader=core_leader(owner);
     if (leader < 1 || leader > no_peeps) return 0;
-    int subject=leader-1, position=peep_word(subject,8);
-    if (peep_word(subject,4) <= 0 || peep_owner(subject) != owner ||
+    int subject=leader-1, position=peep_position(subject);
+    if (peep_population(subject) <= 0 || peep_owner(subject) != owner ||
         position < 0 || position >= 4096) return 0;
     uint32_t mana=core_mana_long(owner), cost=mana_knight_cost;
     /* Signed CMP.L admission, unsigned SUB.L/ADD.L wrap, as in core_war. */
@@ -1599,8 +1599,8 @@ static int core_volcano(int owner, int column, int row, WorldRandom random)
     int leader = core_leader(0), protected_cell = 0;
     if (leader) {
         if (leader < 1 || leader > 208 || leader > no_peeps ||
-            peep_word(leader-1,4) <= 0) return 0;
-        protected_cell = peep_word(leader-1,8);
+            peep_population(leader-1) <= 0) return 0;
+        protected_cell = peep_position(leader-1);
         if (protected_cell < 0 || protected_cell >= 4096) return 0;
     }
     if (!paint_map) core_mana_long(owner) -= mana_volcano_cost;
@@ -1694,13 +1694,13 @@ static int original_place_person(int owner, int cell, int leader)
 {
     if (cell < 0 || cell >= 4096 || no_peeps >= 208) return 0;
     int person = no_peeps++;
-    peeps[person * 22] = 2;
+    peep_flags(person) = 2;
     peeps[person * 22 + 1] = owner;
-    peeps[person * 22 + 2] = peeps[person * 22 + 3] = 1;
-    set_peep_word(person, 4, 45);
-    set_peep_word(person, 8, cell);
+    peeps[person * 22 + 2] = peep_weapon(person) = 1;
+    set_peep_population(person, 45);
+    set_peep_position(person, cell);
     /* _place_people starts frame 255 then calls _set_frame (asm:5732-5736). */
-    set_peep_word(person, 12, 0);
+    set_peep_frame(person, 0);
     map_who[cell] = person + 1;
     if (leader) core_leader(owner) = person + 1;
     return 1;
@@ -1746,7 +1746,7 @@ static void original_clear(WorldRandom random, unsigned internal_level)
     _clear_map();
     memset(map_steps, 0, 4096 * 2);
     memset(peeps, 0, 208 * 22);
-    for (int slot = 208; slot < CORE_FUNNY_END; ++slot) set_peep_word(slot,4,0);
+    for (int slot = 208; slot < CORE_FUNNY_END; ++slot) set_peep_population(slot,0);
     funny_done = 0;
     no_peeps = 0;
     for (int owner = 0; owner < 2; ++owner) {
@@ -1917,9 +1917,9 @@ static int32_t core_end_stats(int won)
             int n = (uint16_t)no_peeps < 208 ? (uint16_t)no_peeps : 208;
             for (int p = 0; p < n; ++p) {
                 uint32_t heading; memcpy(&heading, peeps + p*22 + 14, 4);
-                int hit = r == 3 ? heading != 0 && peep_word(p,4) != 0 :
-                    peeps[p*22] == 1 && peep_word(p,4) != 0 &&
-                    (r == 4 ? peep_word(p,12) != 0x2a : peep_word(p,12) == 0x2a);
+                int hit = r == 3 ? heading != 0 && peep_population(p) != 0 :
+                    peep_flags(p) == 1 && peep_population(p) != 0 &&
+                    (r == 4 ? peep_frame(p) != 0x2a : peep_frame(p) == 0x2a);
                 if (hit) { if (peep_owner(p) == you) ++mine; else ++theirs; }
             }
         }
@@ -2308,7 +2308,7 @@ static int game_reset_start(StartSelection selection)
     xoff = yoff = 6;
     if (selection.kind != START_SYNTHETIC) {
         /* Host camera accommodation: original inhabitants are not on demo plots. */
-        int cell = peep_word(core_leader(0) - 1, 8);
+        int cell = peep_position(core_leader(0) - 1);
         xoff = cell % 64 - 3;
         yoff = cell / 64 - 3;
         if (xoff < 0) xoff = 0;
