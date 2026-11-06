@@ -1,3 +1,9 @@
+/*
+ * test_land.c - Land-data tests: parsing of the original land file using a synthetic fixture.
+ *
+ * Run via `make test`. Each test_* function is self-contained and
+ * aborts through assert() on the first mismatch.
+ */
 #define _POSIX_C_SOURCE 200809L
 #include "../land_data.h"
 #include <assert.h>
@@ -34,7 +40,8 @@ static void synthetic(void)
     assert(rules.battle_add1[0] == 0x3456 && rules.battle_add2[0] == 0x4567);
     assert(rules.map_colour[0] == 15 && rules.map_colour[16] == 15);
     assert(rules.sprite_set == 2);
-    assert(rules.weapons_order[0] == 0 && rules.weapons_order[9] == 3 && rules.weapons_order[10] == 17);
+    assert(rules.weapons_order[0] == 0 && rules.weapons_order[9] == 3 &&
+           rules.weapons_order[10] == 17);
     saved = rules;
     for (size_t size = 0; size < 33714; ++size)
         assert(!land_rules_parse(fixture, size, &rules, error, sizeof error));
@@ -81,6 +88,9 @@ static void synthetic(void)
     assert(unlink(path) == 0 && rmdir(directory) == 0);
 }
 
+/* ========================================================================
+ * Test runner (focused --flags first, then the full suite)
+ * ======================================================================== */
 int main(int argc, char **argv)
 {
     if (argc == 2) {

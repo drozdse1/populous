@@ -1,0 +1,12 @@
+# Formatting for the test suite only (production sources keep their style).
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+BreakBeforeBraces: Linux
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortBlocksOnASingleLine: Always
+SortIncludes:
+  Enabled: false
+ReflowComments: false
+PointerAlignment: Right

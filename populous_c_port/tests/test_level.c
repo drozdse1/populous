@@ -1,3 +1,9 @@
+/*
+ * test_level.c - Level-data tests: level file parsing and size validation.
+ *
+ * Run via `make test`. Each test_* function is self-contained and
+ * aborts through assert() on the first mismatch.
+ */
 #define _POSIX_C_SOURCE 200809L
 #include "../level_data.h"
 #include <assert.h>
@@ -14,6 +20,10 @@ static void write_fixture(const char *path, size_t size)
     assert(file && fwrite(bytes, 1, size, file) == size);
     assert(fclose(file) == 0);
 }
+
+/* ========================================================================
+ * Test runner (focused --flags first, then the full suite)
+ * ======================================================================== */
 int main(void)
 {
     LevelTable table, saved;
@@ -56,7 +66,8 @@ int main(void)
         assert(start.initial_seed == seeds[index]);
     }
     LevelStart start, before;
-    memset(&start, 0xa5, sizeof start); before = start;
+    memset(&start, 0xa5, sizeof start);
+    before = start;
     assert(!level_data_select(&table, 495, &start));
     assert(!memcmp(&start, &before, sizeof start));
     table.records[0].seed_offset = 65535;
