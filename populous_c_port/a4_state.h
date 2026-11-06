@@ -277,6 +277,23 @@ typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
 #define LAB_52DC6        (A4_DISP(0x99d8))
 #define LAB_52DCA        (A4_DISP(0x99dc))
 #define serial           (A4_DISP(0x989c))
+/* _serial (asm:25254-25259): +0 read index, +2 write index (LAB_52C8C),
+ * +4 transmit busy, the 0x78-byte receive ring at +8 (_r_ser_buff
+ * asm:20058-20071, _read_serial asm:20080-20137). */
+#define serial_rd        A4_WORD(0x989c)
+#define serial_wr        A4_WORD(0x989e)
+#define serial_tx_busy   A4_WORD(0x98a0)
+#define serial_ring      (A4_DISP(0x98a4))
+#define SERIAL_RING_SIZE 0x78
+/* Two-player state (asm:25512-25548): _quick_io (1 = NO SERIAL CHECKING),
+ * _use_modem, _login (20 bytes), _baud_rate; _message (asm:25514) is
+ * core_message, also the 5/12-byte option packets and the text message. */
+#define quick_io         A4_WORD(0x3056)
+#define use_modem        A4_WORD(0x3084)
+#define core_login       ((char *)A4_DISP(0x3086))
+#define baud_rate        A4_WORD(0x83b8)
+/* _serial_text asm:24930-25140 (A4 0x91ec): 20 entries of 46 bytes. */
+#define core_serial_entry(i) A4_DISP(0x91ec + (i) * 46)
 #define _my_task         A4_LONG(0x9860)
 #define LAB_516DE        A4_WORD(0x82f0)
 #define LAB_516E2        A4_WORD(0x82f4)

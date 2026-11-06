@@ -308,7 +308,11 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else if (icon == 1 && line == 1) { if (post) { mailbox[0] = 14; mailbox[2] = 8; } }
         /* _do_action y=6 asm:18591-18608. The port's pause also stops the
          * mailbox consumer, so this icon toggles directly rather than posting. */
-        else if (icon == 1 && line == 3) { pause = !pause; A4_WORD(0x9a1a) = 0; }
+        else if (icon == 1 && line == 3) {
+            /* With the link up the original y=6 post toggles on both sides. */
+            if (core_serial_live()) { if (post) { mailbox[0] = 14; mailbox[2] = 6; } }
+            else { pause = !pause; A4_WORD(0x9a1a) = 0; }
+        }
         else if (icon == 2 && line == 2) { if (post) { mailbox[0] = 14; mailbox[2] = 2; } }
         else return 0;
         return 1;
@@ -435,6 +439,8 @@ static void game_handle_event(const SDL_Event *event)
     if (event->type == SDL_QUIT) { prg_quit = 1; return; }
     if (event->type == SDL_KEYDOWN) {
         SDL_Keycode key = event->key.keysym.sym;
+        /* _read_serial's abort: Shift+Esc while waiting for the other side. */
+        if (key == SDLK_ESCAPE && (event->key.keysym.mod & KMOD_SHIFT) && core_serial_blocked()) { core_serial_cancel = 1; return; }
         if (key == SDLK_ESCAPE) { prg_quit = 1; return; }
         if (core_req.kind && core_disk_message) return;   /* _do_message reads only the mouse */
         /* _show_world's _get_name reads ___keyboard (_asckey). */
@@ -448,6 +454,12 @@ static void game_handle_event(const SDL_Event *event)
             else if (key >= 0 && key < 0x80) core_file_key((int)key);
             return;
         }
+        /* _get_a_message's _get_name; the received message closes on Return. */
+        if (core_req.kind == CORE_REQ_MSG_OUT || core_req.kind == CORE_REQ_MSG_IN) {
+            if (key == SDLK_RETURN || key == SDLK_KP_ENTER) core_msg_key(13);
+            else if (key >= 0 && key < 0x80) core_msg_key((int)key);
+            return;
+        }
         if (core_req.kind || core_lord.shown) return;   /* the requester and lord loops read only the mouse */
         /* _end_game waits for the requester (asm:14370-14385): any other key. */
         if (core_end_shown && core_result) { if (!event->key.repeat) core_leave_end(); return; }
@@ -457,6 +469,7 @@ static void game_handle_event(const SDL_Event *event)
             int raw = key >= SDLK_F1 && key <= SDLK_F8 ? 0x50 + (int)(key - SDLK_F1) :
                       key == SDLK_DELETE ? 0x46 : key >= SDLK_1 && key <= SDLK_9 ? (int)(key - SDLK_0) : -1;
             if (raw >= 0 && core_paint_the_map(raw, (event->key.keysym.mod & KMOD_SHIFT) != 0)) return;
+            if (core_serial_live() && core_serial_shortcut(key)) return;
             if (key == SDLK_SPACE) pause = !pause;
             if (key == SDLK_d) { diagnostic_view = !diagnostic_view; xoff = yoff = diagnostic_view ? 0 : 6; }
             if (key == SDLK_r && !game_reset_start(current_start))
@@ -535,7 +548,7 @@ static void game_handle_event(const SDL_Event *event)
         if (!diagnostic_view && (event->button.button == SDL_BUTTON_LEFT ||
             event->button.button == SDL_BUTTON_RIGHT) &&
             core_toolbar(sx,sy,event->button.button == SDL_BUTTON_LEFT,
-                         !pause && !core_result)) return;
+                         !core_serial_live() ? !pause && !core_result : !core_result && core_serial_can_post())) return;
         /* Query mode skips _sculpt: clicks only interrogate (asm:963-975). */
         if (core_tool == 2 && !core_swamp_selected) {
             if (!diagnostic_view && (event->button.button == SDL_BUTTON_LEFT ||
@@ -551,6 +564,11 @@ static void game_handle_event(const SDL_Event *event)
             column=(sx+xoff)/4; row=(sy+yoff)/4;
             if (column>=64 || row>=64) return;
         } else if (!game_pick(sx,sy,&column,&row)) return;
+        if (core_serial_live()) {   /* two players: _sculpt/swamp/magnet go through the mailbox */
+            if (event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT)
+                core_serial_world_click(column,row,event->button.button == SDL_BUTTON_LEFT);
+            return;
+        }
         if (core_swamp_selected) {
             if (event->button.button == SDL_BUTTON_LEFT) {
                 /* asm:7451-7489 clears selection before command execution.

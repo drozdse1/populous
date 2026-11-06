@@ -11,6 +11,12 @@ and `tests/test_game.c` (which `#include`s `populous_prg.c`) keep working.
 | `02_rules.c` | Map vertices, population/battles/AI, powers, generate, animate/reset |
 | `03_ui_save.c` | Pointer/HUD, options requesters, `.GAM` save/load, world/lord screens |
 | `04_render_input.c` | Frame draw, `_move_peeps` tick, Amiga/SDL shims, input |
+| `05_serial.c` | Two-player serial port: ring buffer, `_get_message` lockstep, `_write_full`/`_read_full`, `_two_players`/`_try_serial`, message and option requesters, `--host`/`--join` |
+
+The cable itself is the separate unit `../serial_link.c` (non-blocking TCP or
+an in-memory pair for tests); `05_serial.c` only sees an ordered byte stream.
+Blocking original loops are resumable steps (`CORE_CORO_*`) polled per tick
+or frame, with their waits as `core_req` kinds.
 
 When editing gameplay state, prefer names from `a4_state.h` over raw
 `A4_WORD(0x…)` / `A4_DISP(0x…)`. Named coverage now includes per-owner stats

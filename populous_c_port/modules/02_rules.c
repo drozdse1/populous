@@ -976,7 +976,8 @@ static void core_settle_tick(int person)
     if (peep_word(person,4)<=0) core_remove(person);
 }
 /* _raise_point/_lower_point: the same 8-neighbour slope constraint, bounded work. */
-static int core_sculpt(int owner, int column, int row, int direction)
+/* The admission tests of core_sculpt, also used before a two-player post. */
+static int core_sculpt_admit(int owner, int column, int row, int direction)
 {
     if (owner < 0 || owner > 1 || pause || core_result || war_flag || column < 0 || column > 64 || row < 0 || row > 64 ||
         (direction != 1 && direction != -1) || (game_mode&GAME_MODE_NO_BUILD) ||
@@ -993,6 +994,12 @@ static int core_sculpt(int owner, int column, int row, int direction)
         }
         if (!near) return 0;
     }
+    return 1;
+}
+static int core_sculpt(int owner, int column, int row, int direction)
+{
+    if (!core_sculpt_admit(owner, column, row, direction)) return 0;
+    int target_height = core_vertex(column,row)+direction;
     int changed = 0, xmin = column, xmax = column, ymin = row, ymax = row;
     for (int y = 0; y <= 64; ++y) for (int x = 0; x <= 64; ++x) {
         int distance = abs(x-column)>abs(y-row) ? abs(x-column) : abs(y-row);
@@ -1166,6 +1173,7 @@ static int core_load_ground(int terrain);
 static int core_paint_the_map(int raw, int shifted)
 {
     if (!paint_map || player < 0 || player > 1) return 0;
+    if (core_serial_live() && !core_serial_can_post()) return 1;   /* no input during the exchange */
     uint8_t *box = stats_bytes(player);
     box[1] = (uint8_t)cur_x; box[2] = (uint8_t)cur_y;
     switch (raw) {
@@ -1240,9 +1248,12 @@ static int core_war(int owner);
 static int core_flood(int owner);
 static int core_knight(int owner);
 static int core_do_magnet(int owner, int x, int y);
-static void core_consume_terrain_mailboxes(void)
+static void core_consume_terrain_mailboxes(void) { core_consume_from(0); }
+/* From owner first; 2 when a two-player _do_action suspended the loop. */
+static int core_consume_from(int first)
 {
-    for (int owner = 0; owner < 2; ++owner) {
+    core_consume_next = -1; core_consume_abort = 0;
+    for (int owner = first; owner < 2; ++owner) {
         int displacement = owner * 46;
         if (stats_build_mode(displacement / 46) == 1) {
             unsigned divisor = (uint16_t)stats_build_period(displacement / 46);
@@ -1269,6 +1280,13 @@ static void core_consume_terrain_mailboxes(void)
         case 12: core_paint_cycle(x, y, 1); break;
         case 13: core_paint_delete(x, y); break;
         case 14:
+            /* With the link up y=2/6/7/8 talk to the other side (05_serial.c). */
+            if (core_serial_live() && (y == 2 || y == 6 || y == 7 || y == 8)) {
+                int result = core_serial_do_action(owner, x, y);
+                if (result == 1) { core_clear_terrain_mailboxes(); return 1; }
+                if (result == 2) { core_consume_next = owner + 1; return 2; }
+                break;
+            }
             /* _do_action asm:18406-19032, switch on y; these cases return 0. */
             if (y == 1) core_tendency(owner) = (int16_t)x; /* _set_tend_icons is UI only */
             else if (y == 2) { if (!serial_off) POP_LOGW("MSG", "Message requester needs the serial link; dropped"); }
@@ -1295,6 +1313,7 @@ static void core_consume_terrain_mailboxes(void)
         }
     }
     core_clear_terrain_mailboxes();
+    return 0;
 }
 /* _set_magnet_to asm:8271-8293. */
 static void core_set_magnet_to(int owner, int16_t cell)
@@ -2067,11 +2086,14 @@ static void _animate(void)
     if (!game_reset_start(requested_start)) { prg_status = EXIT_FAILURE; return; }
     /* _start_of_game == 2 (asm:536-551): the world screen first. */
     if (requested_world) { core_message[0] = 0; core_world_open(CORE_WORLD_START); }
+    /* --host/--join: straight into _two_players(0), as TWO PLAYERS would. */
+    if (core_link) core_two_open(0, CORE_TWO_FROM_CLI);
     game_render();
     Uint32 next_tick = SDL_GetTicks() + 50, next_vbi = SDL_GetTicks() + 20;
     while (!prg_quit) {
         ___keyboard();
         if (prg_quit) break;
+        core_serial_frame();
         Uint32 now = SDL_GetTicks();
         int catch_up = 0;
         /* 50 Hz vertical blank sound interrupt (asm:19620-19672). */
@@ -2151,7 +2173,7 @@ static int game_reset_start(StartSelection selection)
     if (selection.kind == START_CUSTOM) {
         /* The original keeps all of A4 between maps; the port carries the
          * custom inputs: _stats (both records), _game_mode, _player. */
-        uint8_t kept_stats[92]; int16_t modes = game_mode, side = player;
+        uint8_t kept_stats[92]; int16_t modes = game_mode, side = player, line = serial_off;
         if (core_custom_live) memcpy(kept_stats, stats, 92);
         uint8_t *live = prg_a4;
         prg_a4 = staged + 32768;
@@ -2164,7 +2186,8 @@ static int game_reset_start(StartSelection selection)
             }
             modes = CORE_BOOT_GAME_MODE; side = 0;
         }
-        game_mode = modes; player = side; serial_off = 1;   /* asm:24135-24138 */
+        /* asm:24135-24138; with the link up _serial_off stays (the A4 persists). */
+        game_mode = modes; player = side; serial_off = core_custom_live && core_link ? line : 1;
         seed = core_land.from; ground_in = core_land.ground;
         int counts[2];
         int generated = custom_generate(core_land.arg, counts);
@@ -2249,6 +2272,15 @@ static int game_reset_start(StartSelection selection)
     for (size_t field = 0; field < sizeof sound_kept / sizeof sound_kept[0]; ++field)
         memcpy(staged + 32768 + (int16_t)sound_kept[field].offset, A4_DISP(sound_kept[field].offset),
                (size_t)sound_kept[field].size);
+    /* Two players: the original A4 keeps the serial port and its settings
+     * (_serial ring, _quick_io, _land_checksum, _use_modem, _login, _baud_rate). */
+    if (selection.kind == START_CUSTOM && core_link) {
+        static const struct { int offset, size; } serial_kept[] = {
+            {0x989c,8+SERIAL_RING_SIZE},{0x3056,2},{0x3082,2},{0x3084,2},{0x3086,20},{0x83b8,2}};
+        for (size_t field = 0; field < sizeof serial_kept / sizeof serial_kept[0]; ++field)
+            memcpy(staged + 32768 + (int16_t)serial_kept[field].offset, A4_DISP(serial_kept[field].offset),
+                   (size_t)serial_kept[field].size);
+    }
     memcpy(prg_a4_area, staged, sizeof prg_a4_area);
     core_install_land(&loaded);
     for (int index = 0; index < 25; ++index) dir_offset_table(index) = core_offsets[index];
@@ -2290,7 +2322,8 @@ static int game_reset_start(StartSelection selection)
     surrender_side = -1; not_player = player ? 0 : 1;
     /* Single-player conquest start sets _serial_off (asm:12768); the end
      * score reads it (asm:14239). _score was cleared with the staged A4. */
-    serial_off = 1;
+    if (selection.kind != START_CUSTOM) serial_off = 1;
+    core_turn_pending = 0;
     core_end_shown = 0; core_end_next = -1; core_disk_message = CORE_DISK_NONE;
     if (selection.kind != START_CUSTOM) {   /* the custom _stats stand (asm:430-457) */
         stats_build_mode(0) = 0; stats_build_mode(1) = 1;
@@ -2322,6 +2355,8 @@ static int game_reset_start(StartSelection selection)
 
 static void game_tick(void)
 {
+    /* Two players: _get_message's exchange every pass (05_serial.c). */
+    if (core_serial_engaged()) { core_serial_tick(); return; }
     if (pause || prg_quit || core_result || core_req.kind) return;
     /* _animate asm:676-738: with _paint_map set neither _do_funny nor
      * _move_peeps runs (people stand still, _game_turn stays, no end-game

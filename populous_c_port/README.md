@@ -5,8 +5,8 @@
 The playable PRG lives under a unity build:
 
 - `a4_state.h` — A4 globals with speaking names (`war_flag`, `map_vertex_word`, `core_mana`, …)
-- `populous_prg.c` — includes `modules/01_preamble.c` … `04_render_input.c` in order
-- existing units — `populous_init.c` (launcher), `graphics.c`, `audio.c`, `land_data.c`, `level_data.c`, `sdl_lowlevel.c`, `pop_log.c`
+- `populous_prg.c` — includes `modules/01_preamble.c` … `05_serial.c` in order
+- existing units — `populous_init.c` (launcher), `graphics.c`, `audio.c`, `land_data.c`, `level_data.c`, `sdl_lowlevel.c`, `pop_log.c`, `serial_link.c` (two-player byte channel)
 
 See `modules/README.md`.
 
@@ -433,11 +433,12 @@ changing A4 and installs its actual values plus original initialized tables.
 Missing/invalid files fail startup: there is no invented-rule fallback.
 Original sound effects, the heartbeat and the in-game `gmusic1` music play
 (see "Sound"); SAVE A GAME / LOAD A GAME use the original `.GAM` format (see
-"Save and load"); multiplayer remains absent; the conquest campaign is
+"Save and load"); the two-player serial game runs over TCP on a LAN (see "Two players over a
+LAN"); the conquest campaign is
 partially ported (see "Game end, score and conquest"). The original toolbar
 is clickable (see Controls); its options and game-options icons open the
 original requesters (see "Requesters and options"); the message requester is
-serial-only in the original and therefore inert (see Controls). Selected
+serial-only in the original and therefore inert in single play (see Controls). Selected
 tendency, mode, music, FX and pause icons are highlighted with the original
 `_toggle_icon` diamond XOR. The short press flashes are reproduced too:
 `_zoom_map` XORs the clicked icon into `_d_screen`, the frame already shown
@@ -702,9 +703,74 @@ make -C populous_c_port
 ./populous_c_port/populous_init_port          # launcher: load.pic, intro, choice
 ./populous_c_port/populous_init_port 7        # any argument skips the launcher
 ./populous_c_port/populous_init_port --tutorial
+./populous_c_port/populous_init_port --host        # two players over LAN, see below
+./populous_c_port/populous_init_port --join 192.168.1.20
 make -C populous_c_port test
 make -C populous_c_port test-sanitize
 ```
+
+### Two players over a LAN
+
+The original's two-player serial game (null-modem cable between two Amigas)
+runs over TCP instead. Both machines need the port, the same extracted data
+and a network path to each other; there is no discovery, NAT traversal or
+encryption, so use it on a trusted local network.
+
+1. On the first machine: `./populous_init_port --host` (TCP port 2611; another
+   with `--host 4000`). Allow incoming TCP on that port in the firewall.
+2. On the second machine: `./populous_init_port --join <host-ip>` (or
+   `--join <host-ip>:4000`, `[v6-address]:port` for IPv6). Joining may start
+   first; it retries until the host listens.
+3. Both games start on custom landscape 0 and open the original STARTUP SERIAL
+   requester (`_two_players`). The host is preset to I AM GOOD, the joining
+   side to I AM EVIL; each must pick a different side. Click CONNECT ME on both.
+   The TRY NUMBER requester counts until the other side answers, then the
+   original handshake (`_try_serial`) agrees on the game: EVIL's landscape
+   number, game options, terrain and paint mode win, and each side takes the
+   other's computer settings. With USE THIS LANDSCAPE both rebuild that
+   landscape; USE SAVED LANDSCAPE loads a `.GAM` first and both must load the
+   same saved game (`_land_checksum`).
+4. Play as usual. Every game turn both machines exchange their mailbox
+   commands (lockstep); a slow or stalled side holds the other back. After one
+   second without the other side the port shows WAITING FOR THE OTHER PLAYER;
+   Shift+Esc aborts the wait as on the Amiga.
+
+DATALINK/MODEM selects the checking mode as in the original: with MODEM ticked,
+FULL SERIAL CHECKING (5-byte packets with a checksum and acknowledge, the
+default) or NO SERIAL CHECKING (2-byte compressed commands, `_seed` checked
+every 16 turns) can be chosen; both sides must agree. BAUD RATE and SEND LOGIN
+have no meaning on a network link and do nothing.
+
+In the game: the message icon (lower right) opens SEND A MESSAGE; the other
+side sees MESSAGE FROM GOOD/EVIL and closes it with OK or Return. Changing
+options or game options is announced to the other side with the original
+notices ("OTHER PLAYER HAS CHANGED ..."), and MOVE TO NEXT MAP / RESTART THIS
+MAP / SURRENDER / sides / paint mode take effect on both machines. ONE PLAYER
+leaves the link; TWO PLAYERS while connected reconnects (`_bring_up_two`,
+CONTINUE). Saving offers the other player to save too. As in the original the
+overview map shows only your own people. The keyboard shortcuts of single
+play (Space, 0-3, Q, V, F, K, A) post the same mailbox commands as the icons;
+R (restart) is disabled, use GAME OPTIONS so both restart.
+
+If the landscapes ever differ (`_seed` mismatch) both show INCOMPATABLE
+LANDSCAPE ERROR; if the other side quits or the connection drops, OTHER
+PLAYER HAS GONE OFF LINE, NOW IN ONE PLAYER. After OK the game continues
+alone, its pause toggled and the computer playing the other side, as the
+original's `_serial_message` does. A new connection needs a restart of both
+programs.
+
+Port differences: TCP instead of a serial port (no baud rate, no modem login);
+the TRY NUMBER loop polls once per frame instead of spinning; the receive ring
+(0x78 bytes in the A4) never overruns because unread bytes stay in the socket;
+a received message keeps at most 39 characters (the original's 100-byte loop
+can overwrite `_bring_up_two` and following A4 words); bytes after the 22-byte
+handshake packet are read only after it, so the original `_clear_serial`
+cannot drop the other side's first turn; CONQUEST is refused while connected
+(the world screen would leave the game-options exchange unanswered); after
+the "gone off line" or error notice the port closes the connection so the
+other side learns it at once (the original would block until Shift+Esc). The
+"waiting" requester is a port addition: the original shows nothing while it
+waits in `_read_serial`.
 
 ### macOS (Apple Silicon and Intel)
 
@@ -1213,11 +1279,10 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
   switching on stops all channels, asm:1744-1781). Options, game
   options and the message icon post their original `_do_action` codes 7/8/2;
   the consumer opens `_options` (7) and `_game_options` (8) at the next tick,
-  the message requester (2) does nothing: `_do_action` y=2 starts with
-  `TST _serial_off` (asm:18405) and returns in single play, which is the only
-  mode the port has (`_serial_off` stays 1). `_get_a_message` (asm:11143-11183),
-  the "waiting for" requester and the serial exchange (asm:18418-18535) are
-  two-player only and not ported. While a requester is open the game
+  the message requester (2) does nothing in single play: `_do_action` y=2
+  starts with `TST _serial_off` (asm:18405). In a two-player game it opens
+  `_get_a_message` (asm:11143-11183) and the other side shows the text
+  (asm:18418-18575); see "Two players over a LAN". While a requester is open the game
   is paused, keys other than Escape are ignored and left clicks go to it.
 - Left/right mouse: raise/lower the selected vertex. Neighbouring vertices follow
   the original maximum slope of one, height 0..8. Cost is 10 plus 4 per changed
@@ -1400,7 +1465,7 @@ when a requester opens rather than on every draw.
 - `_game_options` (y=8, asm:12801-13350, `_game_text` A4 0x87ee): PLAY GAME /
   PAINT MAP (`_paint_map`), GOOD / EVIL (`_player`, `_not_player`, the swapped
   `_stats+6` human flags, `_pointer`), HUMAN VS AMIGA / AMIGA VS AMIGA
-  (`_stats+6`), ONE PLAYER (tick only, `_serial_off` is always 1), CUSTOM GAME
+  (`_stats+6`), ONE PLAYER (`_serial_off` 1, leaves a two-player game), CUSTOM GAME
   (`_in_conquest` -1), GAME OPTIONS, MOVE TO NEXT MAP / RESTART THIS MAP
   (`_new_map`; a conquest start restarts the current world, which is what
   `_setup_display` builds for both; a custom game builds the next landscape
@@ -1415,9 +1480,10 @@ when a requester opens rather than on every draw.
 - CONQUEST opens the world selection (see "World selection").
 - SAVE A GAME / LOAD A GAME open the `_save_load` file requester (see "Save
   and load"); LOAD A GAME only while `_serial_off` (asm:13259-13276).
-- Shown but inert: TWO PLAYERS (`_two_players`, serial),
-  the two-player serial exchange after both dialogs, and the message
-  requester (y=2).
+- TWO PLAYERS opens the STARTUP SERIAL requester (`_two_players(0)`); while
+  connected it sets `_bring_up_two`. After `_options`/`_game_options` in a
+  two-player game the original 5/12-byte state goes to the other side
+  (asm:18646-18916). See "Two players over a LAN".
 
 ## Save and load
 
@@ -1490,6 +1556,17 @@ port's own tool state is reset to the terrain tool; a synthetic demo start
 keeps its restart target. The listing holds at most 256 names.
 
 ## Verification
+
+`test-net` (also part of `test`/`test-sanitize`) checks the two-player link:
+`channel` the in-memory pair, endpoint parsing and a TCP loopback; `protocol`
+`_compress`/`_decompress`, the receive ring and `_check_serial`, `_write_full`/
+`_read_full` with a resend, one `_get_message` exchange per player and mode
+(including the landscape error, Shift+Esc and a hang-up) and `_try_serial`
+with its result codes, all against a scripted other side; `tcp-full` and
+`tcp-quick` fork a second process, connect over 127.0.0.1, play 120 turns with
+scripted terrain commands, a text message and an options change, compare
+state hashes of both processes and then check the "gone off line" fallback
+after the other process exits.
 
 `test-level` checks the standalone decoder, numbering, seed wrap and secure file
 loading. Synthetic `test-game` also covers generator RNG checkpoints, placement,

@@ -389,7 +389,8 @@ static void test_intro(void)
 /* Any argument bypasses the launcher screens (SUB_4 asm:83-86). */
 static void test_cli(void)
 {
-    const char *flags[][2] = {{"--conquest", NULL}, {"--level", "7"}, {"--code", "GENESIS"}, {"3", NULL}, {"--tutorial", NULL}};
+    const char *flags[][2] = {{"--conquest", NULL}, {"--level", "7"}, {"--code", "GENESIS"}, {"3", NULL}, {"--tutorial", NULL},
+                              {"--host", NULL}, {"--host", "2611"}, {"--join", "127.0.0.1:2611"}};
     for (size_t index = 0; index < sizeof flags / sizeof flags[0]; ++index) {
         char *arguments[] = {"populous", (char *)flags[index][0], (char *)flags[index][1], NULL};
         int count = flags[index][1] ? 3 : 2;
