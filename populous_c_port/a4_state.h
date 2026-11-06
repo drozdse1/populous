@@ -50,6 +50,7 @@ typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
 #define seed             A4_WORD(0x99e2)
 #define start_seed       A4_WORD(0x99e4)
 #define ground_in        A4_WORD(0x99e6)
+#define conquest_bytes   (A4_DISP(0x84bc)) /* 8-byte conquest record + seed follows */
 #define conquest         (*(uint8_t *)A4_DISP(0x84bc))
 #define conq_01_speed    (*(uint8_t *)A4_DISP(0x84bd))
 #define conq_02_enemypow (*(uint8_t *)A4_DISP(0x84be))
@@ -114,6 +115,7 @@ typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
 /* 65x65 signed vertex heights (_alt). Prefer map_vertex_word(col,row). */
 #define map_vertices     (A4_DISP(0xae86))
 #define map_vertex_word(column, row) A4_WORD(0xae86 + 2 * ((row) * 65 + (column)))
+#define map_vertex_at(index)         A4_WORD(0xae86 + 2 * (index)) /* linear over 65x65 */
 #define map_step_word(cell)          A4_WORD(0xff88 + (cell) * 2)
 
 /* --- View / input / turn --- */

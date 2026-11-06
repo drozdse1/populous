@@ -1137,9 +1137,9 @@ static void core_place_people(int side, int x, int y, int leader)
 static void core_rotate_all_map(void)
 {
     for (int i = 0; i < 0x1080/2; ++i) {
-        int mirror = 0xae86+(0x1080-i)*2;
-        if (A4_WORD(0xae86+i*2) < A4_WORD(mirror)) A4_WORD(0xae86+i*2) = A4_WORD(mirror);
-        A4_WORD(mirror) = A4_WORD(0xae86+i*2);
+        int mirror_index = 0x1080 - i;
+        if (map_vertex_at(i) < map_vertex_at(mirror_index)) map_vertex_at(i) = map_vertex_at(mirror_index);
+        map_vertex_at(mirror_index) = map_vertex_at(i);
     }
     for (int i = 0; i < 0xfff/2; ++i) {
         if (map_bk2[i] >= 50 && map_bk2[i] <= 55) map_bk2[0xfff-i] = map_bk2[i];
@@ -1151,7 +1151,7 @@ static void core_rotate_all_map(void)
 static void core_clear_all_map(void)
 {
     for (int i = 0; i < 0x1081; ++i) {
-        A4_WORD(0xae86+i*2) = 0;
+        map_vertex_at(i) = 0;
         if (i < 0x1000) map_who[i] = map_bk2[i] = map_blk[i] = 0;
     }
     for (int person = 0; person < no_peeps; ++person) core_remove(person);
@@ -1776,9 +1776,9 @@ static int original_generate(const LevelStart *start)
     seed = start_seed = (int16_t)start->initial_seed;
     ground_in = record->terrain;
     original_clear(___newrand, start->internal_level);
-    LAB_516DE = record->rating; LAB_516E2 = record->speed;
-    LAB_516E0 = (record->enemy_powers << 3) | 7;
-    LAB_516B2 = (record->your_powers << 3) | 7;
+    stats_rating(1) = record->rating; stats_build_period(1) = record->speed;
+    stats_power_mask(1) = (record->enemy_powers << 3) | 7;
+    stats_power_mask(0) = (record->your_powers << 3) | 7;
     game_mode = record->mode_flags;
     original_make_thing(2, 4, ___newrand);
     original_make_thing(4, 2, ___newrand);
@@ -2543,13 +2543,13 @@ static void _setup_display(void)
         _clear_map();
 
         /* #0 and #1 can be 0 to 10 */
-        LAB_516DE = conquest;
-        LAB_516E2 = conq_01_speed;
+        stats_rating(1) = conquest;
+        stats_build_period(1) = conq_01_speed;
 
         /* 02 and #3 can be one of 25 values from 0 to 16,135
          * bitfields for which powers can be used */
-        LAB_516E0 = (conq_02_enemypow << 3) | 7;
-        LAB_516B2 = (conq_03_yourpow << 3) | 7;
+        stats_power_mask(1) = (conq_02_enemypow << 3) | 7;
+        stats_power_mask(0) = (conq_03_yourpow << 3) | 7;
 
         /* #4 game mode - build on people/towns/up only/mo build, swamps, water */
         game_mode = conq_04_mode;

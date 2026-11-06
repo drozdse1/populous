@@ -293,7 +293,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
     int c = sx/2 + sy - 32, r = sy - sx/2 + 32;
     if (sy >= 200) return 0;
     int owner_ok = player >= 0 && player <= 1;
-    uint8_t *mailbox = owner_ok ? A4_DISP(0x82b6 + player*46) : NULL;
+    uint8_t *mailbox = owner_ok ? stats_bytes(player) : NULL;
     post = post && owner_ok;
     if (c > 0x112) {
         /* System icons asm:1700-1829: options, game options, pause, sound. */
@@ -308,7 +308,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else if (icon == 1 && line == 1) { if (post) { mailbox[0] = 14; mailbox[2] = 8; } }
         /* _do_action y=6 asm:18591-18608. The port's pause also stops the
          * mailbox consumer, so this icon toggles directly rather than posting. */
-        else if (icon == 1 && line == 3) { pause = !pause; A4_WORD(0x9a1a) = 0; }
+        else if (icon == 1 && line == 3) { pause = !pause; toggle = 0; }
         else if (icon == 2 && line == 2) { if (post) { mailbox[0] = 14; mailbox[2] = 2; } }
         else return 0;
         return 1;
@@ -338,7 +338,7 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else if (icon == 2 && line == 0) { mailbox[0] = 3; mailbox[1] = (uint8_t)xoff; mailbox[2] = (uint8_t)yoff; }
         else if (icon == 2 && line == 1) { mailbox[0] = 14; mailbox[2] = 5; }
         else if (icon == 2 && line == 2) {
-            if ((core_mana(player) > (int32_t)A4_LONG(0x8496) && (A4_WORD(0x82c4+player*46)&0x10)) || paint_map)
+            if ((core_mana(player) > (int32_t)mana_swamp_cost && (stats_power_mask(player)&0x10)) || paint_map)
                 { core_swamp_selected = 1; core_set_pointer(); }
         }
     } else if (icon <= 5) {

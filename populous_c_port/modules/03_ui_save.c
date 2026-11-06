@@ -996,7 +996,7 @@ static void core_draw_end_screen(void)
 {
     core_end_button_layout(1);
     for (int r = 0; r < 7; ++r)
-        amiga_text(game_pixels, A4_WORD(0x8e7e + r*46) + 16, A4_WORD(0x8e80 + r*46) + 16, core_end_row(r));
+        amiga_text(game_pixels, end_row_x(r) + 16, end_row_y(r) + 16, core_end_row(r));
 }
 
 /* _end_words asm:24783-24785, _words asm:24786-24788 (two per rank, -1 none). */
@@ -1213,7 +1213,7 @@ static int core_world_read(int record)
     uint8_t bytes[10];
     /* ___Seek/___Read: a short read past the end keeps the old bytes. */
     if (!fseek(file, (long)record * 10, SEEK_SET) && fread(bytes, 1, 10, file) == 10) {
-        memcpy(A4_DISP(0x84bc), bytes, 8);
+        memcpy(conquest_bytes, bytes, 8);
         conq_08_seed = (int16_t)(bytes[8] << 8 | bytes[9]);
     }
     fclose(file);
@@ -1440,7 +1440,7 @@ static void core_show_the_shield(GraphicsSheet small)
         uint32_t heading; memcpy(&heading,peeps+person*22+14,sizeof heading);
         core_draw_icon(0x11,4,peeps[person*22+1]);
         int weapon = 1;
-        while (weapon < 11 && (uint16_t)A4_WORD(0x2f96+2*weapon) != peeps[person*22+3]) ++weapon;
+        while (weapon < 11 && (uint16_t)land_weapons_order(weapon) != peeps[person*22+3]) ++weapon;
         if (weapon < 11) core_draw_icon(0x12,4,weapon+1);
         if (flags & 8) {
             /* Battle: sprite +0xC and strength bars, blue left (asm:2840-2895). */
@@ -1652,8 +1652,8 @@ static void draw_original(int view_x, int view_y)
      * 40 columns in the original font (amiga_text) on y 200..255. */
     static uint8_t hud[320*200];
     char lines[7][48]={{0}};
-    snprintf(lines[0],48,"%s BLUE %d RED %d MANA %d",core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : pause ? "PAUSED" : A4_WORD(0xae80) ? "WAR" : "PLAY",core_population(0),core_population(1),core_mana(0));
-    snprintf(lines[1],48,"%s",core_end_shown && core_result ? "GAME OVER: CLICK/KEY CONTINUE, ESC QUIT" : A4_WORD(0xae80) ?
+    snprintf(lines[0],48,"%s BLUE %d RED %d MANA %d",core_result==1 ? "VICTORY" : core_result==2 ? "DEFEAT" : pause ? "PAUSED" : war_flag ? "WAR" : "PLAY",core_population(0),core_population(1),core_mana(0));
+    snprintf(lines[1],48,"%s",core_end_shown && core_result ? "GAME OVER: CLICK/KEY CONTINUE, ESC QUIT" : war_flag ?
         "WAR: TERRAIN+MAGNET LOCKED, ARROWS/MAP" : core_swamp_selected ?
         "SWAMP ARMED 5000: LMB TARGET, RMB INERT" : "LMB RAISE, RMB LOWER, ARROWS/MAP SCROLL");
     snprintf(lines[2],48,"%s",core_swamp_selected ?
