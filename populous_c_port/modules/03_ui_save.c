@@ -866,7 +866,7 @@ static void core_file_click(void)
         FILE *check = core_level_dat_open();
         if (!check) { core_disk_message = CORE_DISK_SAVE; return; }
         fclose(check);
-    } else if (!core_load_game(name)) fprintf(stderr, "Load game: %s could not be loaded.\n", name);
+    } else if (!core_load_game(name)) POP_LOGE("SAVE", "Load game: %s could not be loaded.", name);
     core_game_options_close();   /* _save_load returns 1 either way */
 }
 static void core_draw_game_options(void);
