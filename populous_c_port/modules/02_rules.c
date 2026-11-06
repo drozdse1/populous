@@ -983,13 +983,13 @@ static int core_sculpt(int owner, int column, int row, int direction)
     int original = core_vertex(column,row), target_height = original+direction;
     if (target_height < 0 || target_height > 8) return 0;
     if ((game_mode&GAME_MODE_BUILD_NEAR_TOWNS) && original > 0) {
-        int near = 0;
+        int near_town = 0;
         for (int person = 0; person < no_peeps; ++person) {
             int position = peep_position(person);
             if (peep_population(person)>0 && peep_owner(person)==owner && (peep_flags(person)&1) &&
-                abs(position%64-column)<=2 && abs(position/64-row)<=2) near = 1;
+                abs(position%64-column)<=2 && abs(position/64-row)<=2) near_town = 1;
         }
-        if (!near) return 0;
+        if (!near_town) return 0;
     }
     int changed = 0, xmin = column, xmax = column, ymin = row, ymax = row;
     for (int y = 0; y <= 64; ++y) for (int x = 0; x <= 64; ++x) {

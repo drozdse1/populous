@@ -1,6 +1,10 @@
 #ifndef POPULOUS_POP_LOG_H
 #define POPULOUS_POP_LOG_H
 
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 /*
  * Lightweight leveled logger for the Populous C port (Linux + macOS).
  *

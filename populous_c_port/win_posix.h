@@ -34,6 +34,9 @@
 #ifndef O_NONBLOCK
 #define O_NONBLOCK 0x400000
 #endif
+#ifndef F_OK
+#define F_OK 0
+#endif
 
 #ifndef S_ISREG
 #ifdef _S_IFMT
@@ -227,6 +230,41 @@ static int win_posix_fstat(int fd, struct stat *status)
     return 0;
 }
 
+static int win_posix_faccessat(int dirfd, const char *name, int mode, int flags)
+{
+    WinDirSlot *slot = win_dir_slot(dirfd);
+    wchar_t name_wide[1024];
+    wchar_t full[4096];
+    size_t dir_len;
+    size_t name_len;
+    DWORD attr;
+    (void)mode;
+    (void)flags;
+    if (!slot || !name || strchr(name, '/') || strchr(name, '\\')) {
+        errno = EBADF;
+        return -1;
+    }
+    if (!win_widen(name, name_wide, 1024)) {
+        errno = EINVAL;
+        return -1;
+    }
+    dir_len = wcslen(slot->path);
+    name_len = wcslen(name_wide);
+    if (dir_len + 1 + name_len + 1 > 4096) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    memcpy(full, slot->path, dir_len * sizeof(wchar_t));
+    full[dir_len] = L'\\';
+    memcpy(full + dir_len + 1, name_wide, (name_len + 1) * sizeof(wchar_t));
+    attr = GetFileAttributesW(full);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        errno = ENOENT;
+        return -1;
+    }
+    return 0;
+}
+
 static int win_posix_close(int fd)
 {
     WinDirSlot *slot = win_dir_slot(fd);
@@ -309,6 +347,7 @@ static int closedir(DIR *dir)
 #define read win_posix_read
 #define close win_posix_close
 #define fstat win_posix_fstat
+#define faccessat win_posix_faccessat
 #endif
 
 #endif /* _WIN32 */

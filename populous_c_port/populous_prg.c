@@ -57,6 +57,18 @@ static int diagnostic_view;
 
 static void ensure_prg_screen(void);
 
+#ifdef _WIN32
+/* windows.h still defines these as empty macros. The game uses them as names. */
+#ifdef near
+#undef near
+#endif
+#ifdef far
+#undef far
+#endif
+#ifdef small
+#undef small
+#endif
+#endif
 #include "modules/01_preamble.c"
 #include "modules/02_rules.c"
 #include "modules/03_ui_save.c"
