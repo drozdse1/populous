@@ -21,8 +21,18 @@
 _Alignas(4) static uint8_t prg_a4_area[65536];
 static uint8_t *prg_a4 = prg_a4_area + 32768;
 
+#if defined(__GNUC__) || defined(__clang__)
 typedef struct __attribute__((packed, may_alias)) { int16_t value; } A4Word;
 typedef struct __attribute__((packed, may_alias)) { uint32_t value; } A4Long;
+#elif defined(_MSC_VER)
+#pragma pack(push, 1)
+typedef struct { int16_t value; } A4Word;
+typedef struct { uint32_t value; } A4Long;
+#pragma pack(pop)
+#else
+typedef struct { int16_t value; } A4Word;
+typedef struct { uint32_t value; } A4Long;
+#endif
 
 #define A4_DISP(d16)   (prg_a4 + (int16_t)(d16))
 #define A4_WORD(offset) (((A4Word *)A4_DISP(offset))->value)

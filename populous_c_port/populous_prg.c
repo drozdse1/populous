@@ -22,7 +22,11 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#ifdef _WIN32
+#include "win_posix.h"
+#else
 #include <dirent.h>
+#endif
 #include <sys/stat.h>
 #include <errno.h>
 #include <limits.h>

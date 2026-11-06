@@ -54,15 +54,45 @@ jobs:
       run: |
         echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
 
+    - name: Install SDL2 (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libsdl2-dev
+
+    - name: Install SDL2 (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $vcpkg = $env:VCPKG_INSTALLATION_ROOT
+        if (-not $vcpkg) { $vcpkg = "C:\vcpkg" }
+        & "$vcpkg\vcpkg.exe" install sdl2:x64-windows
+
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
-      # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
-      run: >
-        cmake -B ${{ steps.strings.outputs.build-output-dir }}
-        -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
-        -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
-        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-        -S ${{ github.workspace }}
+      # Windows keeps the default PowerShell so `cl` is already on PATH. Git Bash does not load the Visual Studio environment.
+      shell: bash
+      if: runner.os != 'Windows'
+      run: |
+        cmake -B "${{ steps.strings.outputs.build-output-dir }}" \
+          -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }} \
+          -DCMAKE_C_COMPILER=${{ matrix.c_compiler }} \
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -S "${{ github.workspace }}"
+
+    - name: Configure CMake (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $vcpkg = $env:VCPKG_INSTALLATION_ROOT
+        if (-not $vcpkg) { $vcpkg = "C:\vcpkg" }
+        cmake -B "${{ steps.strings.outputs.build-output-dir }}" `
+          -A x64 `
+          -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }} `
+          -DCMAKE_C_COMPILER=${{ matrix.c_compiler }} `
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} `
+          -DCMAKE_TOOLCHAIN_FILE="$vcpkg\scripts\buildsystems\vcpkg.cmake" `
+          -S "${{ github.workspace }}"
 
     - name: Build
       # Build your program with the given configuration. Note that --config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).

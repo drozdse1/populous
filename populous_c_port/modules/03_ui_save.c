@@ -55,9 +55,9 @@ static void amiga_text(uint8_t *pixels, int x, int y, const char *text)
         if (c >= 0x20 && c - 0x20 < sizeof game_font / 40) {
             const uint8_t *glyph = game_font + (c - 0x20) * 40;
             for (int row = 0; row < 8; ++row, glyph += 5) {
-                long byte = at + row * 40;
-                if (byte < 0 || byte >= 8000) continue;
-                uint8_t *out = pixels + (byte / 40) * 320 + (byte % 40) * 8;
+                long cell = at + row * 40;
+                if (cell < 0 || cell >= 8000) continue;
+                uint8_t *out = pixels + (cell / 40) * 320 + (cell % 40) * 8;
                 for (int bit = 0; bit < 8; ++bit) {
                     int b = 7 - bit, colour = 0;
                     for (int plane = 0; plane < 4; ++plane)

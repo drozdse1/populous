@@ -1,6 +1,7 @@
 # Build artifacts
 *.o
 *.tmp
+/build/
 populous_init_port
 c_sdl_port/populous_init_port
 c_sdl_port/*.o

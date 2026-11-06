@@ -543,8 +543,8 @@ static void launch_strip(uint8_t *pixels, int slot)
         keep |= (uint16_t)(strip[0][word * 2] << 8 | strip[0][word * 2 + 1]);
         for (int bit = 0; bit < 16; ++bit) {
             if ((keep >> (15 - bit)) & 1) continue;
-            int byte = word * 2 + bit / 8, shift = 7 - bit % 8, colour = 0;
-            for (int plane = 0; plane < 4; ++plane) colour |= ((strip[plane + 1][byte] >> shift) & 1) << plane;
+            int plane_byte = word * 2 + bit / 8, shift = 7 - bit % 8, colour = 0;
+            for (int plane = 0; plane < 4; ++plane) colour |= ((strip[plane + 1][plane_byte] >> shift) & 1) << plane;
             pixels[(y + row) * 320 + column * 16 + bit] = (uint8_t)colour;
         }
     }

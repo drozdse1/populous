@@ -1,10 +1,15 @@
 #define _POSIX_C_SOURCE 200809L
 #include "level_data.h"
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
+#ifdef _WIN32
+#define POPULOUS_WIN_POSIX_MACROS
+#include "win_posix.h"
+#else
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 static int fail(char *error, size_t size, const char *message)
 {

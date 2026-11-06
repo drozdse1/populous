@@ -1,11 +1,16 @@
 #define _POSIX_C_SOURCE 200809L
 #include "graphics.h"
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#define POPULOUS_WIN_POSIX_MACROS
+#include "win_posix.h"
+#else
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 /* src/populous_prg.asm:24264-24268, four-plane gameplay RGB12. */
 const uint16_t graphics_palette[16] = {
