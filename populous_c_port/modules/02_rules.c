@@ -673,8 +673,7 @@ static const int8_t core_a_flat[162] = {
  * queued, 1 when already level, else the exit byte above. */
 static uint8_t core_make_level(int position, int owner)
 {
-    int s = 0x82b6 + owner*46;
-    if (!(A4_WORD(s+14)&1) || (game_mode&GAME_MODE_NO_BUILD)) return owner ? MAKE_LEVEL_EXIT_BYTE_OWNER1 : MAKE_LEVEL_EXIT_BYTE_OWNER0;
+    if (!(stats_power_mask(owner)&1) || (game_mode&GAME_MODE_NO_BUILD)) return owner ? MAKE_LEVEL_EXIT_BYTE_OWNER1 : MAKE_LEVEL_EXIT_BYTE_OWNER0;
     int16_t x = (int16_t)(position & 63), y = (int16_t)((int16_t)position >> 6);
     int16_t height = map_vertex_word(x, y);
     for (int index = 0; index < 162; index += 2) {
@@ -693,9 +692,9 @@ static uint8_t core_make_level(int position, int owner)
                      !(game_mode&GAME_MODE_BUILD_ONLY_UP)) command = 2;
         }
         if (command) {
-            A4_DISP(s)[0] = (uint8_t)command;
-            A4_DISP(s+1)[0] = (uint8_t)cx; A4_DISP(s+2)[0] = (uint8_t)cy;
-            A4_WORD(s+8) = 1;
+            stats_cmd_byte(owner) = (uint8_t)command;
+            stats_cmd_x(owner) = (uint8_t)cx; stats_cmd_y(owner) = (uint8_t)cy;
+            stats_build_latch(owner) = 1;
             return 0;
         }
     }
@@ -712,11 +711,11 @@ static int core_ai_mana_above(int owner, uint32_t cost, uint32_t bonus)
 {
     return (int32_t)core_mana_long(owner) > (int32_t)(cost + bonus);
 }
-static void core_ai_put(int s, int command, int16_t cell)
+static void core_ai_put(int owner, int command, int16_t cell)
 {
-    A4_DISP(s)[0] = (uint8_t)command;
-    A4_DISP(s+1)[0] = (uint8_t)(cell & 63);
-    A4_DISP(s+2)[0] = (uint8_t)(cell >> 6); /* ASR.W #6, low byte */
+    stats_cmd_byte(owner) = (uint8_t)command;
+    stats_cmd_x(owner) = (uint8_t)(cell & 63);
+    stats_cmd_y(owner) = (uint8_t)(cell >> 6); /* ASR.W #6, low byte */
 }
 /* _do_computer_effect asm:9526-9600: aim at the computer's own magnet cell
  * when it has NO leader (TST.W _magnet; BNE LAB_450B8, asm:9530-9536) and an
@@ -724,12 +723,11 @@ static void core_ai_put(int s, int command, int16_t cell)
  * (slot+1), each clamped at zero only. */
 static void core_do_computer_effect(int owner)
 {
-    int s = stats_base(owner);
     if (!core_leader(owner)) {
         int16_t target = core_target(owner);
         int who = target >= 0 && target < 4096 ? map_who[target] : 0; /* host bound */
         if (who && peep_owner(who-1) != owner) {
-            core_ai_put(s, stats_cmd_byte(owner), target);
+            core_ai_put(owner, stats_cmd_byte(owner), target);
             return;
         }
     }
@@ -746,7 +744,7 @@ static void core_do_computer_effect(int owner)
  * BTST on its high byte is bit 8 (war), on its low byte bits 0..7. */
 static void core_devil_effect(int owner)
 {
-    int s = stats_base(owner), enemy = owner ? 0 : 1;
+    int enemy = owner ? 0 : 1;
     if (stats_build_latch(owner)) return;
     if ((core_leader(owner) && !core_ai_slot(core_leader(owner)-1)) ||
         (core_leader(enemy) && !core_ai_slot(core_leader(enemy)-1)) ||
@@ -794,7 +792,7 @@ static void core_devil_effect(int owner)
             int16_t ours = (int16_t)(core_leader(owner) - 1);
             if (theirs != -1 && (ours == -1 || peep_population(theirs) > peep_population(ours))) {
                 stats_send_flag(owner) = (int16_t)(count + 1);
-                core_ai_put(s, 4, peep_position(theirs));
+                core_ai_put(owner, 4, peep_position(theirs));
                 return;
             }
         }
@@ -809,16 +807,16 @@ static void core_devil_effect(int owner)
         stats_send_flag(owner) = (int16_t)(stats_send_flag(owner) + 1);
     }
 }
-static void core_ai_tendency(int s, uint8_t value)
+static void core_ai_tendency(int owner, uint8_t value)
 {
-    A4_DISP(s)[0] = 14; A4_DISP(s+2)[0] = 1; A4_DISP(s+1)[0] = value; A4_WORD(s+8) = 1;
+    stats_cmd_byte(owner) = 14; stats_cmd_y(owner) = 1; stats_cmd_x(owner) = value; stats_build_latch(owner) = 1;
 }
 /* _stats+$22/$2a are Amiga pointers (slot+1 here). With none, the original
  * dereferences address 8 (an OS exception vector); that compare is not
  * modelled: the magnet branch is skipped and the fallback runs. */
-static int core_ai_town_cell(int s, int field, int16_t *cell)
+static int core_ai_town_cell(int owner, int field, int16_t *cell)
 {
-    uint32_t reference = A4_LONG(s+field);
+    uint32_t reference = A4_LONG(stats_base(owner)+field);
     if (!reference || reference > 208) return 0;
     *cell = peep_position((int)reference-1);
     return 1;
@@ -828,15 +826,15 @@ static int core_ai_town_cell(int s, int field, int16_t *cell)
  * tendency path only (asm:9628-9633). */
 static void core_set_devil_magnet(int owner)
 {
-    int s = 0x82b6 + owner*46, enemy = owner ? 0 : 1;
-    int16_t towns = (int16_t)(A4_WORD(s+0x16)+A4_WORD(s+0x14));
-    int16_t level = A4_WORD(s+0xc);
+    int enemy = owner ? 0 : 1;
+    int16_t towns = (int16_t)(stats_town_tally(owner)+stats_city_count(owner));
+    int16_t level = stats_rating(owner);
     if (towns < (int16_t)(level*2+15) ||
         (uint16_t)((uint16_t)game_turn % 90u) < (uint16_t)(level+10)) {
         if (!core_tendency(owner)) {
-            A4_DISP(s)[0] = 14; A4_DISP(s+2)[0] = 1;
-            A4_DISP(s+1)[0] = (uint8_t)((int16_t)___newrand()%3 + 1);
-            A4_WORD(s+8) = 1;
+            stats_cmd_byte(owner) = 14; stats_cmd_y(owner) = 1;
+            stats_cmd_x(owner) = (uint8_t)((int16_t)___newrand()%3 + 1);
+            stats_build_latch(owner) = 1;
         }
         return;
     }
@@ -844,40 +842,40 @@ static void core_set_devil_magnet(int owner)
     int ours = core_leader(owner) ? core_leader(owner)-1 : -1;
     if ((theirs != -1 && !core_ai_slot(theirs)) || (ours != -1 && !core_ai_slot(ours))) return;
     if (ours < 0) {
-        if (core_tendency(owner)) { core_ai_tendency(s,0); A4_WORD(s+0x1c) = 0; }
+        if (core_tendency(owner)) { core_ai_tendency(owner,0); stats_go_to_mode(owner) = 0; }
         return;
     }
-    if (peep_position(ours) == A4_WORD(s+0x1e) && A4_WORD(s+0x1c))
-        A4_WORD(s+0x1c) = (int16_t)(A4_WORD(s+0x1c)-1);
+    if (peep_position(ours) == stats_go_to_pos(owner) && stats_go_to_mode(owner))
+        stats_go_to_mode(owner) = (int16_t)(stats_go_to_mode(owner)-1);
     int16_t cell;
     if (peep_population(ours) < 6000) {
-        if (A4_WORD(s+0x1c)) {
-            if (core_target(owner) != A4_WORD(s+0x1e)) {
-                core_ai_put(s,5,A4_WORD(s+0x1e)); A4_WORD(s+8) = 1;
+        if (stats_go_to_mode(owner)) {
+            if (core_target(owner) != stats_go_to_pos(owner)) {
+                core_ai_put(owner,5,stats_go_to_pos(owner)); stats_build_latch(owner) = 1;
                 return;
             }
-        } else if (core_ai_town_cell(s,0x2a,&cell) && core_target(owner) != cell) {
-            core_ai_put(s,5,cell); A4_WORD(s+0x1e) = cell; A4_WORD(s+0x1c) = 2; A4_WORD(s+8) = 1;
+        } else if (core_ai_town_cell(owner,0x2a,&cell) && core_target(owner) != cell) {
+            core_ai_put(owner,5,cell); stats_go_to_pos(owner) = cell; stats_go_to_mode(owner) = 2; stats_build_latch(owner) = 1;
             return;
         }
-        if (core_tendency(owner)) core_ai_tendency(s,0);
+        if (core_tendency(owner)) core_ai_tendency(owner,0);
         return;
     }
     /* asm:9784-9864: a leader 500 above the enemy's, enemy tendency 0. */
     if (theirs >= 0 && peep_population(ours) > (int16_t)(peep_population(theirs)+500) && !core_tendency(enemy)) {
-        if (A4_WORD(s+14)&4) {
-            if (core_tendency(owner)) core_ai_tendency(s,0);
+        if (stats_power_mask(owner)&4) {
+            if (core_tendency(owner)) core_ai_tendency(owner,0);
             else if (core_target(owner) != core_target(enemy)) {
-                core_ai_put(s,5,core_target(enemy)); A4_WORD(s+8) = 1;
+                core_ai_put(owner,5,core_target(enemy)); stats_build_latch(owner) = 1;
             }
         }
         return;
     }
     /* asm:9865-9898: magnet onto the enemy's best town. */
-    if (A4_WORD(s+14)&2) {
-        if (core_ai_town_cell(s,0x22,&cell) && core_target(owner) != cell && !A4_WORD(s+0x1c)) {
-            core_ai_put(s,5,cell); A4_WORD(s+0x1e) = cell; A4_WORD(s+0x1c) = 2; A4_WORD(s+8) = 1;
-        } else if (core_tendency(owner)) core_ai_tendency(s,0);
+    if (stats_power_mask(owner)&2) {
+        if (core_ai_town_cell(owner,0x22,&cell) && core_target(owner) != cell && !stats_go_to_mode(owner)) {
+            core_ai_put(owner,5,cell); stats_go_to_pos(owner) = cell; stats_go_to_mode(owner) = 2; stats_build_latch(owner) = 1;
+        } else if (core_tendency(owner)) core_ai_tendency(owner,0);
     }
 }
 static void core_settle_tick(int person)
@@ -1886,7 +1884,7 @@ static int core_end_shown, core_end_next, core_end_finished;
  * core_lord.mouths (the port keeps the A4 _map_steps intact). */
 static struct {
     int shown, finished, rank, wait;
-    int16_t c, f, d, saved_music, saved_effect;   /* -120,-108,-110,-116,-118(A5) */
+    int16_t speak_step, mouth_frame, mouth_dir, saved_music, saved_effect; /* -120,-108,-110,-116,-118(A5) */
     int mouths_loaded;
     uint16_t palette[16];                         /* _tcmap[0..15] */
     uint8_t screen[320*200], mouths[0x13b0];

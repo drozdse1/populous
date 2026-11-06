@@ -13387,7 +13387,7 @@ static void test_lord_screen(void)
     char code[16]; core_code(code, core_code_rand(next));
     int16_t was_music = music_off, was_effect = effect_off;
     game_handle_event(&key);
-    assert(core_lord.shown && !core_req.kind && !core_lord.finished && core_lord.rank == next/250 && core_lord.c == 1);
+    assert(core_lord.shown && !core_req.kind && !core_lord.finished && core_lord.rank == next/250 && core_lord.speak_step == 1);
     assert(!music_off && !effect_off && left_button == 2 && A4_WORD(0xae7e) == next && !strcmp(core_message, code));
     assert(seed == core_code_rand(10));   /* asm:14518: _seed = old world, then ___newrand */
     if (sounds) assert(no_sounds == 104 && !audio_busy(2));
@@ -13421,31 +13421,31 @@ static void test_lord_screen(void)
     core_lord_vblank(); core_lord_vblank(); core_lord_vblank();
     assert(lord_pixel(144,0x87) == ((18 + 0x87) & 15));
     core_lord_vblank();
-    assert(lord_pixel(144,0x87) == 1 && lord_pixel(191,0x87+34) == 1 && lord_pixel(192,0x87) == ((24+0x87)&15) && core_lord.c == 2);
-    while (core_lord.c < 10) { lord_pass(); assert(lord_pixel(150,0x90) == 1 && core_lord.f == 0); }
+    assert(lord_pixel(144,0x87) == 1 && lord_pixel(191,0x87+34) == 1 && lord_pixel(192,0x87) == ((24+0x87)&15) && core_lord.speak_step == 2);
+    while (core_lord.speak_step < 10) { lord_pass(); assert(lord_pixel(150,0x90) == 1 && core_lord.mouth_frame == 0); }
     lord_pass();   /* c 10: word 0 on channel 2 unconditionally */
-    assert(core_lord.c == 11);
+    assert(core_lord.speak_step == 11);
     if (!sounds) { puts("lord: extracted gwords absent, speech skipped"); goto leave; }
     assert(sound_playing(2,0) && !audio_busy(0) && !audio_busy(1) && !audio_busy(3));
     /* While channel 2 talks the mouth bounces 0..4 (asm:14748-14757). */
     static const int frames[] = {0,1,2,3,4,3,2,1,0,1};
     for (size_t k = 0; k < sizeof frames/sizeof frames[0]; ++k) {
         lord_pass();
-        assert(lord_pixel(160,0x90) == frames[k]+1 && core_lord.c == 11);
+        assert(lord_pixel(160,0x90) == frames[k]+1 && core_lord.speak_step == 11);
     }
     /* Then _words[rank*2], _words[rank*2+1] when channel 2 is idle (asm:14670-14705). */
-    lord_drain(); int f = core_lord.f;
+    lord_drain(); int f = core_lord.mouth_frame;
     lord_pass();
-    assert(core_lord.f == f && core_lord.c == 12);
+    assert(core_lord.mouth_frame == f && core_lord.speak_step == 12);
     int16_t first = core_words[next/250*2], second = core_words[next/250*2+1];
     assert(next/250 != 0 || (first == 9 && second == -1));
     assert(sound_playing(2,first));
     lord_drain(); lord_pass();
-    assert(core_lord.c == 13 && (second < 0 ? !audio_busy(2) : sound_playing(2,second)));
+    assert(core_lord.speak_step == 13 && (second < 0 ? !audio_busy(2) : sound_playing(2,second)));
     lord_drain();
     lord_pass();   /* draws the last speech frame, then resets -108(A5) to 0 */
     for (int k = 0; k < 237; ++k) { lord_pass(); assert(lord_pixel(160,0x90) == 1 && !audio_busy(2)); }
-    assert(core_lord.c == 251); lord_pass(); assert(core_lord.c == 1);   /* > 250: again from 0 */
+    assert(core_lord.speak_step == 251); lord_pass(); assert(core_lord.speak_step == 1);   /* > 250: again from 0 */
 leave:
     /* The click: gmusic1 back, sound switches restored, _show_world with the next world. */
     screen_click(10,10,SDL_BUTTON_LEFT);
@@ -13466,18 +13466,18 @@ leave:
     amiga_text(expected, 8, 0xb2, "WELL DONE YOU HAVE CONQUERED EVIL");
     amiga_text(expected, 8, 0xba, "THE BATTLE IS OVER BUT TRY SHISODING");
     assert(!memcmp(core_lord.screen, expected, sizeof expected));
-    while (core_lord.c < 10) lord_pass();
+    while (core_lord.speak_step < 10) lord_pass();
     for (int w = 0; w < 5 && sounds; ++w) {
-        lord_pass(); assert(core_lord.c == 11+w && sound_playing(2,core_end_words[w]));
-        if (w < 4) { lord_pass(); assert(core_lord.c == 11+w); }   /* busy: waits (c 15 no longer does) */
+        lord_pass(); assert(core_lord.speak_step == 11+w && sound_playing(2,core_end_words[w]));
+        if (w < 4) { lord_pass(); assert(core_lord.speak_step == 11+w); }   /* busy: waits (c 15 no longer does) */
         lord_drain();
     }
     if (sounds) {
         assert(lord_pixel(128,0x4b) == ((16+0x4b)&15));
-        lord_pass(); assert(core_lord.c == 16 && lord_pixel(128,0x4b) == ((16+0x4b)&15));
-        lord_pass(); assert(core_lord.c == 17 && lord_pixel(128,0x4b) == 6 && lord_pixel(175,0x4b+34) == 6);
-        while (core_lord.c <= 200) lord_pass();
-        lord_pass(); assert(core_lord.c == 1);
+        lord_pass(); assert(core_lord.speak_step == 16 && lord_pixel(128,0x4b) == ((16+0x4b)&15));
+        lord_pass(); assert(core_lord.speak_step == 17 && lord_pixel(128,0x4b) == 6 && lord_pixel(175,0x4b+34) == 6);
+        while (core_lord.speak_step <= 200) lord_pass();
+        lord_pass(); assert(core_lord.speak_step == 1);
     }
     screen_click(10,10,SDL_BUTTON_LEFT);
     assert(core_req.kind == CORE_REQ_WORLD && !core_world.level); world_ok_click();

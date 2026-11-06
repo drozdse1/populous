@@ -1057,22 +1057,22 @@ static void core_draw_mouth(int x, int y, int rows, int frame)
 static void core_lord_speak(void)
 {
     if (core_lord.finished) {
-        if (core_lord.c >= 10 && core_lord.c <= 14) {
-            if (core_check_effect(2)) { core_PlaySound(core_end_words[core_lord.c-10],2); ++core_lord.c; }
+        if (core_lord.speak_step >= 10 && core_lord.speak_step <= 14) {
+            if (core_check_effect(2)) { core_PlaySound(core_end_words[core_lord.speak_step-10],2); ++core_lord.speak_step; }
             return;
         }
-        if (core_lord.c > 200) core_lord.c = 0;
-        if (core_lord.c == 16) core_draw_mouth(0x10,0x4b,0x23,5);
-    } else if (core_lord.c >= 10 && core_lord.c <= 12) {
-        if (core_lord.c == 10) { core_PlaySound(0,2); ++core_lord.c; }
+        if (core_lord.speak_step > 200) core_lord.speak_step = 0;
+        if (core_lord.speak_step == 16) core_draw_mouth(0x10,0x4b,0x23,5);
+    } else if (core_lord.speak_step >= 10 && core_lord.speak_step <= 12) {
+        if (core_lord.speak_step == 10) { core_PlaySound(0,2); ++core_lord.speak_step; }
         else if (core_check_effect(2)) {
-            int16_t word = core_words[core_lord.rank*2 + core_lord.c - 11];
+            int16_t word = core_words[core_lord.rank*2 + core_lord.speak_step - 11];
             if (word >= 0) core_PlaySound(word,2);
-            ++core_lord.c;
+            ++core_lord.speak_step;
         }
         return;
-    } else if (core_lord.c > 250) core_lord.c = 0;
-    ++core_lord.c; core_lord.f = 0; core_lord.d = 1;
+    } else if (core_lord.speak_step > 250) core_lord.speak_step = 0;
+    ++core_lord.speak_step; core_lord.mouth_frame = 0; core_lord.mouth_dir = 1;
 }
 /* Per vertical blank: after four _waittof the mouth frame -108(A5) at
  * byte 0x12, y 0x87, then while channel 2 talks it bounces 0..4
@@ -1081,10 +1081,10 @@ static void core_lord_vblank(void)
 {
     if (!core_lord.shown || ++core_lord.wait < 4) return;
     core_lord.wait = 0;
-    core_draw_mouth(0x12,0x87,0x23,core_lord.f);
+    core_draw_mouth(0x12,0x87,0x23,core_lord.mouth_frame);
     if (!core_check_effect(2)) {
-        core_lord.f = (int16_t)(core_lord.f + core_lord.d);
-        if (core_lord.f >= 4 || core_lord.f <= 0) core_lord.d = (int16_t)-core_lord.d;
+        core_lord.mouth_frame = (int16_t)(core_lord.mouth_frame + core_lord.mouth_dir);
+        if (core_lord.mouth_frame >= 4 || core_lord.mouth_frame <= 0) core_lord.mouth_dir = (int16_t)-core_lord.mouth_dir;
     }
     core_lord_speak();
 }
@@ -1114,7 +1114,7 @@ static int core_lord_open(int old_level, int level, int finished)
     amiga_text(core_lord.screen, 8, 0xb2, line[0]);
     amiga_text(core_lord.screen, 8, 0xba, line[1]);
     core_lord.finished = finished; core_lord.rank = level / 250;
-    core_lord.c = core_lord.f = 0; core_lord.d = 1; core_lord.wait = 0;
+    core_lord.speak_step = core_lord.mouth_frame = 0; core_lord.mouth_dir = 1; core_lord.wait = 0;
     core_lord.shown = 1; left_button = 2;
     core_lord_speak();
     return 1;
@@ -1365,13 +1365,13 @@ static int game_pick(int sx, int sy, int *column, int *row)
 }
 
 /* _toggle_icon asm:19493-19521: XOR bitplane 0 (palette bit 0) with the
- * LAB_4C750 diamond; a steps +8 rows/+16px, b +8 rows/-16px. */
-static void core_xor_icon(int base, int a, int b)
+ * LAB_4C750 diamond; iso_a steps +8 rows/+16px, iso_b +8 rows/-16px. */
+static void core_xor_icon(int base, int iso_a, int iso_b)
 {
     static const uint32_t mask[16] = {0,0x0000c000,0x0003f000,0x000ffc00,0x003fff00,
         0x00ffffc0,0x03fffff0,0x0ffffffc,0x3fffffff,0x0ffffffc,0x03fffff0,0x00ffffc0,
         0x003fff00,0x000ffc00,0x0003f000,0x0000c000};
-    int x0 = 8*(base%40) + 16*a - 16*b, y0 = base/40 + 8*a + 8*b;
+    int x0 = 8*(base%40) + 16*iso_a - 16*iso_b, y0 = base/40 + 8*iso_a + 8*iso_b;
     for (int r = 1; r < 16; ++r) for (int bit = 0; bit < 32; ++bit) {
         int x = x0+bit, y = y0+r;
         if ((mask[r] >> (31-bit) & 1) && x >= 0 && x < 320 && y >= 0 && y < 200)
@@ -1384,15 +1384,15 @@ static void core_xor_icon(int base, int a, int b)
  * magnet bit before swamp bit before _mode), sound (initial toggles
  * asm:513-536) and pause (_do_action y=6 asm:18591). The short press
  * flashes on the power and view icons are not reproduced. */
-static struct { int16_t base, a, b; } core_flash[4];
+static struct { int16_t base, iso_a, iso_b; } core_flash[4];
 static int core_flashes;
-static void core_flash_icon(int base, int a, int b)
+static void core_flash_icon(int base, int iso_a, int iso_b)
 {
-    if (core_flashes < 4) { core_flash[core_flashes].base = (int16_t)base; core_flash[core_flashes].a = (int16_t)a; core_flash[core_flashes].b = (int16_t)b; ++core_flashes; }
+    if (core_flashes < 4) { core_flash[core_flashes].base = (int16_t)base; core_flash[core_flashes].iso_a = (int16_t)iso_a; core_flash[core_flashes].iso_b = (int16_t)iso_b; ++core_flashes; }
 }
 static void core_draw_icons(void)
 {
-    for (int index = 0; index < core_flashes; ++index) core_xor_icon(core_flash[index].base,core_flash[index].a,core_flash[index].b);
+    for (int index = 0; index < core_flashes; ++index) core_xor_icon(core_flash[index].base,core_flash[index].iso_a,core_flash[index].iso_b);
     core_flashes = 0;
     if (player < 0 || player > 1 || diagnostic_view) return;
     static const int8_t tend[4][2] = {{3,3},{4,3},{5,3},{4,4}};

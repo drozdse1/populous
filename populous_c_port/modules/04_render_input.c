@@ -290,14 +290,14 @@ static void core_next_person(int left)
  * Returns whether (sx,sy) hits a handled icon. */
 static int core_toolbar(int sx, int sy, int left, int post)
 {
-    int c = sx/2 + sy - 32, r = sy - sx/2 + 32;
+    int iso_c = sx/2 + sy - 32, iso_r = sy - sx/2 + 32;
     if (sy >= 200) return 0;
     int owner_ok = player >= 0 && player <= 1;
     uint8_t *mailbox = owner_ok ? stats_bytes(player) : NULL;
     post = post && owner_ok;
-    if (c > 0x112) {
+    if (iso_c > 0x112) {
         /* System icons asm:1700-1829: options, game options, pause, sound. */
-        int icon = (c-0x110)/16, line = (r-0x20)/16;
+        int icon = (iso_c-0x110)/16, line = (iso_r-0x20)/16;
         /* d_screen flashes asm:1717-1727,1783-1793,1810-1818; sound icons
          * toggle _back_scr instead (asm:1733-1781), pause none. */
         if ((icon == 0 && line == 0) || (icon == 1 && line == 1) || (icon == 2 && line == 2)) core_flash_icon(0x17e4,icon,line);
@@ -313,8 +313,8 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else return 0;
         return 1;
     }
-    if (r < 0x92) return 0;
-    int icon = (c-0x60)/16, line = (r-0x90)/16;
+    if (iso_r < 0x92) return 0;
+    int icon = (iso_c-0x60)/16, line = (iso_r-0x90)/16;
     if (icon < 0 || icon > 8) return 0;
     if (icon >= 3 && icon <= 5 && line <= 2) {
         /* Scroll pad asm:1838-1902; its centre recentres on view_who. All
