@@ -11,26 +11,49 @@
 
 /* ---- Peep framing / move_peeps ----------------------------------------- */
 
+/* _set_frame asm:5724-5845, the whole branch chain on byte +0: zero word
+ * -> 0; exact 2; bit4 (93..96); bit3 (battle base from the +6 partner);
+ * exact 1 (town, no completion); bit2 (85..87, completion keeps the word);
+ * mask 0x60 (101..102). Frame words are signed with 16-bit wrap. */
 static int core_frame_walker(int person)
 {
     if (!peep_population(person)) return 0;
     int flags = peep_flags(person), previous = peep_frame(person);
+    int frame = (int16_t)(previous+1);
     if (flags == 2) {
         set_peep_frame(person,previous >= 7 ? 0 : previous+1);
         return previous >= 7;
     }
-    /* asm:5833-5845: exact-5/6 simulation consumers, not general mask 0x04.
-     * Keep the signed incremented word even on completion; rendering selects
-     * the corresponding original sprites separately. */
-    if (flags == 5 || flags == 6) {
-        int frame = (int16_t)(previous+1);
-        set_peep_frame(person,frame);
-        return frame < 85 || frame >= 88;
+    if (flags&0x10) {
+        int complete = frame > 0x60 || frame < 0x5d;
+        set_peep_frame(person,complete ? 0x5d : frame);
+        return complete;
     }
-    if ((flags&0x60) && !(flags&0x1c)) {
-        int frame = (int16_t)(previous+1);
-        int complete = frame < 101 || frame > 102;
-        set_peep_frame(person,complete ? 101 : frame);
+    if (flags&8) {
+        /* asm:5759-5809 reads the +6 slot unchecked; host stops at the
+         * slot table (a legal +6 always names a live partner). */
+        unsigned partner = (uint16_t)peep_word(person,6);
+        if (partner >= 208) return 0;
+        uint32_t heading, partner_heading;
+        memcpy(&heading,peeps+person*22+14,sizeof heading);
+        memcpy(&partner_heading,peeps+partner*22+14,sizeof partner_heading);
+        int base = heading && partner_heading ? 0x8a : !heading && !partner_heading ? 0x46 :
+            peeps[(heading ? (unsigned)person : partner)*22+1] == 0 ? 0x82 : 0x86;
+        int complete = frame >= base+3 || frame < base;
+        set_peep_frame(person,complete ? base : frame);
+        return complete;
+    }
+    if (flags == 1) {
+        core_frame_town(person,core_check_life(peep_owner(person),peep_position(person)));
+        return 0;
+    }
+    if (flags&4) {
+        set_peep_frame(person,frame);
+        return frame >= 88 || frame < 85;
+    }
+    if (flags&0x60) {
+        int complete = frame > 0x66 || frame < 0x65;
+        set_peep_frame(person,complete ? 0x65 : frame);
         return complete;
     }
     return 0;
@@ -95,21 +118,25 @@ static void _move_peeps(void)
         core_good_pop(peeps[person*22+1]) += (uint32_t)(int32_t)peep_population(person);
         int flags = peep_flags(person);
         int position = peep_position(person);
-        /* Entry flag, before water mutation or land recovery (asm:3481-3543).
-         * Retain the host battle exemption and existing recovery behavior. */
-        if ((flags&16) && !(flags&8) && !(game_mode&GAME_MODE_WATER_FATAL))
+        /* Entry flag, before water mutation or land recovery (asm:3481-3543):
+         * any bit-4 value, with no bit-3 test. */
+        if ((flags&16) && !(game_mode&GAME_MODE_WATER_FATAL))
             core_queue_terrain_raise(peep_owner(person),position);
-        if (!map_blk[position] && !(flags&8)) {
-            if (flags&16) {
-                /* asm:3484-3490,3544-3559,4308-4315: fatal removal sees
-                 * original flags; otherwise store the word before signed death.
-                 * Still wet skips framing and all lower-priority consumers. */
-                if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
-                uint16_t loss = (uint16_t)(2u*(uint16_t)a4_walk_death);
-                set_peep_population(person,(uint16_t)((uint16_t)peep_population(person)-loss));
+        if (flags&16) {
+            /* asm:3482-3560: any bit-4 value. Fatal removal sees the
+             * original flags; otherwise lose 2*walk_death. Still wet: only
+             * the signed death check. Dry: clear bit 4 alone, _set_frame
+             * (completion ignored) and keep dispatching on the new byte. */
+            if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
+            uint16_t loss = (uint16_t)(2u*(uint16_t)a4_walk_death);
+            set_peep_population(person,(uint16_t)((uint16_t)peep_population(person)-loss));
+            if (!map_blk[position]) {
                 if (peep_population(person)<=0) core_remove(person);
                 continue;
             }
+            peep_flags(person) = flags &= 0xef;
+            core_frame_walker(person);
+        } else if (!map_blk[position] && !(flags&8)) {
             if (flags&1) core_set_town(person,1);
             peep_flags(person) = 18;
             /* asm:3562-3580: new water entry only reframes; exact 18 then
@@ -117,81 +144,21 @@ static void _move_peeps(void)
             if (peep_frame(person) >= 8) set_peep_frame(person,0);
             continue;
         }
-        if ((flags == 0x11 || flags == 18 || flags == 0x15 || flags == 0x16 ||
-             flags == 0x32 || flags == 0x52 || flags == 0x72 || flags == 0x90) && map_blk[position]) {
-            /* asm:3484-3490,3544-3557: dry recovery still loses first.
-             * Frame even a negative word, but never zero; ignore completion.
-             * Exact-2 dies before navigation; 5/6 finish celebration first;
-             * 0x22/42/62 finish waiting loss and any retry before cleanup.
-             * Exact-0x80 framing is inert; even nonpositive loss reaches its timer. */
-            if (game_mode&GAME_MODE_WATER_FATAL) { core_remove(person); continue; }
-            uint16_t loss = (uint16_t)(2u*(uint16_t)a4_walk_death);
-            set_peep_population(person,(uint16_t)((uint16_t)peep_population(person)-loss));
-            peep_flags(person) = flags &= 0xef;
-            /* asm:5728,5810-5832: zero skips this first frame, negative does
-             * not. Exact-1 still enters the ordinary town consumer below:
-             * evacuation bypasses death; eligible growth can revive the word.
-             * This does not enable town AI, candidate selection or funny work. */
-            if (flags == 1) {
-                if (peep_population(person)!=0)
-                    core_frame_town(person,core_check_life(peep_owner(person),position));
-            } else core_frame_walker(person);
-            if (flags == 2 && peep_population(person)<=0) { core_remove(person); continue; }
-        } else if (flags&16) { peep_flags(person) = 2; set_peep_frame(person,0); flags = 2; }
-        /* asm:3584-3599, scoped to exact 5/6 after existing water handling.
-         * Completion clears only mask 0x04 and reframes without town maintenance,
-         * evacuation or walking movement. Always end this person's tick. */
-        if (flags == 5 || flags == 6) {
+        /* asm:3584-3599: any bit-2 value. Completion clears only 0x04 and
+         * reframes through the full _set_frame chain; always death check. */
+        if (flags&4) {
             if (core_frame_walker(person)) {
                 peep_flags(person) &= 0xfb;
-                /* Exact-1 _set_frame branch, asm:5810-5832, not _set_town. */
-                if (peep_flags(person) == 1)
-                    core_frame_town(person,core_check_life(peep_owner(person),position));
-                else core_frame_walker(person);
+                core_frame_walker(person);
             }
             if (peep_population(person)<=0) core_remove(person);
             continue;
         }
-        if (flags&8) {
-            /* asm:4269-4282: only an exact-8 peep runs _do_battle itself.
-             * _set_battle (asm:6568-6600) makes the attacker 8 and the defender
-             * (flags&7)|8 (walker 0x0A, town 9), so a pair fights once per
-             * pass, at the attacker's visit whatever its slot; other bit-3
-             * states only reach the death check. _do_battle has no partner
-             * population or index-order test (asm:6066-6084).
-             * _set_battle only links two live slots below no_peeps, which
-             * never shrinks in play, so the bounds only reject a corrupt +6
-             * (outside the slot table, or self) that the source would chase. */
-            int other = (uint16_t)peep_word(person,6);
-            if (flags == 8) {
-                if (other < no_peeps && other != person) core_battle(person,other);
-            } else if (peep_population(person)<=0) core_remove(person);
-        } else if (flags&0x60) {
-            /* _move_peeps asm:4213-4268: loss every tick, unsigned old counter. */
-            core_frame_walker(person);
-            set_peep_population(person,peep_population(person)-a4_walk_death);
-            unsigned previous = (uint16_t)peep_word(person,6);
-            set_peep_word(person,6,(uint16_t)(previous+1));
-            if (previous > 14) {
-                peep_flags(person) &= 0x9f;
-                core_frame_walker(person);
-                if (peep_flags(person) == 2) core_move(person);
-            }
-            /* A retry can create a reciprocal battle before attrition kills us. */
-            if (peep_population(person)<=0) core_remove(person);
-        } else if (flags == 1) core_settle_tick(person);
-        else if (flags == 0x80) {
-            /* asm:4283-4315: ordinary remnant, not a knight flag. Water and
-             * waiting/battle dispatch stay ahead of the heading-winner remnant. */
-            if (!map_who[position]) map_who[position] = person+1;
-            unsigned previous = (uint16_t)peep_word(person,6);
-            set_peep_word(person,6,(uint16_t)(previous-1u));
-            if (!previous || peep_population(person)<=0) core_remove(person);
-        } else {
-            /* asm:4040 (CMPI.B #2; BNE LAB_411C0): only exact 2 walks. Other
-             * residual flags reach only the signed death check, and are
-             * positive here. */
-            if (flags != 2) continue;
+        if (flags == 1) core_settle_tick(person);
+        else if (flags == 2) {
+            /* asm:4040-4046: exact 2 with a nonpositive word (a dry-out
+             * loss) goes straight to the death check. */
+            if (peep_population(person)<=0) { core_remove(person); continue; }
             if (!core_frame_walker(person)) { core_collision_wait(person); continue; }
             int position = peep_position(person);
             /* asm:4061-4081: ordinary frame completion, before move/loss.
@@ -215,7 +182,41 @@ static void _move_peeps(void)
             set_peep_population(person,peep_population(person)-a4_walk_death);
             core_collision_wait(person);
             if (peep_population(person)<=0) core_remove(person);
-        }
+        } else if (flags&0x60) {
+            /* _move_peeps asm:4213-4268, tested before bit 3: loss every
+             * tick, unsigned old counter. */
+            core_frame_walker(person);
+            set_peep_population(person,peep_population(person)-a4_walk_death);
+            unsigned previous = (uint16_t)peep_word(person,6);
+            set_peep_word(person,6,(uint16_t)(previous+1));
+            if (previous > 14) {
+                peep_flags(person) &= 0x9f;
+                core_frame_walker(person);
+                if (peep_flags(person) == 2) core_move(person);
+            }
+            /* A retry can create a reciprocal battle before attrition kills us. */
+            if (peep_population(person)<=0) core_remove(person);
+        } else if (flags&8) {
+            /* asm:4269-4282: only an exact-8 peep runs _do_battle itself.
+             * _set_battle (asm:6568-6600) makes the attacker 8 and the defender
+             * (flags&7)|8 (walker 0x0A, town 9), so a pair fights once per
+             * pass, at the attacker's visit whatever its slot; other bit-3
+             * states only reach the death check. _do_battle has no partner
+             * population or index-order test (asm:6066-6084).
+             * _set_battle only links two live slots below no_peeps, which
+             * never shrinks in play, so the bounds only reject a corrupt +6
+             * (outside the slot table, or self) that the source would chase. */
+            int other = (uint16_t)peep_word(person,6);
+            if (flags == 8) {
+                if (other < no_peeps && other != person) core_battle(person,other);
+            } else if (peep_population(person)<=0) core_remove(person);
+        } else if (flags&0x80) {
+            /* asm:4283-4315: any bit-7 value (ordinary remnant 0x80). */
+            if (!map_who[position]) map_who[position] = person+1;
+            unsigned previous = (uint16_t)peep_word(person,6);
+            set_peep_word(person,6,(uint16_t)(previous-1u));
+            if (!previous || peep_population(person)<=0) core_remove(person);
+        } else if (peep_population(person)<=0) core_remove(person);
     }
     /* asm:4349-4370: publish this pass's town and city counts. */
     for (int owner = 0; owner < 2; ++owner) {
