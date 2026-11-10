@@ -39,10 +39,45 @@ User-captured gameplay screenshot, November 2, 2026, showing the defeat screen o
 
 ## Building the C Port
 
+This branch builds with the Makefile in `populous_c_port`. Run all commands from there:
+
 ```bash
-make -C populous_c_port
-./populous_c_port/populous_init_port --level 0
+cd populous_c_port
 ```
+
+Build:
+
+```bash
+make
+```
+
+Test:
+
+```bash
+make test            # all test suites
+make test-sanitize   # the same suites under ASan/UBSan
+make test-net        # only the two-player network tests
+```
+
+Run:
+
+```bash
+./populous_init_port                  # launcher with intro
+./populous_init_port --conquest       # straight to world selection
+./populous_init_port --tutorial       # tutorial
+./populous_init_port --level 5        # original world by number (0..494)
+./populous_init_port --code NAME      # original world by level code
+```
+
+Two players over a LAN (TCP port 2611):
+
+```bash
+./populous_init_port --host                # machine A
+./populous_init_port --join 192.168.1.20   # machine B, IP of machine A
+```
+
+Pick different gods on both machines and click CONNECT ME. Machine A must allow
+incoming TCP port 2611 in its firewall. See `populous_c_port/README.md` for details.
 
 Requires GCC-compatible C11, GNU Make and SDL2 development files. The commands use
 the supplied export under `binaries/populous-extracted`, including `raw/level.dat`.
