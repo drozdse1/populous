@@ -7620,7 +7620,10 @@ static void test_funny_objects(void)
         opaque += !real->big_keep[i];
     assert(opaque > 0 && opaque < 13 * 1024);
     graphics_free(real);
-    assert(!graphics_big_sprites(game_assets).indices && game_assets->big_size == 0);
+    if (getenv("POPULOUS_TEST_REAL_DATA")) /* the game runs on the real export */
+        assert(graphics_big_sprites(game_assets).indices && game_assets->big_size == 13 * 1024);
+    else
+        assert(!graphics_big_sprites(game_assets).indices && game_assets->big_size == 0);
     assert(funny_done == 0 && !peep_word(0xd1, 4) && !peep_word(0xd2, 4));
     /* _draw_s_32 placement, mask and clip rules on a synthetic frame. */
     static uint8_t screen[320 * 200], indices[2 * 1024], keep[2 * 1024];
@@ -17551,29 +17554,39 @@ static void test_save_load(void)
     world_type("slot\b\bved\n");
     assert(!core_file.field && !strcmp(core_filename, "SLVED"));
     memcpy(snapshot, prg_a4_area, sizeof snapshot);
-    char level_path[512];
-    snprintf(level_path, sizeof level_path, "%s/level.dat", test_data_directory);
-    assert(access(level_path, F_OK)); /* no level.dat: the disk check after the save */
-    screen_click(core_rec_w(core_file_ok, 0) + 4, core_rec_w(core_file_ok, 2) + 8, SDL_BUTTON_LEFT);
-    assert(save_read("SLVED.GAM", file, sizeof file) == CORE_SAVE_SIZE);
-    /* LAB_46110..LAB_46144 (asm:10931-10944): _saved is set, then
-     * _do_message(strInsertDisk,0) until level.dat opens; only OK, keys ignored. */
-    assert(core_req.kind == CORE_REQ_FILE && core_disk_message == CORE_DISK_SAVE &&
-           A4_WORD(0x3054) == 1);
-    world_type("x\n");
-    assert(!strcmp(core_filename, "SLVED") && core_disk_message == CORE_DISK_SAVE);
-    core_draw_requester();
-    assert_tile(32, 0x3c, 12);
-    assert(core_rec_w(core_end_ok, 0) == 144 && core_rec_w(core_end_ok, 4) == 192 &&
-           core_rec_w(core_end_ok, 2) == 0x5c);
-    screen_click(0x100, 0x60, SDL_BUTTON_LEFT);
-    assert(core_disk_message == CORE_DISK_SAVE);
-    disk_ok_click();
-    assert(core_req.kind == CORE_REQ_FILE && core_disk_message == CORE_DISK_SAVE);
-    write_level_fixture(1, 1);
-    disk_ok_click();
-    assert(core_req.kind == CORE_REQ_NONE && !core_disk_message && A4_WORD(0x3054) == 1);
-    assert(!unlink(level_path));
+    if (getenv("POPULOUS_TEST_REAL_DATA")) {
+        /* Real data ships level.dat, so LAB_46110 (asm:10931-10944) opens it at
+         * once: _saved is set and no strInsertDisk message appears. The missing
+         * disk path below needs the synthetic fixture and runs in that mode. */
+        screen_click(core_rec_w(core_file_ok, 0) + 4, core_rec_w(core_file_ok, 2) + 8,
+                     SDL_BUTTON_LEFT);
+        assert(save_read("SLVED.GAM", file, sizeof file) == CORE_SAVE_SIZE);
+        assert(core_req.kind == CORE_REQ_NONE && !core_disk_message && A4_WORD(0x3054) == 1);
+    } else {
+        char level_path[512];
+        snprintf(level_path, sizeof level_path, "%s/level.dat", test_data_directory);
+        assert(access(level_path, F_OK)); /* no level.dat: the disk check after the save */
+        screen_click(core_rec_w(core_file_ok, 0) + 4, core_rec_w(core_file_ok, 2) + 8, SDL_BUTTON_LEFT);
+        assert(save_read("SLVED.GAM", file, sizeof file) == CORE_SAVE_SIZE);
+        /* LAB_46110..LAB_46144 (asm:10931-10944): _saved is set, then
+         * _do_message(strInsertDisk,0) until level.dat opens; only OK, keys ignored. */
+        assert(core_req.kind == CORE_REQ_FILE && core_disk_message == CORE_DISK_SAVE &&
+               A4_WORD(0x3054) == 1);
+        world_type("x\n");
+        assert(!strcmp(core_filename, "SLVED") && core_disk_message == CORE_DISK_SAVE);
+        core_draw_requester();
+        assert_tile(32, 0x3c, 12);
+        assert(core_rec_w(core_end_ok, 0) == 144 && core_rec_w(core_end_ok, 4) == 192 &&
+               core_rec_w(core_end_ok, 2) == 0x5c);
+        screen_click(0x100, 0x60, SDL_BUTTON_LEFT);
+        assert(core_disk_message == CORE_DISK_SAVE);
+        disk_ok_click();
+        assert(core_req.kind == CORE_REQ_FILE && core_disk_message == CORE_DISK_SAVE);
+        write_level_fixture(1, 1);
+        disk_ok_click();
+        assert(core_req.kind == CORE_REQ_NONE && !core_disk_message && A4_WORD(0x3054) == 1);
+        assert(!unlink(level_path));
+    }
     /* LOAD A GAME lists the drawer (upper-cased .GAM files, sorted), a row
      * picks the name; the arrows scroll while top+5 < count. */
     save_write("b.gam", file, 4);
