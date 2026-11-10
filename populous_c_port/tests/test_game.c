@@ -8219,6 +8219,15 @@ static void assert_live_occupancy(void)
 
 static void assert_mailbox_defaults(int speed);
 /* All original levels. */
+/* _animate rewrites the per-frame draw state every frame (asm:612-657):
+ * _no_sprites 0x9a1c, _ok_to_build 0x9a1e, sound_effect 0x9a20 and the
+ * 64x8-byte sprite queue from 0x9a22. Copy it so an A4 compare checks
+ * everything else byte for byte. */
+static void copy_frame_state(uint8_t *to, const uint8_t *from)
+{
+    int start = (int16_t)0x9a1c + 32768, end = (int16_t)(0x9a22 + 64 * 8) + 32768;
+    memcpy(to + start, from + start, (size_t)(end - start));
+}
 static void test_all_original_levels(const char *directory)
 {
     LevelTable table;
@@ -8241,6 +8250,7 @@ static void test_all_original_levels(const char *directory)
         assert(no_peeps == start.record.your_count + start.record.enemy_count);
         assert(in_conquest == start.internal_level && (uint16_t)start_seed == start.initial_seed);
         game_render();
+        copy_frame_state(saved, prg_a4_area);
         assert(!memcmp(saved, prg_a4_area, sizeof saved));
         for (int tick = 0; tick < 100; ++tick) {
             game_tick();
@@ -8249,6 +8259,7 @@ static void test_all_original_levels(const char *directory)
         uint8_t after_ticks[sizeof prg_a4_area];
         memcpy(after_ticks, prg_a4_area, sizeof after_ticks);
         game_render();
+        copy_frame_state(after_ticks, prg_a4_area);
         assert(!memcmp(after_ticks, prg_a4_area, sizeof after_ticks));
         SDL_Event reset = {.type = SDL_KEYDOWN};
         reset.key.keysym.sym = SDLK_r;
@@ -8265,6 +8276,7 @@ static void test_all_original_levels(const char *directory)
                     32768;
                 memcpy(saved + offset, after_ticks + offset, (size_t)kept[field][1]);
             }
+        copy_frame_state(saved, prg_a4_area);
         assert(!memcmp(saved, prg_a4_area, sizeof saved));
         assert(game_turn == 0 && current_start.number == (int)number);
     }
