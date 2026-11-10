@@ -30,3 +30,8 @@ populous_c_port/tests/test_runtime_sanitize
 .cortex/
 populous_c_port/tests/test_audio
 populous_c_port/tests/test_audio_sanitize
+populous_c_port/tests/test_net
+populous_c_port/tests/test_net_sanitize
+
+# Python bytecode
+__pycache__/
