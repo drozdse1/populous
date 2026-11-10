@@ -1591,6 +1591,12 @@ previously fought from the lower slot. With real data the start-3000 script now
 loses at 2735 (49 battles, 64 towns, 0/20222, `--rescue-legacy-start-3000`), as do
 the after-6000 legacy scripts. The same legal inputs from tick 2000 win at turn
 3656 in both views (38 battles, 118 towns, 21683/0); the defeat phase stays 831.
+Battle peeps entering water are no longer exempt (`--water-battle`, asm 3562-3580):
+a town is first `_set_town`'d, then the byte becomes 0x12, the frame is cleared
+if >= 8 and +6 stays linked. A still-exact-8 partner keeps fighting it (water
+frames via `_set_frame`); a 9/0x0A/0x0D/0x0E defender whose attacker flooded stays
+frozen until its own cell floods. With real data four battles flood; the victory
+stays at turn 3656 with 38 battles, now 121 towns and 21819/0.
 Level parameters in AI decisions (`--ai-level-parameters`): rating `_stats`+$c
 keeps the computer on its passive tendency path while towns < 2*rating+15 or
 `game_turn`%90 < rating+10 (`_set_devil_magnet` asm 9612-9627); reaction speed

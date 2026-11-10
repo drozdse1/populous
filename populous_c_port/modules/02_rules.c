@@ -434,13 +434,24 @@ static int core_battle_over(int winner, int loser, bool raw_loser_nonzero)
     if (peep_population(loser)<=0) core_remove(loser);
     return 1;
 }
+static int core_frame_walker(int person);
 /* _set_frame asm:5759-5809: actual combat partner, opaque heading presence.
- * The caller preserves the pre-clamp population test; water has source priority. */
+ * The caller preserves the pre-clamp population test. _do_battle calls the
+ * whole _set_frame chain (asm:6168-6172), so a side that is no longer a
+ * battle state (0x12 after water entry, asm:3562-3580, or 2 once that dried)
+ * takes its own branch: exact 2 and bit 4 come before bit 3. */
 static int core_frame_battle(int person, int partner, bool raw_nonzero)
 {
     if (no_peeps < 0 || no_peeps > 208 || person < 0 || person >= no_peeps ||
-        partner < 0 || partner >= no_peeps || person == partner || !raw_nonzero ||
-        !(peep_flags(person)&8) || (peep_flags(person)&0x10)) return 0;
+        partner < 0 || partner >= no_peeps || person == partner || !raw_nonzero) return 0;
+    if (peep_flags(person) == 2 || (peep_flags(person)&0x10) || !(peep_flags(person)&8)) {
+        /* The stored word is clamped at 0; the source tests the raw word. */
+        int16_t stored = peep_population(person);
+        if (!stored) set_peep_population(person,1);
+        int complete = core_frame_walker(person);
+        set_peep_population(person,stored);
+        return complete;
+    }
     uint32_t heading, partner_heading;
     memcpy(&heading,peeps+person*22+14,sizeof heading);
     memcpy(&partner_heading,peeps+partner*22+14,sizeof partner_heading);
@@ -491,7 +502,9 @@ static void core_join_battle(int newcomer, int encountered)
     int partner = peep_word(encountered,6);
     if (partner < 0 || partner >= no_peeps || partner >= 208 ||
         partner == encountered || partner == newcomer ||
-        peep_population(partner) <= 0 || !(peep_flags(partner)&8) ||
+        /* asm:6676-6683 reads +6 with no flag test: the partner may have
+         * become 0x12 (or 2) by water entry, asm:3562-3580. */
+        peep_population(partner) <= 0 ||
         peep_word(partner,6) != encountered ||
         peep_owner(partner) != 1-peep_owner(encountered)) return;
     int owner = peep_owner(newcomer);

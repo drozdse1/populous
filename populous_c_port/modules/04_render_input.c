@@ -136,11 +136,16 @@ static void _move_peeps(void)
             }
             peep_flags(person) = flags &= 0xef;
             core_frame_walker(person);
-        } else if (!map_blk[position] && !(flags&8)) {
+        } else if (!map_blk[position]) {
+            /* asm:3562-3580: any non-bit-4 value, battle 8/9/0x0A/0x0D/0x0E
+             * included: a town (bit 0) is removed, then the whole byte is
+             * overwritten with 0x12. +6 and the partner are left alone; a
+             * partner still exactly 8 keeps fighting it (core_battle), and
+             * one at 9/0x0A/0x0D/0x0E only reaches the bit-3 death check. */
             if (flags&1) core_set_town(person,1);
             peep_flags(person) = 18;
-            /* asm:3562-3580: new water entry only reframes; exact 18 then
-             * reaches the common positive-population check without other work. */
+            /* New water entry only reframes; exact 18 then reaches the
+             * common positive-population check without other work. */
             if (peep_frame(person) >= 8) set_peep_frame(person,0);
             continue;
         }
