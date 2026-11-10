@@ -132,39 +132,33 @@ static void core_set_town(int person, int remove)
     }
     if (!city && map_blk[position] == 31+owner) map_bk2[position] = peep_frame(person);
 }
+static void core_set_magnet_to(int owner, int16_t cell);
+/* _zero_population asm:5645-5723, in source order. The dead record keeps its
+ * flags, +6, heading, frame and bytes 14..21; only the main loop's positive
+ * population test (asm:3459-3462) retires it. */
 static void core_remove(int person)
 {
     int owner = peep_owner(person), position = peep_position(person);
+    set_peep_population(person,0);
+    /* asm:5652-5658: only an exact-8 death (the attacker) strips the
+     * partner's bit 3: defender walker 0x0A -> 2, attacked town 9 -> 1; nothing
+     * else on the partner changes. The guard only bounds a corrupt +6. */
+    if (peep_flags(person) == 8) {
+        int partner = (uint16_t)peep_word(person,6);
+        if (partner < 208) peep_flags(partner) &= 0xf7;
+    }
     if (peep_flags(person)&1) core_set_town(person,1);
-    if (map_who[position] == person+1) map_who[position] = 0;
-    /* _zero_population asm:5671-5680: also the previous departure's claim. */
+    /* asm:5665-5684: own cell, then the previous departure's claim. Legal
+     * positions are always on the map; the guard only bounds host storage. */
+    if (position >= 0 && position < 4096 && map_who[position] == person+1) map_who[position] = 0;
     int previous = (int16_t)(position-peep_heading(person));
     if (previous >= 0 && previous < 4096 && map_who[previous] == person+1) map_who[previous] = 0;
-    if (peep_flags(person)&8) {
-        int partner = peep_word(person,6);
-        /* Walking attrition can remove an attacker immediately after entry,
-         * outside core_battle's winner path. Release only its reciprocal link. */
-        if (partner >= 0 && partner < no_peeps && partner != person &&
-            peep_population(partner) > 0 && (peep_flags(partner)&8) &&
-            peep_word(partner,6) == person) {
-            peep_flags(partner) = (peep_flags(partner)&1) ? 1 : 2;
-            set_peep_word(partner,6,0); set_peep_heading(partner,0);
-            if (!(peep_flags(partner)&1)) set_peep_frame(partner,0);
-            int cell = peep_position(partner);
-            if (!map_who[cell]) map_who[cell] = partner+1;
-        }
-        set_peep_word(person,6,0);
-    }
+    /* asm:5685-5703 */
     if (core_leader(owner) == person+1) {
         core_leader(owner) = 0;
-        /* _zero_population / _set_magnet_to asm:5691-5716,8271-8291. */
-        if (!pause) {
-            core_target(owner) = position;
-            owner_magnet(owner) = position;
-        }
+        core_set_magnet_to(owner,(int16_t)position);
     }
     if (view_who == person+1) view_who = 0;
-    set_peep_population(person,0); peep_flags(person) = 0;
 }
 /* "Funny" objects: peep slots $D1/$D2 (_peeps+$11F6 = LAB_5420A, A4 0xae1c),
  * the only users of the 32x32 sheet. _funny asm:24161-24171 (A4 0x8292),
@@ -457,9 +451,11 @@ static int core_frame_battle(int person, int partner, bool raw_nonzero)
     set_peep_frame(person,reset ? base : frame);
     return reset;
 }
+/* _do_battle(first=self, second=partner +6), asm:6066-6206. */
 static void core_battle(int first, int second)
 {
-    /* _do_battle:6082-6158: both casualties use the lesser rolled strength. */
+    /* _do_battle:6082-6158: the partner rolls first, then self; both
+     * casualties use the lesser rolled strength. */
     int second_strength = (___newrand()%3+1)*peep_population(second);
     int first_strength = (___newrand()%3+1)*peep_population(first);
     int lesser = first_strength < second_strength ? first_strength : second_strength;
@@ -476,7 +472,9 @@ static void core_battle(int first, int second)
     core_frame_battle(first,second,first_pop!=0);
     core_frame_battle(second,first,second_pop!=0);
     if (first_pop > 0 && second_pop > 0) return;
-    if (first_pop <= 0 && second_pop <= 0) { core_remove(first); core_remove(second); return; }
+    /* asm:6165-6181: partner first. If it is exact 8 it strips self's bit 3,
+     * so self's own _zero_population then leaves the partner's flags alone. */
+    if (first_pop <= 0 && second_pop <= 0) { core_remove(second); core_remove(first); return; }
     int winner = first_pop > 0 ? first : second, loser = winner == first ? second : first;
     bool raw_loser_nonzero=(loser==first ? first_pop : second_pop)!=0;
     core_battle_over(winner,loser,raw_loser_nonzero);
@@ -511,7 +509,9 @@ static void core_join_battle(int newcomer, int encountered)
     /* asm:6725-6740: a not-yet-visited recipient will count the merged word. */
     if (recipient > newcomer)
         core_good_pop(peeps[newcomer*22+1]) -= (uint32_t)(int32_t)peep_population(newcomer);
-    core_remove(newcomer);
+    /* asm:6758: only CLR.W +4. Flags, claims and heading stay until the
+     * caller's common death check (asm:4308-4315) runs _zero_population. */
+    set_peep_population(newcomer,0);
 }
 /* _join_forces asm:5540-5640: ordinary friendly merge, not battle joining. */
 static void core_join_forces(int source, int target)
@@ -538,8 +538,9 @@ static void core_join_forces(int source, int target)
     /* asm:5605-5620: a not-yet-visited target will count the merged word. */
     if (target > source)
         core_good_pop(peeps[source*22+1]) -= (uint32_t)(int32_t)peep_population(source);
-    /* Host cleanup clears only source-owned occupancy; transfer refs first. */
-    core_remove(source);
+    /* asm:~5636: only CLR.W +4; the caller's death check (asm:4308-4315)
+     * runs _zero_population later. */
+    set_peep_population(source,0);
 }
 static void core_move(int person)
 {

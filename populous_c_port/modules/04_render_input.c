@@ -153,8 +153,19 @@ static void _move_peeps(void)
             continue;
         }
         if (flags&8) {
-            int other = peep_word(person,6);
-            if (other > person && other < no_peeps && peep_population(other)>0) core_battle(person,other);
+            /* asm:4269-4282: only an exact-8 peep runs _do_battle itself.
+             * _set_battle (asm:6568-6600) makes the attacker 8 and the defender
+             * (flags&7)|8 (walker 0x0A, town 9), so a pair fights once per
+             * pass, at the attacker's visit whatever its slot; other bit-3
+             * states only reach the death check. _do_battle has no partner
+             * population or index-order test (asm:6066-6084).
+             * _set_battle only links two live slots below no_peeps, which
+             * never shrinks in play, so the bounds only reject a corrupt +6
+             * (outside the slot table, or self) that the source would chase. */
+            int other = (uint16_t)peep_word(person,6);
+            if (flags == 8) {
+                if (other < no_peeps && other != person) core_battle(person,other);
+            } else if (peep_population(person)<=0) core_remove(person);
         } else if (flags&0x60) {
             /* _move_peeps asm:4213-4268: loss every tick, unsigned old counter. */
             core_frame_walker(person);

@@ -1571,7 +1571,7 @@ disassembly base); this depends on the load address and was not measured, yet it
 feeds battle countdown, a signed table index and an exact compare. With the AI
 and unchanged inputs: both views win at turn 4697 (32 battles, 78 towns,
 1434/0); the legacy scripts lose at 3104 (33/79/0/30639); the defeat phase ends
-at 831 (0/6323). `good_pop` (`--good-pop`, signed long at 0x99fe+owner*16) is
+at 831 (0/6323). These 4697/3104 values are historical (see below). `good_pop` (`--good-pop`, signed long at 0x99fe+owner*16) is
 reset per pass (asm 3296-3301), summed from pre-move words at the top of the peep
 loop (3459-3474) and corrected by slot-order joins (5605-5620, 6725-6740). The
 end check (4323-4347) tests the player first, honours surrender and has no draw,
@@ -1579,6 +1579,18 @@ so outcomes appear one pass after the last death. Like `_clear_map` (asm 1023-11
 `r` reset keeps 0x99fc, good_pop/bad_pop and `_stats`+0x14/+0x16/+0x22/+0x26/+0x2a;
 only the next pass clears them, after `_devil_effect` (`--start-reset`). Open: opcodes 7-13, `_toggle` mana,
 edge-of-map targets (host rejects x/y>56) and null pointer reads (address 8).
+Death cleanup and battle dispatch (`--zero-population`, `--battle-rounds`):
+`core_remove` follows `_zero_population` (asm 5645-5723): population 0; only an
+exact-8 peep clears bit 3 on its partner (a walker partner is left frozen at 0,
+an attacked town 9 becomes 1); town footprint, both `map_who` claims, leader via
+`_set_magnet_to` and `view_who`. The dead peep's flags, +6, heading and frame are
+kept. Joins only zero the population (5636, 6758). `_set_battle` makes the
+attacker exactly 8 and the defender (flags&7)|8, so only the attacker runs
+`_do_battle`, once per pair and pass, at its own visit (4269-4280); the port
+previously fought from the lower slot. With real data the start-3000 script now
+loses at 2735 (49 battles, 64 towns, 0/20222, `--rescue-legacy-start-3000`), as do
+the after-6000 legacy scripts. The same legal inputs from tick 2000 win at turn
+3656 in both views (38 battles, 118 towns, 21683/0); the defeat phase stays 831.
 Level parameters in AI decisions (`--ai-level-parameters`): rating `_stats`+$c
 keeps the computer on its passive tendency path while towns < 2*rating+15 or
 `game_turn`%90 < rating+10 (`_set_devil_magnet` asm 9612-9627); reaction speed

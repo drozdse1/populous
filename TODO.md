@@ -123,7 +123,9 @@ ab6000 gewinnen beide Ansichten bei Tick11928: isometrisch125/394/205816/0,
 Diagnose125/401/219245/0 (historisch). Mit phasenweiser Bewegung verlieren diese Skripte bei Zug4801
 (Regressionen --rescue-legacy-every-tick/--rescue-legacy-match); dieselben Eingaben ab Tick3000
 gewannen bei Zug4185 (historisch). Mit Computer-KI: Sieg bei Zug4697 in beiden Ansichten (32/78/1434/0),
-alte Skripte Niederlage bei Zug3104 (33/79/0/30639), Niederlagephase Zug831 (0/6323) (mit Original-`good_pop`). Eingaben unveraendert, strikte Siegerassertionen und Limits erhalten.
+alte Skripte Niederlage bei Zug3104 (33/79/0/30639), Niederlagephase Zug831 (0/6323) (mit Original-`good_pop`).
+Mit `_zero_population` und Angreifer-Kampfrunde (historisch ab hier): Start-3000-Skript und alte Skripte verlieren bei Zug2735
+(49/64/0/20222); dieselben Eingaben ab Tick2000 gewinnen bei Zug3656 (38/118/21683/0); Niederlagephase 831. Eingaben unveraendert, strikte Siegerassertionen und Limits erhalten.
 Fokussierte/vollstaendige Normal-/Sanitizerlaeufe, historische Strategien und alle495
 Starts bestanden.
 Unabhaengiges Review ohne
@@ -154,7 +156,7 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 - [x] Trockene Wasser-Wartezustaende 0x32/0x52/0x72 erhalten: doppelter Wort-Wasserverlust, zwei Warteframes, separater Warteverlust und originaler unsigned Retry-Zaehler. Bei Ablauf auch null/negative Population zum bestehenden aktuellen-Zellen-Begegnungspfad lassen, danach sicher aufraeumen; keine zusaetzliche Gehattrition oder Sumpf-Abschlusspruefung.
 - [x] Trockenen Wasser-Brandrest 0x90 als 0x80 fortsetzen: Wortverlust vor Belegungs-/Timerverbrauch, alten unsigned Timer auch bei null/negativer Restpopulation senken, danach Ablauf oder Tod aufraeumen. Fatalmodus unveraenderter Timer/Frame, Drittbelegung schuetzen; keine normale Bewegung oder Terrainfolge.
 - [x] Kampfverluste modulo16 auswerten: signiertes SUB.W-Ergebnis entscheidet Ueberleben und Null-/Negativ-Framing vor gemeinsamem Kampfabschluss. Ueberlauf kann wieder positive Population ergeben; Host normalisiert gespeicherte nichtpositive Verluste weiterhin auf null und behaelt seine Doppel-Tod-Aufraeumreihenfolge.
-- [ ] **Teilweise:** Gemischte Sonderflags, Ertrinkensphasen, Darstellung und originalen Kampf-/Todeszeitpunkt migrieren; transiente negative Kampfpopulation und vollstaendige originale Aufraeumregeln bleiben getrennte Arbeit.
+- [ ] **Teilweise:** Gemischte Sonderflags, Ertrinkensphasen, Darstellung und originalen Kampf-/Todeszeitpunkt migrieren; transiente negative Kampfpopulation bleibt getrennte Arbeit. Erledigt: `_zero_population`-Aufraeumen und Kampfrunde nur vom Angreifer (`--zero-population`, `--battle-rounds`). Offen: Bitmasken- statt Exaktwertpruefung (Feiern 5/6, Rest 0x80, Wasserwerte, 0x60 vor Bit3), Wassereintritt waehrend Kampf, Fixtures mit beiden Kaempfern=8 auf Angreifer 8/Verteidiger 0x0A umstellen.
 - [x] `_do_funny`/`_do_place_funny` (asm:8630-9013): zwei Funny-Objekte in den `_peeps`-Plaetzen $D1/$D2, Typen 0..2 aus `_funny` (asm:24161-24171), Platzierung bei Spielzug 4096 (`_start_seed&3`, asm:752-760) und einmal bei erschoepften 208 Bewohnerplaetzen (`_funny_done`, asm:3996-4006); Frame-Pendel, Schritt alle 8 Zuege, Spuren (bk2 50..52, Block 53, Bloecke 47..49) und Entfernen von Bewohnern. Abweichung: das nicht uebergebene zweite Argument (Startkante, `($A,A5)`) ist im Port 0; Zellen ausserhalb der Karte werden nicht geschrieben.
 - [ ] **Teilweise:** Weitere Sonderfiguren; Gameplay-Ritter sind separat angebunden.
 - [x] Sumpf-Folgen fuer normale Bewohner am abgeschlossenen Gehframe: gesamte Population entfernen, Effekt 66, flachen Sumpf zu Block 15 zuruecksetzen; bodenlosen Sumpf erhalten.
