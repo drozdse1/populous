@@ -7018,6 +7018,16 @@ typedef struct {
     uint16_t turns;
     int battles, towns, own, enemy;
 } MatchOutcome;
+/* One main-loop pass of _animate (02_rules.c): the requester blinks, the
+ * heartbeat/_toggle pass outside requesters and the end screen, then the
+ * tick. Audio, the lord's mouth and rendering do not touch the simulation. */
+static void main_loop_step(void)
+{
+    if (core_req.kind == CORE_REQ_WORLD) ++core_world.blink;
+    if (core_req.kind == CORE_REQ_FILE) ++core_file.blink;
+    if (!core_req.kind && !core_result) core_tempo_pass();
+    game_tick();
+}
 static void assert_match_outcome(const MatchOutcome *expected)
 {
     if (!expected || !getenv("POPULOUS_TEST_REAL_DATA")) return;
@@ -7042,7 +7052,7 @@ static void test_match_events_cadence(int interval, int start, const MatchOutcom
     assert(core_tendency(0) == 3);
     SDL_SetWindowSize(prg_screen->window, 640, 512);
     for (int tick = 0; tick < 12000 && !core_result; ++tick) {
-        game_tick();
+        main_loop_step();
         if (tick >= start && tick % interval == 0) {
             for (int person = 0; person < no_peeps; ++person) {
                 if (!peep_owner(person) || peep_word(person, 4) <= 0) continue;
@@ -7072,7 +7082,7 @@ static void test_match_events_cadence(int interval, int start, const MatchOutcom
     if (getenv("POPULOUS_TEST_REAL_DATA")) assert(core_result == 1);
     uint8_t final_state[sizeof prg_a4_area];
     memcpy(final_state, prg_a4_area, sizeof final_state);
-    game_tick();
+    main_loop_step();
     game_render();
     assert(memcmp(final_state, prg_a4_area, sizeof final_state) == 0);
     key.key.keysym.sym = SDLK_r;
@@ -7085,7 +7095,7 @@ static void test_match_events_cadence(int interval, int start, const MatchOutcom
     /* Defeat is also reached via legal input, not an outcome flag or population patch. */
     SDL_SetWindowSize(prg_screen->window, 640, 512);
     for (int tick = 0; tick < 512; ++tick)
-        game_tick();
+        main_loop_step();
     for (int tick = 0; tick < 2000 && !core_result; ++tick) {
         if (tick % 8 == 0) {
             for (int person = 0; person < no_peeps; ++person) {
@@ -7102,7 +7112,7 @@ static void test_match_events_cadence(int interval, int start, const MatchOutcom
             }
             ___keyboard();
         }
-        game_tick();
+        main_loop_step();
     }
     fprintf(stderr, "defeat result=%d turns=%u battles=%d towns=%d pop=%d/%d\n", core_result,
             (uint16_t)game_turn, core_battles, core_settlements, core_population(0),
@@ -7283,7 +7293,7 @@ static void test_isometric_match_cadence(int interval, int start, const MatchOut
     event.key.keysym.sym = SDLK_r;
     game_handle_event(&event);
     for (int tick = 0; tick < 512; ++tick)
-        game_tick();
+        main_loop_step();
     for (int tick = 0; tick < 2000 && !core_result; ++tick) {
         if (tick % 8 == 0)
             for (int person = 0; person < no_peeps && !core_result; ++person) {
@@ -7293,7 +7303,7 @@ static void test_isometric_match_cadence(int interval, int start, const MatchOut
                     for (int dx = 0; dx < 2; ++dx)
                         iso_click_vertex(position % 64 + dx, position / 64 + dy, SDL_BUTTON_RIGHT);
             }
-        game_tick();
+        main_loop_step();
     }
     fprintf(stderr, "isometric defeat turns=%u pop=%d/%d\n", (uint16_t)game_turn,
             core_population(0), core_population(1));
@@ -7303,7 +7313,7 @@ static void test_isometric_match_cadence(int interval, int start, const MatchOut
         assert((uint16_t)game_turn == 831 && core_population(1) == 6323);
     uint8_t before[sizeof prg_a4_area];
     memcpy(before, prg_a4_area, sizeof before);
-    game_tick();
+    main_loop_step();
     game_render();
     assert(a4_same(before));
     game_handle_event(&event);
@@ -7311,7 +7321,7 @@ static void test_isometric_match_cadence(int interval, int start, const MatchOut
     event.key.keysym.sym = SDLK_3;
     game_handle_event(&event);
     for (int tick = 0; tick < 12000 && !core_result; ++tick) {
-        game_tick();
+        main_loop_step();
         if (tick >= start && tick % interval == 0)
             for (int person = 0; person < no_peeps; ++person) {
                 if (!peep_owner(person) || peep_word(person, 4) <= 0) continue;
@@ -8623,7 +8633,7 @@ static void test_all_original_levels(const char *directory)
         copy_frame_state(saved, prg_a4_area);
         assert(!memcmp(saved, prg_a4_area, sizeof saved));
         for (int tick = 0; tick < 100; ++tick) {
-            game_tick();
+            main_loop_step();
             assert_live_occupancy();
         }
         uint8_t after_ticks[sizeof prg_a4_area];
