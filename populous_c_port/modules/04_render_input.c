@@ -527,7 +527,10 @@ static void game_handle_event(const SDL_Event *event)
             /* _sculpt asm:7406-7416 keeps _cur_x/_cur_y on the vertex under
              * the pointer; _paint_the_map posts there. */
             int column, row;
-            if (!diagnostic_view && !core_req.kind && game_pick(mousex,mousey,&column,&row)) {
+            /* asm:7307-7314: in the plain raise/lower mode a frame without
+             * sprites returns before the cursor is stored. */
+            if (!diagnostic_view && !core_req.kind && (core_tool || core_swamp_selected || core_sculpt_visible()) &&
+                game_pick(mousex,mousey,&column,&row)) {
                 cur_x = (int16_t)column; cur_y = (int16_t)row;
             }
             /* continue_3EC20 asm:963-975 also interrogates while hovering. */
@@ -608,8 +611,13 @@ static void game_handle_event(const SDL_Event *event)
             cur_x = (int16_t)column; cur_y = (int16_t)row;
             if (event->button.button == SDL_BUTTON_LEFT) core_raw_raise(player,column,row);
             else if (column <= 64 && row <= 64) core_do_lower_point(player,column,row);
-        } else if (event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT)
+        } else if ((event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT) &&
+                   core_sculpt_visible()) {
+            /* asm:7397-7402: the cursor is stored before the NO_BUILD and
+             * near-towns refusals (asm:7419-7438) and the consumer's mana test. */
+            cur_x = (int16_t)column; cur_y = (int16_t)row;
             core_sculpt(0,column,row,event->button.button == SDL_BUTTON_LEFT ? 1 : -1);
+        }
     }
     /* Unsupported special powers remain inert. */
 }

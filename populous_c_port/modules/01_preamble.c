@@ -252,6 +252,7 @@ static void core_msg_key(int key);
 static int core_serial_parse(int argc, char **argv, int *matched);
 static void core_serial_detach(void);
 static int core_sculpt_admit(int owner, int column, int row, int direction);
+static int core_sculpt_visible(void);
 static int core_custom_new_map(int16_t new_map);
 static int core_serial_cancel;
 /* _show_world state, see core_world_open. */

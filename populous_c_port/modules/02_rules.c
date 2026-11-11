@@ -996,6 +996,15 @@ static void core_settle_tick(int person)
     if (peep_population(person)<=0) core_remove(person);
 }
 /* _raise_point/_lower_point: the same 8-neighbour slope constraint, bounded work. */
+/* _sculpt asm:7307-7314: in the plain raise/lower mode (_mode == 2; the
+ * callers have already branched off swamp, magnet, query and the editor)
+ * a frame that drew no sprite, _ok_to_build == 0 (asm:613, 15981), takes
+ * no click: no cursor, no mailbox post, no mana. The host diagnostic view
+ * draws no sprites and so keeps every click. */
+static int core_sculpt_visible(void)
+{
+    return diagnostic_view || paint_map || ok_to_build != 0;
+}
 /* The admission tests of core_sculpt, also used before a two-player post. */
 static int core_sculpt_admit(int owner, int column, int row, int direction)
 {
@@ -1005,7 +1014,13 @@ static int core_sculpt_admit(int owner, int column, int row, int direction)
         !(stats_power_mask(owner)&1)) return 0;
     int original = core_vertex(column,row), target_height = original+direction;
     if (target_height < 0 || target_height > 8) return 0;
-    if ((game_mode&GAME_MODE_BUILD_NEAR_TOWNS) && original > 0) {
+    /* asm:7433-7438: bit 0 of the last frame's _ok_to_build (byte 0x9a1f),
+     * an own town or an own peep with word 18 set drawn anywhere in view.
+     * The host diagnostic view runs no _move_sprite pass, so it keeps the
+     * former nearby-town scan. */
+    if ((game_mode&GAME_MODE_BUILD_NEAR_TOWNS) && original > 0 && !diagnostic_view) {
+        if (!(ok_to_build&1)) return 0;
+    } else if ((game_mode&GAME_MODE_BUILD_NEAR_TOWNS) && original > 0) {
         int near_town = 0;
         for (int person = 0; person < no_peeps; ++person) {
             int position = peep_position(person);

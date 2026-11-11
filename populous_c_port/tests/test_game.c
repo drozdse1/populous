@@ -6893,21 +6893,27 @@ static void test_near_town_sculpt(void)
     assert(SDL_Init(SDL_INIT_VIDEO) == 0);
     assert(game_reset(0));
     game_mode = GAME_MODE_BUILD_NEAR_TOWNS;
+    /* asm:7433-7438: above sea level the permission is bit 0 of the last
+     * frame's _ok_to_build (byte 0x9a1f), set by a drawn own town or own
+     * peep with word 18 (asm:15965-15982), not a distance to a town. */
+    game_render();
+    assert(ok_to_build && !(ok_to_build & 1));
     uint8_t before[sizeof prg_a4_area];
     memcpy(before, prg_a4_area, sizeof before);
-    /* asm:7430-7438: above-water near-town mode rejects without permission. */
     assert(!core_sculpt(0, 8, 8, 1));
     assert(a4_same(before));
     for (int tick = 0; tick < 16; ++tick)
         game_tick();
     int position = peep_word(0, 8);
     assert(peeps[0] == 1);
+    game_render();
+    assert(ok_to_build & 1);
     int32_t mana_before = core_mana(0);
     assert(core_sculpt(0, position % 64, position / 64, 1));
     assert(core_vertex(position % 64, position / 64) == 2 && core_mana(0) == mana_before - 14);
-    memcpy(before, prg_a4_area, sizeof before);
-    assert(!core_sculpt(0, 60, 60, 1));
-    assert(a4_same(before));
+    /* The bit is view-wide: a vertex far from every town is admitted too. */
+    assert(core_vertex(60, 60) > 0);
+    assert(core_sculpt(0, 60, 60, 1));
     _closeall();
     SDL_Quit();
 }
@@ -7019,14 +7025,18 @@ typedef struct {
     int battles, towns, own, enemy;
 } MatchOutcome;
 /* One main-loop pass of _animate (02_rules.c): the requester blinks, the
- * heartbeat/_toggle pass outside requesters and the end screen, then the
- * tick. Audio, the lord's mouth and rendering do not touch the simulation. */
+ * heartbeat/_toggle pass outside requesters and the end screen, the tick,
+ * the deferred end-game entry and the frame. Audio and the lord's mouth do
+ * not touch the simulation; the frame sets _ok_to_build (asm:613, 15981),
+ * which the next click's _sculpt reads (asm:7307). */
 static void main_loop_step(void)
 {
     if (core_req.kind == CORE_REQ_WORLD) ++core_world.blink;
     if (core_req.kind == CORE_REQ_FILE) ++core_file.blink;
     if (!core_req.kind && !core_result) core_tempo_pass();
     game_tick();
+    if (core_result && !core_end_shown) core_enter_end();
+    game_render();
 }
 static void assert_match_outcome(const MatchOutcome *expected)
 {
@@ -7271,6 +7281,99 @@ static void iso_click_vertex(int column, int row, int button)
     game_handle_event(&event);
 }
 
+/* _ok_to_build (A4 0x9a1e): the last frame's sprite permission.
+ * _sculpt asm:7307-7314 returns before the pick, the cursor and the mailbox
+ * post when it is 0 in the plain raise/lower mode (_mode == 2) outside the
+ * editor; asm:7433-7438 then needs bit 0 (byte 0x9a1f) for a vertex above
+ * sea level under BUILD_NEAR_TOWNS. Mana is only spent by the consumer, so a
+ * refusal leaves all of A4 unchanged. */
+static void ok_to_build_click(int column, int row, int button)
+{
+    SDL_Event event = {.type = SDL_MOUSEBUTTONDOWN};
+    int u = column - xoff, v = row - yoff;
+    event.button.button = button;
+    event.button.x = 2 * (192 + 16 * (u - v));
+    event.button.y = 2 * (72 + 8 * (u + v) - 8 * core_vertex(column, row));
+    game_handle_event(&event);
+}
+static void test_ok_to_build(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    assert(!diagnostic_view && xoff == 6 && yoff == 6 && core_tool == 0 && !paint_map);
+    SDL_SetWindowSize(prg_screen->window, 640, 512);
+    uint8_t before[sizeof prg_a4_area];
+    int32_t mana = core_mana(0);
+    assert(core_vertex(10, 10) == 1);
+    /* No visible sprite: both buttons are refused, full A4 unchanged. */
+    ok_to_build = 0;
+    for (int button = SDL_BUTTON_LEFT; button <= SDL_BUTTON_RIGHT; button += 2) {
+        memcpy(before, prg_a4_area, sizeof before);
+        ok_to_build_click(10, 10, button);
+        assert(!memcmp(before, prg_a4_area, sizeof before));
+    }
+    /* Any nonzero word admits (an enemy walker contributes flags & 0xf8). */
+    ok_to_build = 0x10;
+    ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    assert(core_vertex(10, 10) == 2 && core_mana(0) == mana - 14);
+    ok_to_build_click(10, 10, SDL_BUTTON_RIGHT);
+    assert(core_vertex(10, 10) == 1 && core_mana(0) == mana - 28);
+    /* The editor bypasses the test (asm:7311-7312): free raise/lower. */
+    ok_to_build = 0;
+    paint_map = 1;
+    mana = core_mana(0);
+    ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    assert(core_vertex(10, 10) == 2 && core_mana(0) == mana && ok_to_build == 0);
+    ok_to_build_click(10, 10, SDL_BUTTON_RIGHT);
+    assert(core_vertex(10, 10) == 1 && core_mana(0) == mana);
+    paint_map = 0;
+    /* The papal magnet (_mode != 2) skips the test (asm:7309-7310). */
+    core_tool = 1;
+    int16_t leader = core_leader(0);
+    core_leader(0) = 1;
+    ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    assert(core_target(0) == 10 * 64 + 10 && core_mana(0) == mana - 200);
+    core_tool = 0;
+    core_leader(0) = leader;
+    /* BUILD_NEAR_TOWNS reads bit 0 for a vertex above sea level. */
+    game_mode = GAME_MODE_BUILD_NEAR_TOWNS;
+    mana = core_mana(0);
+    ok_to_build = 0x10;
+    memcpy(before, prg_a4_area, sizeof before);
+    ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    assert(!memcmp(before, prg_a4_area, sizeof before));
+    assert(!core_sculpt(0, 10, 10, 1) && !memcmp(before, prg_a4_area, sizeof before));
+    ok_to_build = 0x11;
+    ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    assert(core_vertex(10, 10) == 2 && core_mana(0) == mana - 14);
+    game_mode = 0;
+    /* Two players: _sculpt refuses before posting (asm:7307-7314). */
+    ok_to_build = 0;
+    memcpy(before, prg_a4_area, sizeof before);
+    core_serial_world_click(10, 10, 1);
+    core_serial_world_click(10, 10, 0);
+    assert(!memcmp(before, prg_a4_area, sizeof before));
+    ok_to_build = 0x10;
+    core_serial_world_click(10, 10, 0);
+    assert(stats_bytes(0)[0] == 2 && stats_bytes(0)[1] == 10 && stats_bytes(0)[2] == 10);
+    _closeall();
+    SDL_Quit();
+}
+
+/* The same input with the frame the player sees between the scroll and the
+ * click: _sculpt reads that frame's _ok_to_build (asm:613, 7307, 15981). */
+static void iso_click_vertex_drawn(int column, int row, int button)
+{
+    int center_x = column > 63 ? 63 : column, center_y = row > 63 ? 63 : row;
+    SDL_Event event = {.type = SDL_MOUSEBUTTONDOWN};
+    event.button.button = SDL_BUTTON_LEFT;
+    event.button.x = 2 * (64 + center_x - center_y);
+    event.button.y = 2 * ((center_x + center_y) / 2);
+    game_handle_event(&event);
+    game_render();
+    ok_to_build_click(column, row, button);
+}
+
 /* Isometric match cadence. */
 static void test_isometric_match_cadence(int interval, int start, const MatchOutcome *expected)
 {
@@ -7286,10 +7389,12 @@ static void test_isometric_match_cadence(int interval, int start, const MatchOut
     iso_click_vertex(63, 63, SDL_BUTTON_LEFT);
     assert(xoff == 56 && yoff == 56 && core_vertex(63, 63) == 1 && core_mana(0) == mana);
     game_handle_event(&event);
-    iso_click_vertex(63, 63, SDL_BUTTON_LEFT);
-    assert(core_vertex(63, 63) == 2 && core_mana(0) == mana - 14);
-    iso_click_vertex(63, 63, SDL_BUTTON_RIGHT);
-    assert(core_vertex(63, 63) == 1);
+    /* Unpaused, the frame drawn at view 56,56 holds no sprite, so _sculpt
+     * returns before the cursor (asm:613, 7307-7314): both buttons refused. */
+    iso_click_vertex_drawn(63, 63, SDL_BUTTON_LEFT);
+    assert(ok_to_build == 0 && core_vertex(63, 63) == 1 && core_mana(0) == mana);
+    iso_click_vertex_drawn(63, 63, SDL_BUTTON_RIGHT);
+    assert(ok_to_build == 0 && core_vertex(63, 63) == 1 && core_mana(0) == mana);
     event.key.keysym.sym = SDLK_r;
     game_handle_event(&event);
     for (int tick = 0; tick < 512; ++tick)
@@ -7308,9 +7413,11 @@ static void test_isometric_match_cadence(int interval, int start, const MatchOut
     fprintf(stderr, "isometric defeat turns=%u pop=%d/%d\n", (uint16_t)game_turn,
             core_population(0), core_population(1));
     assert(core_result == 2 && core_population(0) == 0);
-    /* Measured deterministic defeat phase with the computer-player AI. */
+    /* Measured deterministic defeat phase with the computer-player AI; since
+     * frames are drawn each pass, four turn-696 clicks are refused by
+     * _ok_to_build (asm 7307-7314), so red takes longer. */
     if (getenv("POPULOUS_TEST_REAL_DATA"))
-        assert((uint16_t)game_turn == 831 && core_population(1) == 6323);
+        assert((uint16_t)game_turn == 872 && core_population(1) == 6933);
     uint8_t before[sizeof prg_a4_area];
     memcpy(before, prg_a4_area, sizeof before);
     main_loop_step();
@@ -8895,10 +9002,19 @@ static void test_swamp_input(void)
                     click.button.y = sy * 3;
                 }
                 game_handle_event(&key);
+                game_render(); /* the frame _sculpt reads (asm:613, 7307) */
                 uint8_t before[sizeof prg_a4_area];
                 memcpy(before, prg_a4_area, sizeof before);
                 click.button.button = SDL_BUTTON_RIGHT;
                 game_handle_event(&click);
+                /* Unarmed below 5001: a frame with sprites (or the diagnostic
+                 * view) in raise/lower mode stores the cursor (asm:7397-7402) before the 0x10
+                 * power mask refuses the lower; without them asm:7307-7314
+                 * returns first. */
+                if (!tool && mana <= 5000 && (diagnostic || ok_to_build)) {
+                    assert(cur_x == 20 && cur_y == 20);
+                    memcpy(before + (A4_DISP(0x3026) - prg_a4_area), A4_DISP(0x3026), 4);
+                }
                 assert(a4_same(before));
                 click.button.button = SDL_BUTTON_LEFT;
                 game_handle_event(&click);
@@ -8914,6 +9030,7 @@ static void test_swamp_input(void)
                     A4_LONG(0x9a02) = 10000;
                     A4_WORD(0x82c4) = 1;
                     core_leader(0) = 1;
+                    game_render(); /* the frame _sculpt reads (asm:7307) */
                     game_handle_event(&click);
                     assert(core_mana(0) == (tool ? 9800 : 9986));
                 }
@@ -8925,7 +9042,7 @@ static void test_swamp_input(void)
     A4_WORD(0x82c4) = 0x10;
     game_handle_event(&key);
     A4_LONG(0x9a02) = 5000;
-    iso_click_vertex(20, 20, SDL_BUTTON_LEFT);
+    iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
     assert(core_mana(0) == 0 && A4_LONG(0xae72) == 50);
     /* Player-side validation and source selection during war. */
     for (int owner = -1; owner <= 2; ++owner) {
@@ -8937,7 +9054,7 @@ static void test_swamp_input(void)
         A4_WORD(0xae80) = 1;
         game_handle_event(&key);
         A4_WORD(0xae80) = 0;
-        iso_click_vertex(20, 20, SDL_BUTTON_LEFT);
+        iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
         assert(A4_LONG(0xae72) == (owner == 0 || owner == 1 ? 50u : 0u));
         assert(core_mana(0) == (owner == 0 ? 1000 : 6000));
         assert(core_mana(1) == (owner == 1 ? 1000 : 6000));
@@ -8953,13 +9070,13 @@ static void test_swamp_input(void)
         if (failure == 1) A4_WORD(0x82c4) = 1;
         if (failure == 2) A4_WORD(0xae80) = 1;
         uint16_t old_seed = seed;
-        iso_click_vertex(20, 20, SDL_BUTTON_LEFT);
+        iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
         assert(seed == old_seed && A4_LONG(0xae72) == 0 && core_vertex(20, 20) == 1);
         assert(core_swamp_selected == (failure == 2));
         A4_LONG(0x9a02) = 10000;
         A4_WORD(0x82c4) = 0x11;
         A4_WORD(0xae80) = 0;
-        iso_click_vertex(20, 20, SDL_BUTTON_LEFT);
+        iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
         if (failure == 2) {
             assert(core_swamp_selected == 0);
             assert(core_vertex(20, 20) == 1 && core_mana(0) == 5000 && A4_LONG(0xae72) == 50);
@@ -8979,7 +9096,7 @@ static void test_swamp_input(void)
             key.key.repeat = !missing;
             game_handle_event(&key);
             key.key.repeat = 0;
-            iso_click_vertex(20, 20, SDL_BUTTON_LEFT);
+            iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
             if (!paint)
                 assert(core_vertex(20, 20) == 2 && core_mana(0) == 5986 && A4_LONG(0xae72) == 0);
             else if (!missing)
@@ -9004,11 +9121,11 @@ static void test_swamp_input(void)
         click.button.x = 20 * 2;
         click.button.y = 120 * 2;
         game_handle_event(&click);
-        if (blocked) iso_click_vertex(20, 20, SDL_BUTTON_LEFT);
+        if (blocked) iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
         assert(core_mana(0) == 6000 && A4_LONG(0xae72) == 0);
         pause = 0;
         core_result = 0;
-        iso_click_vertex(20, 20, SDL_BUTTON_LEFT);
+        iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
         assert(core_mana(0) == 1000 && A4_LONG(0xae72) == 50);
     }
     /* Byte wrap, not clamping: vertex zero spends and draws but places none. */
@@ -9030,7 +9147,7 @@ static void test_swamp_input(void)
             click.button.y = 0;
             game_handle_event(&click);
         } else
-            iso_click_vertex(0, 0, SDL_BUTTON_LEFT);
+            iso_click_vertex_drawn(0, 0, SDL_BUTTON_LEFT);
         assert(core_mana(0) == 1000 && seed == expected_seed && A4_LONG(0xae72) == 50);
         for (int cell = 0; cell < 4096; ++cell)
             assert(map_blk[cell] != 53);
@@ -9046,14 +9163,14 @@ static void test_swamp_input(void)
     assert(!game_reset(0));
     assert(!setenv("POPULOUS_ASSET_DIR", directory, 1));
     free(directory);
-    iso_click_vertex(20, 20, SDL_BUTTON_LEFT);
+    iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
     assert(core_mana(0) == 1000);
     A4_LONG(0x9a02) = 6000;
     game_handle_event(&key);
     assert(game_reset(0));
     A4_LONG(0x9a02) = 6000;
     A4_WORD(0x82c4) = 0x11;
-    iso_click_vertex(20, 20, SDL_BUTTON_LEFT);
+    iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
     assert(core_mana(0) == 5986 && core_vertex(20, 20) == 2);
     _closeall();
     SDL_Quit();
@@ -9439,7 +9556,7 @@ static void test_swamp_render(void)
     assert(!memcmp(expected, game_pixels, sizeof expected));
     assert(a4_same(before));
     SDL_SetWindowSize(prg_screen->window, 640, 512);
-    iso_click_vertex(20, 20, SDL_BUTTON_LEFT);
+    iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
     game_render();
     assert(!strstr(SDL_GetWindowTitle(prg_screen->window), "SWAMP ARMED"));
     _closeall();
@@ -11753,7 +11870,7 @@ static void test_armageddon_locks(void)
                     uint8_t before[sizeof prg_a4_area];
                     memcpy(before, prg_a4_area, sizeof before);
                     if (!diagnostic)
-                        iso_click_vertex(10, 10, button);
+                        iso_click_vertex_drawn(10, 10, button);
                     else {
                         int width, height;
                         SDL_GetWindowSize(prg_screen->window, &width, &height);
@@ -13998,7 +14115,7 @@ static void test_knight_ordinary_actions(void)
     ___keyboard();
     assert(core_mana(0) == 12500 && peep_reference(0) >= 0);
     /* A knight is not a global terrain or tool lock. */
-    iso_click_vertex(20, 20, SDL_BUTTON_LEFT);
+    iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
     assert(core_vertex(20, 20) == 2 && core_mana(0) == 12486);
     key.key.keysym.sym = SDLK_s;
     assert(SDL_PushEvent(&key) == 1);
@@ -20224,11 +20341,11 @@ static void test_paint_map_options(void)
     for (int i = 0; i < 4225; ++i)
         A4_WORD(0xae86 + i * 2) = 1;
     SDL_SetWindowSize(prg_screen->window, 640, 512);
-    iso_click_vertex(24, 34, SDL_BUTTON_LEFT);
+    iso_click_vertex_drawn(24, 34, SDL_BUTTON_LEFT);
     assert(core_vertex(24, 34) == 2 && core_mana(0) == 0);
     assert(A4_WORD(0x3028) == 24 && A4_WORD(0x3026) == 34);
     SDL_SetWindowSize(prg_screen->window, 640, 512);
-    iso_click_vertex(24, 34, SDL_BUTTON_RIGHT);
+    iso_click_vertex_drawn(24, 34, SDL_BUTTON_RIGHT);
     assert(core_vertex(24, 34) == 1 && core_mana(0) == 0);
     /* Reopened, PLAY GAME leaves the editor. */
     core_game_options_open();
@@ -20241,7 +20358,7 @@ static void test_paint_map_options(void)
     paint_key(SDLK_q, 0);
     assert(!A4_WORD(0x2fac));
     SDL_SetWindowSize(prg_screen->window, 640, 512);
-    iso_click_vertex(24, 34, SDL_BUTTON_LEFT);
+    iso_click_vertex_drawn(24, 34, SDL_BUTTON_LEFT);
     assert(core_vertex(24, 34) == 1);
     /* CANCEL restores the value it was opened with. */
     core_game_options_open();
@@ -20570,6 +20687,10 @@ int main(int argc, char **argv)
     setenv("POPULOUS_SAVE_DIR", "/nonexistent-populous-saves", 1);
     /* Shake frames are checked in test_quake_shake; elsewhere skip the 20 ms vblanks. */
     core_quake_delay = no_quake_delay;
+    if (argc == 2 && !strcmp(argv[1], "--ok-to-build")) {
+        test_ok_to_build();
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--set-devil-magnet")) {
         test_set_devil_magnet();
         return 0;
@@ -21227,6 +21348,7 @@ int main(int argc, char **argv)
     test_blocked_reinforcement_retry();
     test_battle_casualties_and_rewards();
     test_near_town_sculpt();
+    test_ok_to_build();
     test_split_leader_and_occupancy();
     test_settlement_occupancy();
     test_sculpt_navigation_locality();

@@ -972,8 +972,9 @@ static void core_serial_world_click(int column, int row, int left)
         return;
     }
     if (core_tool == 1) { if (left && column < 64 && row < 64) core_serial_post(5, column, row); return; }
+    if (!paint_map && !core_sculpt_visible()) return;
+    cur_x = (int16_t)column; cur_y = (int16_t)row;   /* asm:7397-7402, before the refusals */
     if (!paint_map && !core_sculpt_admit(player, column, row, left ? 1 : -1)) return;
-    cur_x = (int16_t)column; cur_y = (int16_t)row;
     core_serial_post(left ? 1 : 2, column, row);
 }
 

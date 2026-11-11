@@ -1676,6 +1676,12 @@ previously fought from the lower slot. With real data the start-3000 script now
 loses at 2735 (49 battles, 64 towns, 0/20222, `--rescue-legacy-start-3000`), as do
 the after-6000 legacy scripts. The same legal inputs from tick 2000 win at turn
 3656 in both views (38 battles, 118 towns, 21683/0); the defeat phase stays 831.
+`_ok_to_build` gates sculpting (`--ok-to-build`, asm 7307-7314, 7419-7438): the
+value is cleared per frame and OR-ed by every peep sprite drawn; with nothing
+drawn, raise/lower is refused (no cost), and BUILD_NEAR_TOWNS means an own town
+is in view (bit 0), not within two cells. Editor, magnet and swamp are exempt;
+the sprite-less diagnostic view keeps the old checks. Match tests now render
+each pass like `_animate`; the isometric defeat phase ends at 872 (0/6933).
 Battle peeps entering water are no longer exempt (`--water-battle`, asm 3562-3580):
 a town is first `_set_town`'d, then the byte becomes 0x12, the frame is cleared
 if >= 8 and +6 stays linked. A still-exact-8 partner keeps fighting it (water
