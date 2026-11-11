@@ -9,6 +9,7 @@
  *   modules/02_rules.c      Map, peeps, battles, AI, powers, generate, animate/reset
  *   modules/03_ui_save.c    Pointer/HUD, requesters, save/load, world/lord
  *   modules/04_render_input.c Draw path, move_peeps tick, Amiga/SDL shims, input
+ *   modules/05_serial.c     Two-player serial link (over serial_link: TCP/LAN)
  *
  * Prefer named macros from a4_state.h (war_flag, map_vertex_word, …) over raw
  * A4_WORD(0x…)/A4_DISP offsets when touching gameplay code.
@@ -43,6 +44,7 @@
 #include "sdl_lowlevel.h"
 #include "a4_state.h"
 #include "pop_log.h"
+#include "serial_link.h"
 
 /* Host-side demo / window state (not part of the A4 image). */
 static AmigaScreen *prg_screen = NULL;
@@ -73,6 +75,7 @@ static void ensure_prg_screen(void);
 #include "modules/02_rules.c"
 #include "modules/03_ui_save.c"
 #include "modules/04_render_input.c"
+#include "modules/05_serial.c"
 
 #ifdef PRG_STANDALONE_TEST
 int main(void)

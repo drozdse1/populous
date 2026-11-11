@@ -25,6 +25,8 @@ populous_c_port/tests/test_level
 populous_c_port/tests/test_level_sanitize
 populous_c_port/tests/test_runtime
 populous_c_port/tests/test_runtime_sanitize
+populous_c_port/tests/test_net
+populous_c_port/tests/test_net_sanitize
 
 # Cortex Code local state
 .cortex/

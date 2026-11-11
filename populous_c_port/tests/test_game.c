@@ -18486,11 +18486,18 @@ static void test_requesters(void)
     assert(core_rec_w(core_stats(0), 6) == 1 && core_rec_w(core_stats(1), 6) == 1);
     entry_click(core_game_entry(7), 16, 16);
     assert(core_rec_w(core_stats(0), 6) == 0 && core_rec_w(core_stats(1), 6) == 1);
-    /* Inert: TWO PLAYERS (CONQUEST opens _show_world, test_world_screen).
-     * SAVE A GAME / LOAD A GAME open _save_load; CANCEL changes nothing
-     * (test_save_load); LOAD only while _serial_off. */
+    /* TWO PLAYERS opens _two_players(0) (asm:13008-13031); without a cable
+     * its CANCEL returns here, only _serial_text and _baud_rate written
+     * (tests/test_net.c covers the link). CONQUEST opens _show_world
+     * (test_world_screen). SAVE A GAME / LOAD A GAME open _save_load;
+     * CANCEL changes nothing (test_save_load); LOAD only while _serial_off. */
     memcpy(before, prg_a4_area, sizeof before);
     entry_click(core_game_entry(2), 16, 16);
+    assert(core_req.kind == CORE_REQ_TWO && !core_link);
+    cancel_click();
+    assert(core_req.kind == CORE_REQ_GAME && serial_off == 1);
+    memcpy(before + (A4_DISP(0x91ec) - prg_a4_area), A4_DISP(0x91ec), 20 * 46);
+    memcpy(before + (A4_DISP(0x83b8) - prg_a4_area), A4_DISP(0x83b8), 2);
     entry_click(core_game_entry(12), 16, 16);
     assert(core_req.kind == CORE_REQ_FILE && core_file.save == 1);
     cancel_click();

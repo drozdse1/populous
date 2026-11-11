@@ -319,6 +319,7 @@ static void core_options_click(void)
         core_rec_w(own,0x10) = (int16_t)(10 - core_rec_w(own,0x10));
     }
     core_req.kind = CORE_REQ_NONE; left_button = 2;  /* _return_to_game asm:13874-13885 */
+    core_serial_options_closed();   /* y=7 with the link up: the 5 bytes */
 }
 
 /* _game_options asm:12801-12877: the saved values and the ticks. */
@@ -366,14 +367,16 @@ static int core_custom_new_map(int16_t new_map)
 static void core_game_options_close(void)
 {
     core_req.kind = CORE_REQ_NONE; left_button = 2;
+    if (core_serial_game_options_closed()) return;   /* y=8 with the link up */
     int16_t new_map = options_new_map;
     if (new_map && !(in_conquest == -1 ? core_custom_new_map(new_map) : game_reset_start(current_start)))
         POP_LOG_ERROR("Game options: map restart failed; keeping the current game.");
 }
 /* _game_options click, asm:12878-13350. In a conquest game entries 0..8
- * are ignored. Inert here: TWO PLAYERS (_two_players, serial); SAVE A GAME / LOAD A GAME open
- * _save_load (core_file_open), LOAD only with _serial_off; ONE PLAYER only
- * ticks, as _serial_off is always 1.
+ * are ignored. TWO PLAYERS opens _two_players(0) (05_serial.c) without the
+ * link, else sets _bring_up_two and returns; SAVE A GAME / LOAD A GAME open
+ * _save_load (core_file_open), LOAD only with _serial_off; ONE PLAYER drops
+ * the link (_serial_off 1).
  * CONQUEST (asm:13221-13239) opens _show_world with an empty _message. */
 static void core_game_options_click(void)
 {
@@ -388,6 +391,9 @@ static void core_game_options_click(void)
             core_game_tick(7,8); serial_off = 1;
         }
         break;
+    case 2:   /* asm:13008-13031 */
+        if (!core_serial_live()) { core_game_tick(2,1); core_two_open(0, CORE_TWO_FROM_OPTIONS); return; }
+        bring_up_two = 1; core_game_options_close(); return;
     case 3: core_game_tick(3,4); paint_map = 0; break;
     case 4: core_game_tick(4,3); paint_map = 1; break;
     case 5: core_game_tick(5,6); core_game_side(0); break;
@@ -400,7 +406,10 @@ static void core_game_options_click(void)
         core_game_tick(8,7); core_rec_w(core_stats(player),6) = 1;
         if (serial_off) core_rec_w(core_stats(!player),6) = 1;
         break;
-    case 9: core_game_tick(9,10); core_message[0] = 0; core_world_open(CORE_WORLD_OPTIONS); return;
+    case 9:
+        /* Port: the world screen would leave the y=8 exchange unanswered. */
+        if (!core_req.saved_serial && core_link) { POP_LOG_INFO("LAN: CONQUEST is single-player; choose ONE PLAYER first"); break; }
+        core_game_tick(9,10); core_message[0] = 0; core_world_open(CORE_WORLD_OPTIONS); return;
     case 10: core_game_tick(10,9); in_conquest = -1; break;
     case 11: core_set_options_open(); return;
     case 12: core_file_open(1); return;                     /* asm:13259-13266 */
@@ -779,6 +788,7 @@ static void core_file_layout(int draw)
 static void core_file_open(int save)
 {
     memset(&core_file, 0, sizeof core_file);
+    core_file_origin = CORE_FILE_FROM_GAME;   /* callers in 05_serial.c set theirs after */
     core_file.save = save;
     core_req.kind = CORE_REQ_FILE; left_button = 2;
     core_file_directory();
@@ -819,12 +829,21 @@ static void core_file_key(int key)
         text[core_file.length] = (char)0x82;
     } else if (key == 13) core_file_entry_done();
 }
-/* _save_load returning 0: _game_options redraws (-4 = 1). */
+/* _save_load returning 0: _game_options redraws (-4 = 1); _two_players
+ * (row 6) redraws; the two-player save offer goes on. */
 static void core_file_back(void)
 {
+    if (core_file_origin == CORE_FILE_FROM_TWO) { core_two_back(); return; }
+    if (core_file_origin == CORE_FILE_FROM_SYNC) { core_req.kind = CORE_REQ_NONE; left_button = 2; core_serial_continue(); return; }
     core_req.kind = CORE_REQ_GAME; left_button = 2; core_requester_layout();
 }
 static void core_game_options_close(void);
+/* _save_load returning 1. */
+static void core_file_finish(void)
+{
+    if (core_file_origin == CORE_FILE_FROM_GAME) core_game_options_close();
+    else core_file_back();
+}
 /* The click loop LAB_45EAC..LAB_4615C (asm:10760-10972). */
 static void core_file_click(void)
 {
@@ -867,7 +886,8 @@ static void core_file_click(void)
         if (!check) { core_disk_message = CORE_DISK_SAVE; return; }
         fclose(check);
     } else if (!core_load_game(name)) POP_LOGE("SAVE", "Load game: %s could not be loaded.", name);
-    core_game_options_close();   /* _save_load returns 1 either way */
+    else if (core_file_origin == CORE_FILE_FROM_TWO) core_two_loaded();   /* asm:11744-11752 */
+    core_file_finish();   /* _save_load returns 1 either way */
 }
 static void core_draw_game_options(void);
 static void core_draw_file(void)
@@ -904,6 +924,7 @@ static void core_requester_click(void)
     else if (core_req.kind == CORE_REQ_SET) core_set_options_click();
     else if (core_req.kind == CORE_REQ_WORLD) core_world_click();
     else if (core_req.kind == CORE_REQ_FILE) core_file_click();
+    else core_serial_click();
 }
 
 static FILE *core_level_dat_open(void)
@@ -933,7 +954,7 @@ static void core_disk_click(void)
     FILE *check = core_level_dat_open();
     if (!check) { core_disk_message = CORE_DISK_SAVE; return; }
     fclose(check);
-    core_game_options_close();
+    core_file_finish();
 }
 
 static void core_draw_game_options(void)
@@ -961,6 +982,7 @@ static void core_draw_requester(void)
     } else if (core_req.kind == CORE_REQ_GAME) core_draw_game_options();
     else if (core_req.kind == CORE_REQ_WORLD) core_draw_world();
     else if (core_req.kind == CORE_REQ_FILE) core_draw_file();
+    core_serial_draw();
     if (core_req.kind && core_disk_message) core_draw_disk_message();
     else if (core_req.kind == CORE_REQ_SET) {
         /* _set_options draws over the game options screen. */
@@ -1639,7 +1661,9 @@ static void draw_original(int view_x, int view_y)
         int cell=row*64+column, mx=64+column-row, my=(column+row)/2;
         int colour=map_colour_data[map_blk[cell]&15];
         int person=(int)map_who[cell]-1;
-        if (person>=0 && person<no_peeps && peep_population(person)>0) colour=peep_owner(person) ? 8 : 15;
+        /* asm:690-699: with the link up only the own people are plotted. */
+        if (person>=0 && person<no_peeps && peep_population(person)>0 && (!core_serial_live() || peep_owner(person)==player))
+            colour=peep_owner(person) ? 8 : 15;
         if (column>=view_x && column<=view_x+7 && row>=view_y && row<=view_y+7 &&
             (column==view_x || column==view_x+7 || row==view_y || row==view_y+7)) colour=5;
         game_pixels[my*320+mx]=(uint8_t)colour;

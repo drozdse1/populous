@@ -29,9 +29,9 @@ with_timeout = $(if $(TIMEOUT_BIN),$(TIMEOUT_BIN) $(1))
 SANITIZER_FLAGS = -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 
 TARGET = populous_init_port
-SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c
+SRCS = populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c serial_link.c
 # populous_prg.c is a unity build of these fragments (kept for test #include).
-PRG_MODULES = modules/01_preamble.c modules/02_rules.c modules/03_ui_save.c modules/04_render_input.c a4_state.h
+PRG_MODULES = modules/01_preamble.c modules/02_rules.c modules/03_ui_save.c modules/04_render_input.c modules/05_serial.c a4_state.h
 CPPFLAGS += -DPOPULOUS_DEFAULT_ASSET_DIR='"$(abspath ../binaries/populous-extracted)"'
 OBJS = $(SRCS:.c=.o)
 HEADERS = $(wildcard *.h)
@@ -76,11 +76,11 @@ test-sanitize: tests/test_runtime_sanitize
 # Only activate game checks once the core step supplies real test sources.
 ifneq ($(wildcard tests/test_game.c),)
 .PHONY: test-game
-tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c $(HEADERS) $(PRG_MODULES)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c -o $@ $(LDLIBS)
+tests/test_game: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c serial_link.c $(HEADERS) $(PRG_MODULES)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c serial_link.c -o $@ $(LDLIBS)
 
-tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c $(HEADERS) $(PRG_MODULES)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c -o $@ $(LDLIBS)
+tests/test_game_sanitize: tests/test_game.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c serial_link.c $(HEADERS) $(PRG_MODULES)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c serial_link.c -o $@ $(LDLIBS)
 
 test-game: tests/test_game
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) ./tests/test_game
@@ -135,7 +135,7 @@ test-graphics-local: tests/test_graphics
 	$(call with_timeout,$(TEST_TIMEOUT)) ./tests/test_graphics "$(ASSET_DIR)"
 
 clean:
-	rm -f $(OBJS) $(TARGET) tests/test_runtime tests/test_runtime_sanitize tests/test_game tests/test_game_sanitize tests/test_land tests/test_land_sanitize tests/test_graphics tests/test_graphics_sanitize tests/test_level tests/test_level_sanitize tests/test_audio tests/test_audio_sanitize
+	rm -f $(OBJS) $(TARGET) tests/test_runtime tests/test_runtime_sanitize tests/test_game tests/test_game_sanitize tests/test_land tests/test_land_sanitize tests/test_graphics tests/test_graphics_sanitize tests/test_level tests/test_level_sanitize tests/test_audio tests/test_audio_sanitize tests/test_net tests/test_net_sanitize
 
 run: $(TARGET)
 	./$(TARGET)
@@ -170,3 +170,24 @@ test-audio-sanitize: tests/test_audio_sanitize
 	SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) ./tests/test_audio_sanitize
 test: test-audio
 test-sanitize: test-audio-sanitize
+
+# Two-player link: channel, original serial protocol, two processes over 127.0.0.1.
+.PHONY: test-net test-net-sanitize
+NET_SOURCES = tests/test_net.c populous_init.c populous_prg.c sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c serial_link.c serial_link.h $(HEADERS) $(PRG_MODULES)
+NET_LINK = sdl_lowlevel.c land_data.c level_data.c graphics.c audio.c title_music.c intro_data.c pop_log.c serial_link.c
+tests/test_net: $(NET_SOURCES)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< $(NET_LINK) -o $@ $(LDLIBS)
+tests/test_net_sanitize: $(NET_SOURCES)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) $< $(NET_LINK) -o $@ $(LDLIBS)
+define net_checks
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) $(1) channel
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) $(1) protocol
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) $(1) tcp-full
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) $(1) tcp-quick
+endef
+test-net: tests/test_net
+	$(call net_checks,./tests/test_net)
+test-net-sanitize: tests/test_net_sanitize
+	$(call net_checks,./tests/test_net_sanitize)
+test: test-net
+test-sanitize: test-net-sanitize

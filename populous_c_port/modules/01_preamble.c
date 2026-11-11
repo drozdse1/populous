@@ -205,7 +205,9 @@ static void core_set_pointer(void);
  * _do_action, so nothing else moves; the port keeps the state here, stops
  * game_tick while kind is set and routes left presses to it. _set_options
  * runs inside _game_options and returns to it. */
-enum { CORE_REQ_NONE, CORE_REQ_OPTIONS, CORE_REQ_GAME, CORE_REQ_SET, CORE_REQ_WORLD, CORE_REQ_FILE };
+enum { CORE_REQ_NONE, CORE_REQ_OPTIONS, CORE_REQ_GAME, CORE_REQ_SET, CORE_REQ_WORLD, CORE_REQ_FILE,
+       /* Two-player requesters and waits, modules/05_serial.c. */
+       CORE_REQ_TWO, CORE_REQ_TRY, CORE_REQ_SMSG, CORE_REQ_MSG_OUT, CORE_REQ_MSG_IN, CORE_REQ_SWAIT, CORE_REQ_NOTICE };
 static struct {
     int kind, side;
     uint8_t saved_stats[46];                /* _options -56(A5) */
@@ -218,6 +220,40 @@ static void core_requester_click(void);
 static void core_file_open(int save);
 static void core_file_layout(int draw);
 static void core_draw_requester(void);
+/* Two-player link (modules/05_serial.c). A blocking _do_action suspends
+ * the _get_message loop at core_consume_next; core_consume_abort ends it
+ * as a nonzero _do_action return does (asm:18189-18197). */
+static SerialLink *core_link;
+static int core_consume_next = -1, core_consume_abort, core_turn_moved;
+static int core_turn_pending;   /* this turn's _move_peeps ran; the exchange is outstanding */
+/* _serial_off 0 with a cable: fixtures with a zeroed A4 stay single play. */
+static int core_serial_live(void) { return !serial_off && core_link; }
+static int core_consume_from(int first);
+enum { CORE_FILE_FROM_GAME, CORE_FILE_FROM_TWO, CORE_FILE_FROM_SYNC };
+static int core_file_origin;
+enum { CORE_TWO_FROM_OPTIONS, CORE_TWO_FROM_CLI, CORE_TWO_FROM_SYNC };
+static int core_serial_engaged(void);
+static void core_serial_tick(void);
+static int core_serial_do_action(int owner, int x, int y);
+static void core_serial_options_closed(void);
+static int core_serial_game_options_closed(void);
+static void core_serial_frame(void);
+static void core_serial_draw(void);
+static void core_serial_click(void);
+static int core_serial_blocked(void);
+static int core_serial_can_post(void);
+static int core_serial_shortcut(SDL_Keycode key);
+static void core_serial_world_click(int column, int row, int left);
+static void core_serial_continue(void);
+static void core_two_open(int resync, int origin);
+static void core_two_back(void);
+static void core_two_loaded(void);
+static void core_msg_key(int key);
+static int core_serial_parse(int argc, char **argv, int *matched);
+static void core_serial_detach(void);
+static int core_sculpt_admit(int owner, int column, int row, int direction);
+static int core_custom_new_map(int16_t new_map);
+static int core_serial_cancel;
 /* _show_world state, see core_world_open. */
 enum { CORE_WORLD_START, CORE_WORLD_OPTIONS, CORE_WORLD_WON };
 static struct { int origin, shown, entry, error, level, length, blink; } core_world;
@@ -553,11 +589,15 @@ void prg_main(void)
     pop_log_init();
     prg_status = EXIT_SUCCESS;
     prg_quit = 0;
-    if (!parse_start(g_argc, g_argv, &requested_start)) {
-        POP_LOG_INFO("Usage: populous_init_port [nonnegative integer <= INT_MAX | --level 0..494 | --code WORLDNAME | --conquest | --tutorial]");
+    int lan = 0;
+    if (!core_serial_parse(g_argc, g_argv, &lan) || (!lan && !parse_start(g_argc, g_argv, &requested_start))) {
+        POP_LOG_INFO("Usage: populous_init_port [nonnegative integer <= INT_MAX | --level 0..494 | --code WORLDNAME | --conquest | --tutorial | --host [port] | --join ip[:port]]");
         prg_status = EXIT_FAILURE;
         return;
     }
+    /* Two players start on the boot custom landscape, as TWO PLAYERS from
+     * GAME OPTIONS does in the original (only custom games use the link). */
+    if (lan) { requested_start = (StartSelection){START_CUSTOM, 0}; core_land = (CustomLand){0, 1, 0}; requested_world = 0; }
     /* Without arguments _start_of_game comes from the launcher (asm:94-96):
      * 2 opens the world screen (asm:536-551), 3 the tutorial (asm:13975). */
     if (g_argc <= 1 && g_start_of_game == 2) { requested_start = (StartSelection){START_ORIGINAL, 0}; requested_world = 1; }
@@ -569,6 +609,7 @@ void prg_main(void)
     }
     core_custom_live = 0;   /* a fresh boot: the _stats/_game_mode data values */
     _main();
+    core_serial_detach();
 }
 
 /* Retain the launcher's void PRG entry; propagate failure without exiting SDL. */
