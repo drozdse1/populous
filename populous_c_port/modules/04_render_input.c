@@ -112,7 +112,7 @@ static void _move_peeps(void)
     if (sound_effect & 8) effect = (int16_t)(toggle + 0x43);
     if (sound_effect & 0x80) { if (!last_fire) effect = 0x46; last_fire = 3; }
     else if (last_fire) --last_fire;
-    /* Existing walker/town/battle/remnant consumption; nonwar AI remains disabled. */
+    /* Existing walker/town/battle/remnant consumption; the AI ran above (asm:3255-3270). */
     for (int person = 0; person < no_peeps; ++person) {
         if (peep_population(person) <= 0) continue;
         /* asm:3459-3474: sum the pre-movement word (EXT.L) by owner byte. */

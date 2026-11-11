@@ -178,7 +178,8 @@ updates avoidance history before the existing blocked-navigation wait. Direct
 block-47 steps are allowed during war, never as fallback steps. Invalid leader
 references safely fall back to the magnet without repairing unrelated records.
 War overrides ordinary tendency selection. Valid heading references override
-magnet/leader targets; special battle behavior still remains incomplete.
+magnet/leader targets; heading battles, frames and save encoding follow the
+original (`_battle_over`, `_set_frame`, `_move_sprite`).
 An independent assembly-table harness matched 10,616,832 direction/terrain/history
 cases. Focused/default tests, ASan/UBSan, all 495 original starts and original-data
 matches passed. This comparison is not a trace of execution on an Amiga.
