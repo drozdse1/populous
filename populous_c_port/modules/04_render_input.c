@@ -85,6 +85,7 @@ static void _move_peeps(void)
         core_town_strength[owner] = (int16_t)(stats_city_count(owner)*3 + stats_town_tally(owner));
         core_town_age(owner) = 0;
         core_good_pop(owner) = 0;
+        if (toggle) core_mana_long(owner) += 1u;   /* asm:3302-3310 */
         core_city_count[owner] = 0; core_youngest_town_age[owner] = 0x4e1f;
         stats_best_town_ref(owner) = stats_oldest_town_ref(owner) = stats_youngest_town_ref(owner) = 0;
         core_oldest_town_age[owner] = 0; core_best_town_capacity[owner] = 0;

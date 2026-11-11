@@ -9595,9 +9595,9 @@ static void test_quake_cast(void)
                 if (gate == 0) side = -1;
                 if (gate == 1) side = 2;
                 if (gate == 2) x = -1;
-                if (gate == 3) x = 57;
+                if (gate == 3) x = 256; /* no asm bound; host byte guard */
                 if (gate == 4) y = -1;
-                if (gate == 5) y = 57;
+                if (gate == 5) y = 256;
                 if (gate == 6) A4_LONG(0x9a02 + owner * 16) = 2499;
                 if (gate == 7) A4_WORD(0x82c4 + owner * 46) = 0xfff7;
                 if (gate == 8) pause = 1;
@@ -10150,6 +10150,130 @@ static void volcano_fixture(int height)
 }
 
 /* ========================================================================
+ * Computer-AI gaps: _toggle mana tick and edge-of-map quake/volcano targets
+ * ======================================================================== */
+/* _move_peeps asm:3302-3310: while _toggle (A4 0x9a1a) is set, the per-owner
+ * reset adds 1 to the long mana at 0x9a02+owner*16; nothing else differs. */
+static void test_ai_toggle(void)
+{
+    uint8_t off[sizeof prg_a4_area];
+    for (int run = 0; run < 2; ++run) {
+        memset(prg_a4_area, 0, sizeof prg_a4_area);
+        start_state();
+        stats_build_latch(0) = stats_build_latch(1) = 1;
+        A4_LONG(0x9a02) = 399;
+        A4_LONG(0x9a12) = 7;
+        toggle = (int16_t)run;
+        _move_peeps();
+        if (!run) {
+            assert(A4_LONG(0x9a02) == 399 && A4_LONG(0x9a12) == 7 && toggle == 0);
+            memcpy(off, prg_a4_area, sizeof off);
+            continue;
+        }
+        assert(A4_LONG(0x9a02) == 400 && A4_LONG(0x9a12) == 8 && toggle == 1);
+        uint32_t m0 = 400, m1 = 8;
+        memcpy(off + (A4_DISP(0x9a02) - prg_a4_area), &m0, 4);
+        memcpy(off + (A4_DISP(0x9a12) - prg_a4_area), &m1, 4);
+        int16_t t = 1;
+        memcpy(off + (A4_DISP(0x9a1a) - prg_a4_area), &t, 2);
+        assert(!memcmp(off, prg_a4_area, sizeof off));
+    }
+    /* _animate asm:604-610 flips once per main-loop pass (core_tempo_pass). */
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    start_state();
+    core_tempo_pass();
+    assert(toggle == 1);
+    core_tempo_pass();
+    assert(toggle == 0);
+}
+/* Apply the asm's make_map/draw tail to a literal expected image. */
+static void expect_make_map(uint8_t *expected, int left, int top, int right, int bottom)
+{
+    uint8_t live[sizeof prg_a4_area];
+    memcpy(live, prg_a4_area, sizeof live);
+    memcpy(prg_a4_area, expected, sizeof live);
+    core_make_map_region(left, top, right, bottom);
+    memcpy(expected, prg_a4_area, sizeof live);
+    memcpy(prg_a4_area, live, sizeof live);
+}
+static void expect_word(uint8_t *expected, int offset, int16_t value)
+{ memcpy(expected + (A4_DISP(offset) - prg_a4_area), &value, 2); }
+static void expect_long(uint8_t *expected, int offset, uint32_t value)
+{ memcpy(expected + (A4_DISP(offset) - prg_a4_area), &value, 4); }
+/* _do_quake asm:7863-8042 and _do_volcano asm:8046-8267 bound no target.
+ * Quake probes _alt[y*65+x] (asm:7932-7940 words from A4 0xae86) for the
+ * 9x9 square; rows past the vertex map read _map_blk (0xcf88, fixture
+ * 0x0f0f) and still draw. _raise_point/_lower_point (asm:1274-1287,
+ * 2571-2584) reject x or y above 64 before any write. */
+static void test_ai_edge_targets(void)
+{
+    uint8_t expected[sizeof prg_a4_area];
+    /* No render: the shake frames' game_render is covered by test_quake_shake. */
+    GraphicsAssets *assets = game_assets;
+    game_assets = NULL;
+    /* Quake at (63,63), all-one land, every draw lowers. Pass 0: 81 nonzero
+     * probes, lowering (63..64,63..64). Pass 1: those 4 are now 0, 77 draws. */
+    quake_fixture(1);
+    for (int draw = 0; draw < 162; ++draw) quake_values[draw] = 2;
+    memcpy(expected, prg_a4_area, sizeof expected);
+    assert(core_quake(0, 63, 63, quake_random));
+    assert(quake_draws == 158);
+    for (int row = 63; row <= 64; ++row)
+        for (int column = 63; column <= 64; ++column)
+            expect_word(expected, 0xae86 + 2 * (row * 65 + column), 0);
+    expect_long(expected, 0x9a02, 7500);       /* 10000 - 2500 */
+    expect_long(expected, 0xae72, 25);         /* player 0 */
+    expect_word(expected, 0x2fac, 76);
+    expect_word(expected, 0x2f88, 127);        /* 123 + 4 lowers */
+    expect_word(expected, 0x2f8a, 63); expect_word(expected, 0x2f8c, 63);
+    expect_word(expected, 0x2f8e, 63); expect_word(expected, 0x2f90, 63);
+    expect_make_map(expected, 62, 62, 63, 63);
+    assert(!memcmp(expected, prg_a4_area, sizeof expected));
+    /* Quake at (60,57): in-map probes only reach x<=64; the AI fallback's 60. */
+    quake_fixture(1);
+    assert(core_quake(1, 60, 57, quake_random));
+    assert(quake_draws == 162 && core_mana(1) == 7500 && core_mana(0) == 10000);
+    /* Byte maximum (255,255): every probe is past the map, nothing is written
+     * to the land, the cast is still paid. Host guard: coordinates above 255
+     * cannot come from the byte mailboxes and are refused. */
+    quake_fixture(1);
+    memcpy(expected, prg_a4_area, sizeof expected);
+    assert(core_quake(0, 255, 255, quake_random));
+    for (int row = 0; row <= 64; ++row)
+        for (int column = 0; column <= 64; ++column) assert(core_vertex(column, row) == 1);
+    assert(core_mana(0) == 7500);
+    quake_fixture(1);
+    memcpy(expected, prg_a4_area, sizeof expected);
+    assert(!core_quake(0, 256, 0, quake_random) && !core_quake(0, 0, 256, quake_random));
+    assert(!quake_draws && !memcmp(expected, prg_a4_area, sizeof expected));
+    /* Volcano at (63,63) on flat sea: 165 raise draws (all 1), only (63..64,
+     * 63..64) in range; pass 1 raises (64,64) again. Lava: one in-map cell
+     * (4095), draw 0, not a target or protected (both 0): block 47. */
+    volcano_fixture(0);
+    for (int draw = 0; draw < 229; ++draw) volcano_values[draw] = draw < 165 ? 1 : 0;
+    memcpy(expected, prg_a4_area, sizeof expected);
+    assert(core_volcano(0, 63, 63, volcano_random));
+    assert(volcano_draws == 166);
+    expect_word(expected, 0xae86 + 2 * (63 * 65 + 63), 1);
+    expect_word(expected, 0xae86 + 2 * (63 * 65 + 64), 1);
+    expect_word(expected, 0xae86 + 2 * (64 * 65 + 63), 1);
+    expect_word(expected, 0xae86 + 2 * (64 * 65 + 64), 2);
+    expected[(map_blk - prg_a4_area) + 4095] = 47;
+    expected[(map_bk2 - prg_a4_area) + 4095] = 0;
+    expect_long(expected, 0x9a02, 0);          /* 10000 - 10000 */
+    expect_long(expected, 0xae72, 100);
+    expect_word(expected, 0x2fac, 75);
+    expect_word(expected, 0x2f88, 128);        /* 123 + 5 raises */
+    expect_word(expected, 0x2f8a, 63); expect_word(expected, 0x2f8c, 63);
+    expect_word(expected, 0x2f8e, 63); expect_word(expected, 0x2f90, 63);
+    expect_make_map(expected, 62, 62, 63, 63);
+    assert(!memcmp(expected, prg_a4_area, sizeof expected));
+    volcano_fixture(0);
+    assert(!core_volcano(0, 256, 0, volcano_random) && !volcano_draws);
+    game_assets = assets;
+}
+
+/* ========================================================================
  * Volcano power
  * ======================================================================== */
 static void test_volcano_cast(void)
@@ -10165,9 +10289,9 @@ static void test_volcano_cast(void)
                 if (gate == 0) side = -1;
                 if (gate == 1) side = 2;
                 if (gate == 2) x = -1;
-                if (gate == 3) x = 57;
+                if (gate == 3) x = 256; /* no asm bound; host byte guard */
                 if (gate == 4) y = -1;
-                if (gate == 5) y = 57;
+                if (gate == 5) y = 256;
                 if (gate == 6) A4_LONG(0x9a02 + owner * 16) = 9999;
                 if (gate == 7) A4_WORD(0x82c4 + owner * 46) = 0xffbf;
                 if (gate == 8) pause = 1;
@@ -20662,6 +20786,14 @@ int main(int argc, char **argv)
         puts("focused war-state regression: PASS");
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--ai-toggle")) {
+        test_ai_toggle();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--ai-edge-targets")) {
+        test_ai_edge_targets();
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--volcano")) {
         test_volcano_input_smoke();
         test_volcano_cast();
@@ -20852,6 +20984,8 @@ int main(int argc, char **argv)
     test_volcano_input_smoke();
     test_volcano_cast();
     test_volcano_lava();
+    test_ai_toggle();
+    test_ai_edge_targets();
     test_swamp_cast();
     test_swamp_hazard();
     test_blocked_entry();

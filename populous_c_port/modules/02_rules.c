@@ -1566,10 +1566,14 @@ static void core_quake_shake(void)
     core_shake_dy = 0;
 }
 /* _do_quake asm:7863-8042: _paint_map (asm:7865) skips the mana, _war,
- * _pause and permission gates and the payment, not the score. */
+ * _pause and permission gates and the payment, not the score. No target
+ * bound: the probe (asm:7932-7940) reads _alt[y*65+x] past the vertex map into _map_blk and
+ * beyond (still drawing when nonzero); _raise_point/_lower_point (asm:1274,
+ * 2571) refuse x or y above 64, so nothing outside _alt is written. Host
+ * guard: byte mailbox coordinates (0..255) keep every probe in prg_a4_area. */
 static int core_quake(int owner, int column, int row, WorldRandom random)
 {
-    if (owner < 0 || owner > 1 || column < 0 || column > 56 || row < 0 || row > 56 ||
+    if (owner < 0 || owner > 1 || column < 0 || column > 255 || row < 0 || row > 255 ||
         core_result) return 0;
     if (!paint_map) {
         if (pause || war_flag || core_mana(owner) < (int32_t)mana_quake_cost ||
@@ -1599,10 +1603,12 @@ static int core_quake(int owner, int column, int row, WorldRandom random)
     return 1;
 }
 /* _do_volcano asm:8046-8267: _paint_map (asm:8048) skips the mana, _war,
- * _pause and permission gates and the payment, not the score. */
+ * _pause and permission gates and the payment, not the score. No target
+ * bound: _raise_point refuses x or y above 64 and the lava square clips to
+ * 0..63 (asm:8164-8173). Host guard: byte mailbox coordinates only. */
 static int core_volcano(int owner, int column, int row, WorldRandom random)
 {
-    if (owner < 0 || owner > 1 || column < 0 || column > 56 || row < 0 || row > 56 ||
+    if (owner < 0 || owner > 1 || column < 0 || column > 255 || row < 0 || row > 255 ||
         core_result) return 0;
     if (!paint_map && (pause || war_flag || core_mana(owner) < (int32_t)mana_volcano_cost ||
         !(stats_power_mask(owner)&0x40))) return 0;
