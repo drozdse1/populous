@@ -230,6 +230,18 @@ static void test_lifecycle(void)
 /* ========================================================================
  * Original-behaviour checks
  * ======================================================================== */
+/* core_sculpt (_sculpt asm:7271-7560) only posts into the _player
+ * mailbox; the next tick's consumer applies it. Tests that want the terrain
+ * result post as owner and run that consumer. */
+static int sculpt_consume(int owner, int column, int row, int direction)
+{
+    int saved = player;
+    player = owner;
+    int posted = core_sculpt(column, row, direction);
+    player = saved;
+    if (posted) core_consume_terrain_mailboxes();
+    return posted;
+}
 static void test_original_rules(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO) == 0);
@@ -263,16 +275,17 @@ static void test_original_rules(void)
     assert(a4_same(initial));
     assert(game_reset(0));
     int32_t mana_before = core_mana(0);
-    assert(core_sculpt(0, 10, 10, 1));
+    ok_to_build = 1;   /* the frame the click sees drew a sprite (asm:7307) */
+    assert(sculpt_consume(0, 10, 10, 1));
     assert(core_vertex(10, 10) == 2);
     assert(core_mana(0) == mana_before - 14);
-    assert(!core_sculpt(0, -1, 10, 1));
+    assert(!core_sculpt(-1, 10, 1));
     assert(game_reset(3));
     memcpy(initial, prg_a4_area, sizeof initial);
-    assert(!core_sculpt(0, 10, 10, 1));
+    assert(!core_sculpt(10, 10, 1));
     assert(memcmp(initial, prg_a4_area, sizeof initial) == 0);
     assert(game_reset(4));
-    assert(!core_sculpt(0, 10, 10, -1));
+    assert(!core_sculpt(10, 10, -1));
     _closeall();
     SDL_Quit();
 }
@@ -299,6 +312,7 @@ static void test_sculpt_projection_and_rejection(void)
     click.button.y = 336;
     assert(SDL_PushEvent(&click) == 1);
     ___keyboard();
+    core_consume_terrain_mailboxes();   /* _sculpt posts; the tick applies */
     assert(core_vertex(10, 10) == 2 && core_mana(0) == 385);
     game_render();
     assert(memcmp(pixels, prg_screen->chunky_buffer, sizeof pixels) != 0);
@@ -308,10 +322,10 @@ static void test_sculpt_projection_and_rejection(void)
     assert(SDL_PushEvent(&click) == 1);
     ___keyboard();
     assert(a4_same(before)); /* HUD must not sculpt hidden terrain. */
+    /* Neither _sculpt nor _do_raise_point tests power bit 0 (asm:7271-7560,
+     * 7180-7246; the level loader always ORs 7): the click still posts. */
     LAB_516B2 = 0;
-    memcpy(before, prg_a4_area, sizeof before);
-    assert(!core_sculpt(0, 10, 10, 1));
-    assert(a4_same(before));
+    assert(core_sculpt(10, 10, 1) && stats_bytes(0)[0] == 1);
     _closeall();
     SDL_Quit();
 }
@@ -348,7 +362,12 @@ static void test_load_failure_and_magnet(void)
     int32_t mana_before = core_mana(0);
     assert(SDL_PushEvent(&click) == 1);
     ___keyboard();
-    assert(core_target(0) == 650 && core_mana(0) == mana_before - 200);
+    /* _sculpt posts {5, cur_x-1, cur_y-1} = {5,9,9} for vertex 10,10
+     * (asm:7478-7500); _do_magnet on the tick pays 200 (asm:6769-6820). */
+    assert(core_mana(0) == mana_before && A4_DISP(0x82b6)[0] == 5 &&
+           A4_DISP(0x82b6)[1] == 9 && A4_DISP(0x82b6)[2] == 9);
+    core_consume_terrain_mailboxes();
+    assert(core_target(0) == 585 && core_mana(0) == mana_before - 200);
     _closeall();
     SDL_Quit();
 }
@@ -6900,7 +6919,10 @@ static void test_near_town_sculpt(void)
     assert(ok_to_build && !(ok_to_build & 1));
     uint8_t before[sizeof prg_a4_area];
     memcpy(before, prg_a4_area, sizeof before);
-    assert(!core_sculpt(0, 8, 8, 1));
+    /* The cursor is stored before the refusal (asm:7397-7402, 7433-7438). */
+    assert(!core_sculpt(8, 8, 1));
+    assert(cur_x == 8 && cur_y == 8);
+    memcpy(before + (A4_DISP(0x3026) - prg_a4_area), A4_DISP(0x3026), 4);
     assert(a4_same(before));
     for (int tick = 0; tick < 16; ++tick)
         game_tick();
@@ -6909,11 +6931,11 @@ static void test_near_town_sculpt(void)
     game_render();
     assert(ok_to_build & 1);
     int32_t mana_before = core_mana(0);
-    assert(core_sculpt(0, position % 64, position / 64, 1));
+    assert(sculpt_consume(0, position % 64, position / 64, 1));
     assert(core_vertex(position % 64, position / 64) == 2 && core_mana(0) == mana_before - 14);
     /* The bit is view-wide: a vertex far from every town is admitted too. */
     assert(core_vertex(60, 60) > 0);
-    assert(core_sculpt(0, 60, 60, 1));
+    assert(sculpt_consume(0, 60, 60, 1));
     _closeall();
     SDL_Quit();
 }
@@ -6972,7 +6994,8 @@ static void test_sculpt_navigation_locality(void)
     for (int cell = 0; cell < 4096; ++cell)
         visited += A4_WORD(0xff88 + cell * 2) != 0;
     assert(visited > 0);
-    assert(core_sculpt(0, 60, 60, 1));
+    ok_to_build = 1;   /* a drawn sprite admits the plain-mode click (asm:7307) */
+    assert(sculpt_consume(0, 60, 60, 1));
     for (int cell = 0; cell < 4096; ++cell) {
         int column = cell % 64, row = cell / 64;
         if (column >= 59 && column <= 60 && row >= 59 && row <= 60) {
@@ -6986,7 +7009,7 @@ static void test_sculpt_navigation_locality(void)
     for (int row = 59; row <= 60; ++row)
         for (int column = 59; column <= 60; ++column)
             A4_WORD(0xff88 + (row * 64 + column) * 2) = 9;
-    assert(core_sculpt(0, 60, 60, -1));
+    assert(sculpt_consume(0, 60, 60, -1));
     for (int row = 59; row <= 60; ++row)
         for (int column = 59; column <= 60; ++column)
             assert(!A4_WORD(0xff88 + (row * 64 + column) * 2));
@@ -7017,13 +7040,106 @@ static void test_settlement_occupancy(void)
     SDL_Quit();
 }
 
-/* One scripted match: rescue clicks lower land under every enemy walker each
+/* One scripted match: rescue clicks lower land under enemy peeps each
  * `interval` ticks from tick `start`. Real-data outcomes are exact per script. */
 typedef struct {
     int result;
     uint16_t turns;
     int battles, towns, own, enemy;
 } MatchOutcome;
+/* A rescue script. _sculpt posts into one mailbox that the tick consumes,
+ * so at most one terrain command per player and turn takes effect (a newer
+ * post overwrites, asm:7456-7560, 17929-17995). MATCH_LEGACY is the former
+ * script: lower the 2x2 footprint of every live target each `interval`
+ * ticks, i.e. 4n posts of which only the last counts. The others post one
+ * right click per `interval` ticks:
+ *   MATCH_FIRST        the four footprint vertices of the lowest-index target;
+ *   MATCH_PEEP_MAJOR   round-robin over targets, all four vertices of one
+ *                      target on consecutive posts;
+ *   MATCH_VERTEX_MAJOR round-robin over targets, one vertex per target;
+ *   MATCH_NEAREST      the target nearest to our papal magnet (_magnet target),
+ *                      cycling its four vertices.
+ * A target is a live peep (population > 0) of the side being drowned. */
+enum { MATCH_LEGACY, MATCH_FIRST, MATCH_PEEP_MAJOR, MATCH_VERTEX_MAJOR, MATCH_NEAREST };
+typedef struct {
+    int order, interval, start, tendency;
+} MatchScript;
+static void main_loop_step(void);
+/* Measured deterministic defeat phases of match_defeat_phase (one post per
+ * tick, MATCH_PEEP_MAJOR under our own peeps), with the computer-player AI. */
+static const MatchOutcome events_defeat_phase = {2, 942, 6, 62, 0, 6403};
+static const MatchOutcome isometric_defeat_phase = {2, 951, 5, 68, 0, 6430};
+static void match_click(int iso, int column, int row)
+{
+    if (iso) {
+        /* iso_click_vertex's minimap scroll, but a vertex the scroll leaves
+         * outside the 9x9 view (odd minimap rounding at the map border) is
+         * skipped instead of asserted: the player could not click it. */
+        int center_x = column > 63 ? 63 : column, center_y = row > 63 ? 63 : row;
+        SDL_Event event = {.type = SDL_MOUSEBUTTONDOWN};
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.x = 2 * (64 + center_x - center_y);
+        event.button.y = 2 * ((center_x + center_y) / 2);
+        game_handle_event(&event);
+        int u = column - xoff, v = row - yoff;
+        if (u < 0 || u > 8 || v < 0 || v > 8) return;
+        event.button.button = SDL_BUTTON_RIGHT;
+        event.button.x = 2 * (192 + 16 * (u - v));
+        event.button.y = 2 * (72 + 8 * (u + v) - 8 * core_vertex(column, row));
+        game_handle_event(&event);
+        return;
+    }
+    SDL_Event click = {.type = SDL_MOUSEBUTTONDOWN};
+    click.button.button = SDL_BUTTON_RIGHT;
+    click.button.x = (column * 4 + 1) * 2;
+    click.button.y = (row * 4 + 1) * 2;
+    assert(SDL_PushEvent(&click) == 1);
+    ___keyboard();
+}
+/* The script's input for this pass; *step counts its posts. */
+static void match_input(int iso, int owner, int order, unsigned *step)
+{
+    int targets[208], count = 0;
+    for (int person = 0; person < no_peeps; ++person)
+        if (peep_owner(person) == owner && peep_word(person, 4) > 0) targets[count++] = person;
+    if (!count) return;
+    if (order == MATCH_LEGACY) {
+        for (int index = 0; index < count && !core_result; ++index) {
+            int position = peep_word(targets[index], 8);
+            for (int dy = 0; dy < 2; ++dy)
+                for (int dx = 0; dx < 2; ++dx)
+                    match_click(iso, position % 64 + dx, position / 64 + dy);
+        }
+        return;
+    }
+    int person = targets[0], vertex = (int)(*step % 4);
+    if (order == MATCH_PEEP_MAJOR) person = targets[(*step / 4) % (unsigned)count];
+    else if (order == MATCH_VERTEX_MAJOR) {
+        person = targets[*step % (unsigned)count];
+        vertex = (int)((*step / (unsigned)count) % 4);
+    } else if (order == MATCH_NEAREST) {
+        int magnet = core_target(owner ? 0 : 1), best = 1 << 30;
+        for (int index = 0; index < count; ++index) {
+            int position = peep_word(targets[index], 8);
+            int dx = abs(position % 64 - magnet % 64), dy = abs(position / 64 - magnet / 64);
+            int distance = dx > dy ? dx : dy;
+            if (distance < best) { best = distance; person = targets[index]; }
+        }
+    }
+    int position = peep_word(person, 8);
+    match_click(iso, position % 64 + vertex % 2, position / 64 + vertex / 2);
+    ++*step;
+}
+/* Self-sculpt defeat phase for both views: one post per tick under our own
+ * peeps, round-robin (MATCH_PEEP_MAJOR), until red wins. */
+static void match_defeat_phase(int iso)
+{
+    unsigned step = 0;
+    for (int tick = 0; tick < 2000 && !core_result; ++tick) {
+        match_input(iso, 0, MATCH_PEEP_MAJOR, &step);
+        main_loop_step();
+    }
+}
 /* One main-loop pass of _animate (02_rules.c): the requester blinks, the
  * heartbeat/_toggle pass outside requesters and the end screen, the tick,
  * the deferred end-game entry and the frame. Audio and the lord's mouth do
@@ -7047,37 +7163,25 @@ static void assert_match_outcome(const MatchOutcome *expected)
 }
 
 /* Match events cadence. */
-static void test_match_events_cadence(int interval, int start, const MatchOutcome *expected)
+static void test_match_events_cadence(const MatchScript *script, const MatchOutcome *expected)
 {
-    assert(interval == 1 || interval == 8);
+    assert(script->interval >= 1 && script->tendency >= 0 && script->tendency <= 3);
     assert(SDL_Init(SDL_INIT_VIDEO) == 0);
     assert(game_reset(0));
     SDL_Event key = {.type = SDL_KEYDOWN};
     key.key.keysym.sym = SDLK_d; /* Explicit legacy diagnostic view for this regression. */
     assert(SDL_PushEvent(&key) == 1);
     ___keyboard();
-    key.key.keysym.sym = SDLK_3;
+    key.key.keysym.sym = SDLK_0 + script->tendency;
     assert(SDL_PushEvent(&key) == 1);
     ___keyboard();
-    assert(core_tendency(0) == 3);
+    assert(core_tendency(0) == script->tendency);
     SDL_SetWindowSize(prg_screen->window, 640, 512);
+    unsigned step = 0;
     for (int tick = 0; tick < 12000 && !core_result; ++tick) {
         main_loop_step();
-        if (tick >= start && tick % interval == 0) {
-            for (int person = 0; person < no_peeps; ++person) {
-                if (!peep_owner(person) || peep_word(person, 4) <= 0) continue;
-                int position = peep_word(person, 8);
-                for (int dy = 0; dy < 2; ++dy)
-                    for (int dx = 0; dx < 2; ++dx) {
-                        SDL_Event click = {.type = SDL_MOUSEBUTTONDOWN};
-                        click.button.button = SDL_BUTTON_RIGHT;
-                        click.button.x = ((position % 64 + dx) * 4 + 1) * 2;
-                        click.button.y = ((position / 64 + dy) * 4 + 1) * 2;
-                        assert(SDL_PushEvent(&click) == 1);
-                    }
-            }
-            ___keyboard();
-        }
+        if (tick >= script->start && tick % script->interval == 0)
+            match_input(0, 1, script->order, &step);
     }
     fprintf(stderr, "match result=%d turns=%u battles=%d towns=%d pop=%d/%d\n", core_result,
             (uint16_t)game_turn, core_battles, core_settlements, core_population(0),
@@ -7106,32 +7210,13 @@ static void test_match_events_cadence(int interval, int start, const MatchOutcom
     SDL_SetWindowSize(prg_screen->window, 640, 512);
     for (int tick = 0; tick < 512; ++tick)
         main_loop_step();
-    for (int tick = 0; tick < 2000 && !core_result; ++tick) {
-        if (tick % 8 == 0) {
-            for (int person = 0; person < no_peeps; ++person) {
-                if (peep_owner(person) || peep_word(person, 4) <= 0) continue;
-                int position = peep_word(person, 8);
-                for (int dy = 0; dy < 2; ++dy)
-                    for (int dx = 0; dx < 2; ++dx) {
-                        SDL_Event click = {.type = SDL_MOUSEBUTTONDOWN};
-                        click.button.button = SDL_BUTTON_RIGHT;
-                        click.button.x = ((position % 64 + dx) * 4 + 1) * 2;
-                        click.button.y = ((position / 64 + dy) * 4 + 1) * 2;
-                        assert(SDL_PushEvent(&click) == 1);
-                    }
-            }
-            ___keyboard();
-        }
-        main_loop_step();
-    }
+    match_defeat_phase(0);
     fprintf(stderr, "defeat result=%d turns=%u battles=%d towns=%d pop=%d/%d\n", core_result,
             (uint16_t)game_turn, core_battles, core_settlements, core_population(0),
             core_population(1));
     assert(core_result == 2 && core_population(0) == 0 && core_population(1) > 0);
     /* Measured deterministic defeat phase with the computer-player AI. */
-    if (getenv("POPULOUS_TEST_REAL_DATA"))
-        assert((uint16_t)game_turn == 831 && core_battles == 0 && core_settlements == 43 &&
-               core_population(1) == 6323);
+    assert_match_outcome(&events_defeat_phase);
     key.key.keysym.sym = SDLK_ESCAPE;
     assert(SDL_PushEvent(&key) == 1);
     ___keyboard();
@@ -7140,16 +7225,19 @@ static void test_match_events_cadence(int interval, int start, const MatchOutcom
     SDL_Quit();
 }
 
-/* Winning script: from tick 2000 every enemy walker's footprint is lowered
- * each tick. Measured real-data search (cadence 1/8, result turns battles):
- * starts 0-1000 win almost before any fighting (0-15 battles); 1500 and
- * 2000 win (26/38 battles at cadence 1); 2500 wins only at cadence 1; 2700
- * and 3000 lose because red takes blue's last town first. Start 2000 gives a
- * real match (38 battles, 118 towns) that ends well inside the budget. */
-static const MatchOutcome events_victory = {1, 3656, 38, 121, 21819, 0};
+/* Winning script: from tick 1500 one right click per tick, round-robin one
+ * footprint vertex per live enemy peep (MATCH_VERTEX_MAJOR), tendency 1.
+ * Measured real-data search (orders x starts 0..3000/500 x tendencies 0..3,
+ * both views): one-click scripts win only with MATCH_VERTEX_MAJOR or a few
+ * single cells; starts >= 2500 always lose at about turn 2735; tendency 0
+ * loses at 914. Starts 0 win instantly (events: 178-398 turns, 0-1 battles).
+ * Vertex-major/start 1500/tendency 1 wins in both views with a real match:
+ * 118 battles (events) and 278 (isometric, see isometric_victory_script). */
+static const MatchScript victory_script = {MATCH_VERTEX_MAJOR, 1, 1500, 1};
+static const MatchOutcome events_victory = {1, 4467, 118, 626, 37124, 0};
 /* Match events. */
 static void test_match_events(void)
-{ test_match_events_cadence(1, 2000, &events_victory); }
+{ test_match_events_cadence(&victory_script, &events_victory); }
 
 /* Synthetic rule files exercise mechanics, never pretend to be commercial LAND. */
 static char test_data_directory[] = "/tmp/populous-game-test-XXXXXX";
@@ -7315,16 +7403,20 @@ static void test_ok_to_build(void)
     /* Any nonzero word admits (an enemy walker contributes flags & 0xf8). */
     ok_to_build = 0x10;
     ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    core_consume_terrain_mailboxes();   /* _sculpt posts; the tick applies */
     assert(core_vertex(10, 10) == 2 && core_mana(0) == mana - 14);
     ok_to_build_click(10, 10, SDL_BUTTON_RIGHT);
+    core_consume_terrain_mailboxes();
     assert(core_vertex(10, 10) == 1 && core_mana(0) == mana - 28);
     /* The editor bypasses the test (asm:7311-7312): free raise/lower. */
     ok_to_build = 0;
     paint_map = 1;
     mana = core_mana(0);
     ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    core_consume_terrain_mailboxes();
     assert(core_vertex(10, 10) == 2 && core_mana(0) == mana && ok_to_build == 0);
     ok_to_build_click(10, 10, SDL_BUTTON_RIGHT);
+    core_consume_terrain_mailboxes();
     assert(core_vertex(10, 10) == 1 && core_mana(0) == mana);
     paint_map = 0;
     /* The papal magnet (_mode != 2) skips the test (asm:7309-7310). */
@@ -7332,8 +7424,9 @@ static void test_ok_to_build(void)
     int16_t leader = core_leader(0);
     core_leader(0) = 1;
     ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
-    assert(core_target(0) == 10 * 64 + 10 && core_mana(0) == mana - 200);
-    core_tool = 0;
+    core_consume_terrain_mailboxes();
+    /* _sculpt posts cur_x-1, cur_y-1 (asm:7478-7500); the bit is one-shot. */
+    assert(core_target(0) == 9 * 64 + 9 && core_mana(0) == mana - 200 && core_tool == 0);
     core_leader(0) = leader;
     /* BUILD_NEAR_TOWNS reads bit 0 for a vertex above sea level. */
     game_mode = GAME_MODE_BUILD_NEAR_TOWNS;
@@ -7342,9 +7435,10 @@ static void test_ok_to_build(void)
     memcpy(before, prg_a4_area, sizeof before);
     ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
     assert(!memcmp(before, prg_a4_area, sizeof before));
-    assert(!core_sculpt(0, 10, 10, 1) && !memcmp(before, prg_a4_area, sizeof before));
+    assert(!core_sculpt(10, 10, 1) && !memcmp(before, prg_a4_area, sizeof before));
     ok_to_build = 0x11;
     ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    core_consume_terrain_mailboxes();
     assert(core_vertex(10, 10) == 2 && core_mana(0) == mana - 14);
     game_mode = 0;
     /* Two players: _sculpt refuses before posting (asm:7307-7314). */
@@ -7356,6 +7450,129 @@ static void test_ok_to_build(void)
     ok_to_build = 0x10;
     core_serial_world_click(10, 10, 0);
     assert(stats_bytes(0)[0] == 2 && stats_bytes(0)[1] == 10 && stats_bytes(0)[2] == 10);
+    _closeall();
+    SDL_Quit();
+}
+
+/* _sculpt asm:7271-7560 posts {opcode, x, y} into the _player mailbox
+ * (A4 0x82b6 + _player*46) and charges nothing; the tick consumer
+ * (asm:17929-17995) runs _do_raise_point/_do_lower_point (mana >= 10,
+ * cost build_count*4+10, asm:7091-7246) or _do_magnet (mana >= 200 and
+ * _magnet != 0, asm:6769-6820). Each click is checked against the full A4:
+ * the listed literals are the only bytes it may change. */
+static uint8_t sculpt_after[sizeof prg_a4_area];
+static void sculpt_post_expect(const uint8_t *before, int owner, int op, int x, int y,
+                               int column, int row, int16_t pointer_before)
+{
+    memcpy(sculpt_after, prg_a4_area, sizeof sculpt_after);
+    assert(stats_bytes(owner)[0] == op && stats_bytes(owner)[1] == x && stats_bytes(owner)[2] == y);
+    assert(cur_x == column && cur_y == row);
+    memset(stats_bytes(owner), 0, 3);
+    cur_x = 0; cur_y = 0; pointer = pointer_before;
+    assert(!memcmp(before, prg_a4_area, sizeof prg_a4_area));
+    memcpy(prg_a4_area, sculpt_after, sizeof sculpt_after);
+}
+static void test_sculpt_admission(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    assert(!diagnostic_view && xoff == 6 && yoff == 6 && core_tool == 0 && !paint_map && player == 0);
+    SDL_SetWindowSize(prg_screen->window, 640, 512);
+    uint8_t before[sizeof prg_a4_area];
+    ok_to_build = 0x10;
+    assert(core_vertex(10, 10) == 1);
+    /* Raise: the click only posts {1,10,10}; the consumer raises and pays 14. */
+    core_mana_long(0) = 1000; cur_x = 0; cur_y = 0;
+    memcpy(before, prg_a4_area, sizeof before);
+    ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    sculpt_post_expect(before, 0, 1, 10, 10, 10, 10, pointer);
+    core_consume_terrain_mailboxes();
+    assert(core_vertex(10, 10) == 2 && core_mana_long(0) == 986 && stats_bytes(0)[0] == 0);
+    /* Lower (right button, _mode == 2): {2,10,10}, consumer pays 14. */
+    cur_x = 0; cur_y = 0;
+    memcpy(before, prg_a4_area, sizeof before);
+    ok_to_build_click(10, 10, SDL_BUTTON_RIGHT);
+    sculpt_post_expect(before, 0, 2, 10, 10, 10, 10, pointer);
+    core_consume_terrain_mailboxes();
+    assert(core_vertex(10, 10) == 1 && core_mana_long(0) == 972);
+    /* Mana 5 < 10: _sculpt still posts; the consumer refuses (asm:7187). */
+    core_mana_long(0) = 5; cur_x = 0; cur_y = 0;
+    memcpy(before, prg_a4_area, sizeof before);
+    ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    sculpt_post_expect(before, 0, 1, 10, 10, 10, 10, pointer);
+    core_consume_terrain_mailboxes();
+    assert(core_vertex(10, 10) == 1 && core_mana_long(0) == 5);
+    /* Height 8: posted; _raise_point changes nothing, build_count 0 costs 10. */
+    core_mana_long(0) = 1000; core_set_vertex(10, 10, 8); cur_x = 0; cur_y = 0;
+    memcpy(before, prg_a4_area, sizeof before);
+    ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    sculpt_post_expect(before, 0, 1, 10, 10, 10, 10, pointer);
+    core_consume_terrain_mailboxes();
+    assert(core_vertex(10, 10) == 8 && core_mana_long(0) == 990);
+    core_set_vertex(10, 10, 1);
+    /* _player 1 posts into its own mailbox and the consumer charges owner 1. */
+    player = 1; core_mana_long(1) = 1000; core_mana_long(0) = 1000; cur_x = 0; cur_y = 0;
+    memcpy(before, prg_a4_area, sizeof before);
+    ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    sculpt_post_expect(before, 1, 1, 10, 10, 10, 10, pointer);
+    core_consume_terrain_mailboxes();
+    assert(core_vertex(10, 10) == 2 && core_mana_long(1) == 986 && core_mana_long(0) == 1000);
+    core_set_vertex(10, 10, 1); player = 0;
+    /* BUILD_ONLY_UP: the right button posts nothing (asm:7488); cursor only. */
+    game_mode = GAME_MODE_BUILD_ONLY_UP; cur_x = 0; cur_y = 0;
+    memcpy(before, prg_a4_area, sizeof before);
+    ok_to_build_click(10, 10, SDL_BUTTON_RIGHT);
+    assert(cur_x == 10 && cur_y == 10);
+    cur_x = 0; cur_y = 0;
+    assert(!memcmp(before, prg_a4_area, sizeof before));
+    game_mode = 0;
+    /* Papal magnet (bit 2): {5, cur_x-1, cur_y-1}, the bit clears and the
+     * pointer returns to _mode-1 = 1 (asm:7472-7489). No mana yet. */
+    core_tool = 1; core_set_pointer(); assert(pointer == 2);
+    core_leader(0) = 1; core_mana_long(0) = 1000; core_tendency(0) = 2; cur_x = 0; cur_y = 0;
+    int16_t target = core_target(0);
+    memcpy(before, prg_a4_area, sizeof before);
+    ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    assert(core_tool == 0 && pointer == 1);
+    sculpt_post_expect(before, 0, 5, 9, 9, 10, 10, 2);
+    assert(core_target(0) == target);
+    effect = 0;
+    core_consume_terrain_mailboxes();
+    /* _do_magnet: 200, effect 77, _set_magnet_to; the tendency is kept. */
+    assert(core_target(0) == 585 && owner_magnet(0) == 585 && core_mana_long(0) == 800 &&
+           effect == 77 && core_tendency(0) == 2);
+    /* Right button with the magnet armed: _mode != 2, cursor only, bit kept. */
+    core_tool = 1; core_set_pointer(); cur_x = 0; cur_y = 0;
+    memcpy(before, prg_a4_area, sizeof before);
+    ok_to_build_click(10, 10, SDL_BUTTON_RIGHT);
+    assert(core_tool == 1 && cur_x == 10 && cur_y == 10);
+    cur_x = 0; cur_y = 0;
+    assert(!memcmp(before, prg_a4_area, sizeof before));
+    /* Vertex 0,0: bytes 255,255, clamped to 63,63 by _do_magnet. */
+    xoff = 0; yoff = 0; cur_x = 0; cur_y = 0;
+    memcpy(before, prg_a4_area, sizeof before);
+    ok_to_build_click(0, 0, SDL_BUTTON_LEFT);
+    sculpt_post_expect(before, 0, 5, 255, 255, 0, 0, 2);
+    core_consume_terrain_mailboxes();
+    assert(core_target(0) == 4095 && core_mana_long(0) == 600);
+    /* No leader: posted, the consumer refuses (asm:6781-6783). */
+    xoff = 6; yoff = 6; core_tool = 1; core_set_pointer(); core_leader(0) = 0; cur_x = 0; cur_y = 0;
+    memcpy(before, prg_a4_area, sizeof before);
+    ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    sculpt_post_expect(before, 0, 5, 9, 9, 10, 10, 2);
+    core_consume_terrain_mailboxes();
+    assert(core_target(0) == 4095 && core_mana_long(0) == 600);
+    /* Swamp (bit 3): {4, cur_x-1, cur_y-1}, consumed on the tick. */
+    core_swamp_selected = 1; core_set_pointer(); cur_x = 0; cur_y = 0;
+    memcpy(before, prg_a4_area, sizeof before);
+    ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+    assert(!core_swamp_selected && pointer == 1);
+    sculpt_post_expect(before, 0, 4, 9, 9, 10, 10, 5);
+    memset(stats_bytes(0), 0, 3);
+    /* Two players: the same _sculpt post for the magnet. */
+    core_tool = 1; core_set_pointer();
+    core_serial_world_click(10, 10, 1);
+    assert(stats_bytes(0)[0] == 5 && stats_bytes(0)[1] == 9 && stats_bytes(0)[2] == 9 && core_tool == 0);
     _closeall();
     SDL_Quit();
 }
@@ -7375,9 +7592,9 @@ static void iso_click_vertex_drawn(int column, int row, int button)
 }
 
 /* Isometric match cadence. */
-static void test_isometric_match_cadence(int interval, int start, const MatchOutcome *expected)
+static void test_isometric_match_cadence(const MatchScript *script, const MatchOutcome *expected)
 {
-    assert(interval == 1 || interval == 8);
+    assert(script->interval >= 1 && script->tendency >= 0 && script->tendency <= 3);
     assert(SDL_Init(SDL_INIT_VIDEO) == 0);
     assert(game_reset(0));
     assert(!diagnostic_view);
@@ -7399,25 +7616,11 @@ static void test_isometric_match_cadence(int interval, int start, const MatchOut
     game_handle_event(&event);
     for (int tick = 0; tick < 512; ++tick)
         main_loop_step();
-    for (int tick = 0; tick < 2000 && !core_result; ++tick) {
-        if (tick % 8 == 0)
-            for (int person = 0; person < no_peeps && !core_result; ++person) {
-                if (peep_owner(person) || peep_word(person, 4) <= 0) continue;
-                int position = peep_word(person, 8);
-                for (int dy = 0; dy < 2; ++dy)
-                    for (int dx = 0; dx < 2; ++dx)
-                        iso_click_vertex(position % 64 + dx, position / 64 + dy, SDL_BUTTON_RIGHT);
-            }
-        main_loop_step();
-    }
-    fprintf(stderr, "isometric defeat turns=%u pop=%d/%d\n", (uint16_t)game_turn,
-            core_population(0), core_population(1));
+    match_defeat_phase(1);
+    fprintf(stderr, "isometric defeat result=%d turns=%u battles=%d towns=%d pop=%d/%d\n", core_result,
+            (uint16_t)game_turn, core_battles, core_settlements, core_population(0), core_population(1));
     assert(core_result == 2 && core_population(0) == 0);
-    /* Measured deterministic defeat phase with the computer-player AI; since
-     * frames are drawn each pass, four turn-696 clicks are refused by
-     * _ok_to_build (asm 7307-7314), so red takes longer. */
-    if (getenv("POPULOUS_TEST_REAL_DATA"))
-        assert((uint16_t)game_turn == 872 && core_population(1) == 6933);
+    assert_match_outcome(&isometric_defeat_phase);
     uint8_t before[sizeof prg_a4_area];
     memcpy(before, prg_a4_area, sizeof before);
     main_loop_step();
@@ -7425,18 +7628,13 @@ static void test_isometric_match_cadence(int interval, int start, const MatchOut
     assert(a4_same(before));
     game_handle_event(&event);
     assert(!core_result && xoff == 6 && yoff == 6);
-    event.key.keysym.sym = SDLK_3;
+    event.key.keysym.sym = SDLK_0 + script->tendency;
     game_handle_event(&event);
+    unsigned step = 0;
     for (int tick = 0; tick < 12000 && !core_result; ++tick) {
         main_loop_step();
-        if (tick >= start && tick % interval == 0)
-            for (int person = 0; person < no_peeps; ++person) {
-                if (!peep_owner(person) || peep_word(person, 4) <= 0) continue;
-                int position = peep_word(person, 8);
-                for (int dy = 0; dy < 2; ++dy)
-                    for (int dx = 0; dx < 2; ++dx)
-                        iso_click_vertex(position % 64 + dx, position / 64 + dy, SDL_BUTTON_RIGHT);
-            }
+        if (tick >= script->start && tick % script->interval == 0)
+            match_input(1, 1, script->order, &step);
     }
     fprintf(stderr, "isometric fight result=%d turns=%u battles=%d towns=%d pop=%d/%d\n",
             core_result, (uint16_t)game_turn, core_battles, core_settlements, core_population(0),
@@ -7456,19 +7654,34 @@ static void test_isometric_match_cadence(int interval, int start, const MatchOut
     SDL_Quit();
 }
 
-static const MatchOutcome isometric_victory = {1, 3656, 38, 121, 21819, 0};
+/* The isometric view clicks through the minimap scroll and the drawn frame,
+ * so the same settings give a different match: victory_script wins there
+ * only at turn 9004 (278 battles), which runs the sanitized default past its
+ * 30 s budget. Vertex-major from tick 0 with tendency 3 is the shortest
+ * isometric real match of the search (5186 turns, 93 battles). */
+static const MatchScript isometric_victory_script = {MATCH_VERTEX_MAJOR, 1, 0, 3};
+static const MatchOutcome isometric_victory = {1, 5186, 93, 716, 200496, 0};
 /* Isometric match. */
 static void test_isometric_match(void)
-{ test_isometric_match_cadence(1, 2000, &isometric_victory); }
+{ test_isometric_match_cadence(&isometric_victory_script, &isometric_victory); }
 
-/* Historical scripts that started rescuing only after tick 6000. With the
- * computer-player AI and attacker-only battle rounds, red takes blue's last
- * town at turn 2735, before any of their input fires, so they pin that
- * deterministic defeat (identical for cadence 1 and 8, both views). */
+/* Former scripts kept as regressions (MATCH_LEGACY: every target's 2x2
+ * footprint per pass; with the faithful mailbox only the last post counts).
+ * - start 6001, cadence 1 and 8: red takes blue's last town at turn 2735
+ *   before any input fires; preserves the input-free AI match outcome.
+ * - start 3000: also lost at 2735, preserving the start-tick sensitivity.
+ * - start 2000 (the former winning default): with one effective post per
+ *   turn it now loses (events 2612, isometric 2466); this pins the
+ *   mailbox overwrite against the old many-posts-per-tick behaviour. */
+static const MatchScript legacy_every_tick = {MATCH_LEGACY, 1, 6001, 3};
+static const MatchScript legacy_cadence_8 = {MATCH_LEGACY, 8, 6001, 3};
+static const MatchScript legacy_start_3000 = {MATCH_LEGACY, 1, 3000, 3};
+static const MatchScript legacy_start_2000 = {MATCH_LEGACY, 1, 2000, 3};
 static const MatchOutcome late_rescue_defeat = {2, 2735, 49, 64, 0, 20222};
-/* Former default script (cadence 1 from tick 3000): it too starts too late
- * and loses at turn 2735; pinned so the start-tick sensitivity stays visible. */
+static const MatchOutcome late_rescue_8_defeat = {2, 2735, 49, 64, 0, 20222};
 static const MatchOutcome start_3000_defeat = {2, 2735, 49, 64, 0, 20222};
+static const MatchOutcome start_2000_events = {2, 2612, 47, 70, 0, 15424};
+static const MatchOutcome start_2000_isometric = {2, 2466, 45, 62, 0, 14753};
 
 /* Icon centre (x0+15,y0+8) per _toggle_icon geometry. */
 static int icon_lit(int base, int a, int b)
@@ -7828,6 +8041,8 @@ static void test_original_graphics_output(void)
     click.button.x = 224;
     click.button.y = 96; /* vertex (6,11), local (0,5), h=8 */
     game_handle_event(&click);
+    assert(A4_DISP(0x82b6)[0] == 2 && A4_DISP(0x82b6)[1] == 6 && A4_DISP(0x82b6)[2] == 11);
+    core_consume_terrain_mailboxes();   /* _sculpt posts; the tick lowers */
     assert(core_vertex(6, 11) == 7);
     _closeall();
     SDL_Quit();
@@ -9007,18 +9222,37 @@ static void test_swamp_input(void)
                 memcpy(before, prg_a4_area, sizeof before);
                 click.button.button = SDL_BUTTON_RIGHT;
                 game_handle_event(&click);
-                /* Unarmed below 5001: a frame with sprites (or the diagnostic
-                 * view) in raise/lower mode stores the cursor (asm:7397-7402) before the 0x10
-                 * power mask refuses the lower; without them asm:7307-7314
-                 * returns first. */
-                if (!tool && mana <= 5000 && (diagnostic || ok_to_build)) {
+                /* _sculpt stores the cursor (asm:7397-7402) unless plain
+                 * raise/lower mode saw a frame without sprites (asm:7307-7314,
+                 * the diagnostic view keeps every click). Only plain mode
+                 * posts the lower {2,20,20} (asm:7511-7524); _sculpt does not
+                 * test the 0x10 power mask, so it is no longer refused. With
+                 * the magnet or swamp armed _mode != 2: cursor only. */
+                int plain = !tool && mana <= 5000;
+                if (!plain || diagnostic || ok_to_build) {
                     assert(cur_x == 20 && cur_y == 20);
                     memcpy(before + (A4_DISP(0x3026) - prg_a4_area), A4_DISP(0x3026), 4);
+                }
+                if (plain && (diagnostic || ok_to_build)) {
+                    assert(stats_bytes(0)[0] == 2 && stats_bytes(0)[1] == 20 && stats_bytes(0)[2] == 20);
+                    memset(stats_bytes(0), 0, 3);
                 }
                 assert(a4_same(before));
                 click.button.button = SDL_BUTTON_LEFT;
                 game_handle_event(&click);
-                assert(core_mana(0) == (mana > 5000 ? 1 : mana));
+                /* The left press posts swamp {4,19,19}, magnet {5,19,19} or
+                 * raise {1,20,20}; nothing is spent before the consumer. */
+                assert(core_mana(0) == mana);
+                if (mana > 5000) {
+                    assert(stats_bytes(0)[0] == 4 && stats_bytes(0)[1] == 19 && stats_bytes(0)[2] == 19);
+                    core_consume_terrain_mailboxes();
+                    assert(core_mana(0) == 1);
+                } else if (diagnostic || ok_to_build || tool) {
+                    assert(stats_bytes(0)[0] == (tool ? 5 : 1) && stats_bytes(0)[1] == (tool ? 19 : 20) &&
+                           stats_bytes(0)[2] == (tool ? 19 : 20));
+                    memset(stats_bytes(0), 0, 3);
+                    if (tool) core_tool = 1;   /* the post cleared the one-shot magnet bit */
+                }
                 assert(core_tool == tool);
                 if (mana > 5000) {
                     assert(A4_LONG(0xae72) == 50);
@@ -9032,6 +9266,7 @@ static void test_swamp_input(void)
                     core_leader(0) = 1;
                     game_render(); /* the frame _sculpt reads (asm:7307) */
                     game_handle_event(&click);
+                    core_consume_terrain_mailboxes();
                     assert(core_mana(0) == (tool ? 9800 : 9986));
                 }
             }
@@ -9043,6 +9278,7 @@ static void test_swamp_input(void)
     game_handle_event(&key);
     A4_LONG(0x9a02) = 5000;
     iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
+    core_consume_terrain_mailboxes();   /* _sculpt posted; the tick applies */
     assert(core_mana(0) == 0 && A4_LONG(0xae72) == 50);
     /* Player-side validation and source selection during war. */
     for (int owner = -1; owner <= 2; ++owner) {
@@ -9055,6 +9291,7 @@ static void test_swamp_input(void)
         game_handle_event(&key);
         A4_WORD(0xae80) = 0;
         iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
+        core_consume_terrain_mailboxes();   /* _sculpt posted; the tick applies */
         assert(A4_LONG(0xae72) == (owner == 0 || owner == 1 ? 50u : 0u));
         assert(core_mana(0) == (owner == 0 ? 1000 : 6000));
         assert(core_mana(1) == (owner == 1 ? 1000 : 6000));
@@ -9071,12 +9308,14 @@ static void test_swamp_input(void)
         if (failure == 2) A4_WORD(0xae80) = 1;
         uint16_t old_seed = seed;
         iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
+        core_consume_terrain_mailboxes();   /* _sculpt posted; the tick applies */
         assert(seed == old_seed && A4_LONG(0xae72) == 0 && core_vertex(20, 20) == 1);
         assert(core_swamp_selected == (failure == 2));
         A4_LONG(0x9a02) = 10000;
         A4_WORD(0x82c4) = 0x11;
         A4_WORD(0xae80) = 0;
         iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
+        core_consume_terrain_mailboxes();   /* _sculpt posted; the tick applies */
         if (failure == 2) {
             assert(core_swamp_selected == 0);
             assert(core_vertex(20, 20) == 1 && core_mana(0) == 5000 && A4_LONG(0xae72) == 50);
@@ -9097,6 +9336,7 @@ static void test_swamp_input(void)
             game_handle_event(&key);
             key.key.repeat = 0;
             iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
+            core_consume_terrain_mailboxes();   /* _sculpt posted; the tick applies */
             if (!paint)
                 assert(core_vertex(20, 20) == 2 && core_mana(0) == 5986 && A4_LONG(0xae72) == 0);
             else if (!missing)
@@ -9121,11 +9361,12 @@ static void test_swamp_input(void)
         click.button.x = 20 * 2;
         click.button.y = 120 * 2;
         game_handle_event(&click);
-        if (blocked) iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
+        if (blocked) { iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT); core_consume_terrain_mailboxes(); }
         assert(core_mana(0) == 6000 && A4_LONG(0xae72) == 0);
         pause = 0;
         core_result = 0;
         iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
+        core_consume_terrain_mailboxes();   /* _sculpt posted; the tick applies */
         assert(core_mana(0) == 1000 && A4_LONG(0xae72) == 50);
     }
     /* Byte wrap, not clamping: vertex zero spends and draws but places none. */
@@ -9148,6 +9389,7 @@ static void test_swamp_input(void)
             game_handle_event(&click);
         } else
             iso_click_vertex_drawn(0, 0, SDL_BUTTON_LEFT);
+        core_consume_terrain_mailboxes();   /* _sculpt posted; the tick applies */
         assert(core_mana(0) == 1000 && seed == expected_seed && A4_LONG(0xae72) == 50);
         for (int cell = 0; cell < 4096; ++cell)
             assert(map_blk[cell] != 53);
@@ -9164,6 +9406,7 @@ static void test_swamp_input(void)
     assert(!setenv("POPULOUS_ASSET_DIR", directory, 1));
     free(directory);
     iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
+    core_consume_terrain_mailboxes();   /* _sculpt posted; the tick applies */
     assert(core_mana(0) == 1000);
     A4_LONG(0x9a02) = 6000;
     game_handle_event(&key);
@@ -9171,6 +9414,7 @@ static void test_swamp_input(void)
     A4_LONG(0x9a02) = 6000;
     A4_WORD(0x82c4) = 0x11;
     iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
+    core_consume_terrain_mailboxes();   /* _sculpt posted; the tick applies */
     assert(core_mana(0) == 5986 && core_vertex(20, 20) == 2);
     _closeall();
     SDL_Quit();
@@ -9298,8 +9542,17 @@ static void test_power_toolbar(void)
             power_icon_click(posts[p][0], posts[p][1], SDL_BUTTON_LEFT);
             if (gate != 4)
                 assert(a4_same(before));
-            else
-                assert(!A4_DISP(0x82b6)[0] && !A4_DISP(0x82b6 + 46)[0]);
+            else {
+                /* The diagnostic view takes the press as a world click: its
+                 * _sculpt raise is now posted (asm:7501-7510), never a power. */
+                int c = 0x60 + 16 * posts[p][0] + 8, r = 0x90 + 16 * posts[p][1] + 8;
+                int sx = c - r + 64, sy = (c + r) / 2, column = (sx + 20) / 4, row = (sy + 30) / 4;
+                if (sy < 240 && column < 64 && row < 64)
+                    assert(A4_DISP(0x82b6)[0] == 1 && A4_DISP(0x82b6)[1] == column && A4_DISP(0x82b6)[2] == row);
+                else
+                    assert(!A4_DISP(0x82b6)[0]);
+                assert(!A4_DISP(0x82b6 + 46)[0]);
+            }
         }
     assert(game_reset(0));
     SDL_SetWindowSize(prg_screen->window, 960, 768);
@@ -11050,8 +11303,11 @@ static void test_terrain_mailbox_raise(void)
     terrain_mailbox_fixture(0);
     core_set_vertex(20, 30, 7);
     A4_WORD(0x82c4) = 1;
-    assert(core_sculpt(0, 20, 30, 1));
-    assert(core_vertex(21, 30) == 7); /* Raw recursion above leaves it at 1. */
+    ok_to_build = 1;
+    /* The human click is the same opcode 1 (asm:7501-7510): the former host
+     * cone-fill (7 here) is gone, _raise_point's recursion leaves it at 1. */
+    assert(sculpt_consume(0, 20, 30, 1));
+    assert(core_vertex(21, 30) == 1);
 
     /* A valid height-7 cone raises 225 vertices. Admission is not affordability;
      * its 910 charge must not be truncated by core_sculpt's host -250 cap. */
@@ -11848,7 +12104,7 @@ static void test_armageddon_locks(void)
                 A4_WORD(0x82c4 + owner * 46) = 0xffff;
                 uint8_t before[sizeof prg_a4_area];
                 memcpy(before, prg_a4_area, sizeof before);
-                assert(!core_sculpt(owner, 20, 20, direction));
+                assert(!sculpt_consume(owner, 20, 20, direction));
                 assert(a4_same(before));
                 assert(core_raw_raise(owner, 20, 20));
                 assert(core_vertex(20, 20) == 2 && core_mana(owner) == 80000);
@@ -14116,13 +14372,16 @@ static void test_knight_ordinary_actions(void)
     assert(core_mana(0) == 12500 && peep_reference(0) >= 0);
     /* A knight is not a global terrain or tool lock. */
     iso_click_vertex_drawn(20, 20, SDL_BUTTON_LEFT);
+    core_consume_terrain_mailboxes();   /* _sculpt posts; the tick applies */
     assert(core_vertex(20, 20) == 2 && core_mana(0) == 12486);
     key.key.keysym.sym = SDLK_s;
     assert(SDL_PushEvent(&key) == 1);
     ___keyboard();
     assert(core_swamp_selected);
     iso_click_vertex(25, 25, SDL_BUTTON_LEFT);
-    assert(!core_swamp_selected && core_mana(0) == 7486);
+    assert(!core_swamp_selected && core_mana(0) == 12486 && stats_bytes(0)[0] == 4);
+    core_consume_terrain_mailboxes();
+    assert(core_mana(0) == 7486);
     assert(A4_LONG(0xae72) == 200 && peep_reference(0) >= 0);
     /* Existing owner mailboxes remain executable after the cast. */
     A4_DISP(0x82b6)[0] = 1;
@@ -20341,11 +20600,16 @@ static void test_paint_map_options(void)
     for (int i = 0; i < 4225; ++i)
         A4_WORD(0xae86 + i * 2) = 1;
     SDL_SetWindowSize(prg_screen->window, 640, 512);
+    /* _sculpt posts; the editor tick's consumer applies (asm:7501-7524). */
     iso_click_vertex_drawn(24, 34, SDL_BUTTON_LEFT);
+    assert(stats_bytes(0)[0] == 1 && stats_bytes(0)[1] == 24 && stats_bytes(0)[2] == 34 && core_vertex(24, 34) == 1);
+    core_consume_terrain_mailboxes();
     assert(core_vertex(24, 34) == 2 && core_mana(0) == 0);
     assert(A4_WORD(0x3028) == 24 && A4_WORD(0x3026) == 34);
     SDL_SetWindowSize(prg_screen->window, 640, 512);
     iso_click_vertex_drawn(24, 34, SDL_BUTTON_RIGHT);
+    assert(stats_bytes(0)[0] == 2 && core_vertex(24, 34) == 2);
+    core_consume_terrain_mailboxes();
     assert(core_vertex(24, 34) == 1 && core_mana(0) == 0);
     /* Reopened, PLAY GAME leaves the editor. */
     core_game_options_open();
@@ -20687,6 +20951,10 @@ int main(int argc, char **argv)
     setenv("POPULOUS_SAVE_DIR", "/nonexistent-populous-saves", 1);
     /* Shake frames are checked in test_quake_shake; elsewhere skip the 20 ms vblanks. */
     core_quake_delay = no_quake_delay;
+    if (argc == 2 && !strcmp(argv[1], "--sculpt-admission")) {
+        test_sculpt_admission();
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--ok-to-build")) {
         test_ok_to_build();
         return 0;
@@ -20764,23 +21032,26 @@ int main(int argc, char **argv)
     /* Former default (cadence 1) and legacy (cadence 8) scripts, start 6001. */
     if (argc == 2 && !strcmp(argv[1], "--rescue-legacy-every-tick")) {
         assert(getenv("POPULOUS_TEST_REAL_DATA"));
-        test_isometric_match_cadence(1, 6001, &late_rescue_defeat);
-        test_match_events_cadence(1, 6001, &late_rescue_defeat);
+        test_isometric_match_cadence(&legacy_every_tick, &late_rescue_defeat);
+        test_match_events_cadence(&legacy_every_tick, &late_rescue_defeat);
         puts("historical every-tick rescue match: PASS");
         return 0;
     }
     if (argc == 2 && !strcmp(argv[1], "--rescue-legacy-match")) {
         assert(getenv("POPULOUS_TEST_REAL_DATA"));
-        test_isometric_match_cadence(8, 6001, &late_rescue_defeat);
-        test_match_events_cadence(8, 6001, &late_rescue_defeat);
+        test_isometric_match_cadence(&legacy_cadence_8, &late_rescue_8_defeat);
+        test_match_events_cadence(&legacy_cadence_8, &late_rescue_8_defeat);
         puts("historical rescue match cadences: PASS");
         return 0;
     }
     /* Former default script, cadence 1 from tick 3000: pinned defeat. */
     if (argc == 2 && !strcmp(argv[1], "--rescue-legacy-start-3000")) {
         assert(getenv("POPULOUS_TEST_REAL_DATA"));
-        test_isometric_match_cadence(1, 3000, &start_3000_defeat);
-        test_match_events_cadence(1, 3000, &start_3000_defeat);
+        test_isometric_match_cadence(&legacy_start_3000, &start_3000_defeat);
+        test_match_events_cadence(&legacy_start_3000, &start_3000_defeat);
+        /* The former winning default (legacy, start 2000). */
+        test_isometric_match_cadence(&legacy_start_2000, &start_2000_isometric);
+        test_match_events_cadence(&legacy_start_2000, &start_2000_events);
         puts("historical start-3000 rescue match: PASS");
         return 0;
     }
@@ -21349,6 +21620,7 @@ int main(int argc, char **argv)
     test_battle_casualties_and_rewards();
     test_near_town_sculpt();
     test_ok_to_build();
+    test_sculpt_admission();
     test_split_leader_and_occupancy();
     test_settlement_occupancy();
     test_sculpt_navigation_locality();

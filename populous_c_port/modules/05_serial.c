@@ -962,20 +962,11 @@ static int core_serial_shortcut(SDL_Keycode key)
     else return 0;
     return 1;
 }
-/* A map click: _sculpt raise/lower (1/2), swamp (4), papal magnet (5). */
+/* A map click: _sculpt raise/lower (1/2), swamp (4), papal magnet (5),
+ * the same post as single play into the link-guarded mailbox. */
 static void core_serial_world_click(int column, int row, int left)
 {
-    if (core_swamp_selected) {
-        if (!left) return;
-        core_swamp_selected = 0; core_set_pointer();
-        core_serial_post(4, (column-1) & 255, (row-1) & 255);
-        return;
-    }
-    if (core_tool == 1) { if (left && column < 64 && row < 64) core_serial_post(5, column, row); return; }
-    if (!paint_map && !core_sculpt_visible()) return;
-    cur_x = (int16_t)column; cur_y = (int16_t)row;   /* asm:7397-7402, before the refusals */
-    if (!paint_map && !core_sculpt_admit(player, column, row, left ? 1 : -1)) return;
-    core_serial_post(left ? 1 : 2, column, row);
+    core_sculpt_post(column, row, left, core_serial_post);
 }
 
 /* ---- Command line: --host [port] / --join <ip>[:port] ------------------- */

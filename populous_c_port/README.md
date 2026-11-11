@@ -1676,6 +1676,13 @@ previously fought from the lower slot. With real data the start-3000 script now
 loses at 2735 (49 battles, 64 towns, 0/20222, `--rescue-legacy-start-3000`), as do
 the after-6000 legacy scripts. The same legal inputs from tick 2000 win at turn
 3656 in both views (38 battles, 118 towns, 21683/0); the defeat phase stays 831.
+Sculpt timing (`--sculpt-admission`, asm 7271-7560): a click only posts
+`{opcode,x,y}` to the `_player` mailbox; the tick consumer runs at most one
+terrain command per player and turn, and checks/charges mana there. The magnet
+posts at `cur_x-1/cur_y-1` and leaves the tendency alone. Match scripts were
+re-derived for one effective post per tick: events wins at 4467 (118 battles),
+isometric at 5186 (93 battles); defeat phases end at 942/951. Held-button
+repeat (one post per frame in the original) is not modelled.
 `_ok_to_build` gates sculpting (`--ok-to-build`, asm 7307-7314, 7419-7438): the
 value is cleared per frame and OR-ed by every peep sprite drawn; with nothing
 drawn, raise/lower is refused (no cost), and BUILD_NEAR_TOWNS means an own town

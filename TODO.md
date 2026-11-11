@@ -125,7 +125,7 @@ Diagnose125/401/219245/0 (historisch). Mit phasenweiser Bewegung verlieren diese
 gewannen bei Zug4185 (historisch). Mit Computer-KI: Sieg bei Zug4697 in beiden Ansichten (32/78/1434/0),
 alte Skripte Niederlage bei Zug3104 (33/79/0/30639), Niederlagephase Zug831 (0/6323) (mit Original-`good_pop`).
 Mit `_zero_population` und Angreifer-Kampfrunde (historisch ab hier): Start-3000-Skript und alte Skripte verlieren bei Zug2735
-(49/64/0/20222); dieselben Eingaben ab Tick2000 gewinnen bei Zug3656 (38/118/21683/0); mit Wassereintritt im Kampf 38/121/21819/0; Niederlagephase 831. Seit Match-Schritte wie `_animate` je Durchlauf zeichnen, lehnt `_ok_to_build` in der isometrischen Niederlagephase vier Klicks (Zug 696) ab: Niederlage bei Zug 872 (0/6933). Eingaben unveraendert, strikte Siegerassertionen und Limits erhalten.
+(49/64/0/20222); dieselben Eingaben ab Tick2000 gewinnen bei Zug3656 (38/118/21683/0); mit Wassereintritt im Kampf 38/121/21819/0; Niederlagephase 831. Mit nur einem wirksamen Terrainbefehl je Zug (P1.2) gewinnen: Diagnose ab Tick 1500 (Tendenz 1, eine Ecke je Ziel reihum) bei Zug 4467 (118/626/37124/0), isometrisch ab Tick 0 (Tendenz 3) bei Zug 5186 (93/716/200496/0); Niederlagephasen 942 (Diagnose) und 951 (isometrisch); die alten Skripte verlieren bei 2735, das fruehere Start-2000-Siegskript bei 2612/2466. Davor: Seit Match-Schritte wie `_animate` je Durchlauf zeichnen, lehnt `_ok_to_build` in der isometrischen Niederlagephase vier Klicks (Zug 696) ab: Niederlage bei Zug 872 (0/6933). Eingaben unveraendert, strikte Siegerassertionen und Limits erhalten.
 Fokussierte/vollstaendige Normal-/Sanitizerlaeufe, historische Strategien und alle495
 Starts bestanden.
 Unabhaengiges Review ohne
@@ -189,7 +189,7 @@ Belege: `populous_c_port/modules/04_render_input.c` (`_move_peeps`, `core_frame_
 ## P1 - Aktionssteuerung und goettliche Kraefte
 
 - [ ] **Teilweise:** Originalen Aktionspfad mit Werkzeugwahl, Zielvalidierung, Freigabemasken, Modusbedingungen und Rueckmeldung herstellen. Bestehende Tastaturaktionen erhalten, aber nicht als vollstaendige Toolbar-Migration behandeln.
-- [ ] **Teilweise:** Heben/Senken und Magnet gegen alle Originalzulassungen, Kosten, Ziele und Zustandsbedingungen abgleichen.
+- [x] Heben/Senken und Magnet wie `_sculpt` (asm 7271-7560): Klick schreibt nur `{Opcode,x,y}` in die `_player`-Mailbox, der Tick fuehrt hoechstens einen Terrainbefehl je Spieler und Zug aus; Manapruefung und Kosten (`build_count*4+10`, Magnet 200) im Verbraucher; Magnet auf `cur_x-1/cur_y-1`, Tendenz unveraendert, Rechtsklick nur in `_mode` 2 ohne BUILD_ONLY_UP (`--sculpt-admission`). Offen: Wiederholung bei gehaltener Maustaste (Original postet je Frame, Port je Druck).
 - [x] Gameplay-Erdbeben auf aktuellem Viewport: 2500 Mana, aktive Freigabe 0x08, zwei spaltenweise 9x9-Durchlaeufe mit bedingtem RNG, rekursivem Heben/Senken und lokaler Kartenableitung; Port-Taste Q.
 - [x] Originales Erdbeben-Zittern: 20 synchrone reine Terrainbilder (-4/-1 Zeilen, ohne Figuren, vor der Terrainaenderung), asm:7895-7925.
 - [ ] **Teilweise:** Erdbeben-Sound migrieren (Toolbar-Icon, Zittern und Editor-Freimodus erledigt).

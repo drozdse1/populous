@@ -50,6 +50,8 @@ static void _make_map(void)
 }
 
 static int core_result, core_battles, core_settlements, core_tool;
+/* The _mode & 3 that the one-shot magnet bit returns to (asm:7485): 0 or 2. */
+static int core_magnet_return;
 static int core_swamp_selected;
 static int core_shake_dy; /* terrain-only vertical offset, quake shake */
 static const int16_t core_offsets[25] = {
@@ -1005,60 +1007,62 @@ static int core_sculpt_visible(void)
 {
     return diagnostic_view || paint_map || ok_to_build != 0;
 }
-/* The admission tests of core_sculpt, also used before a two-player post. */
-static int core_sculpt_admit(int owner, int column, int row, int direction)
+/* _sculpt asm:7271-7560 for one admitted pick (column/row = _cur_x/_cur_y):
+ * it only writes {opcode, x, y} into the _player mailbox through post and
+ * charges nothing; mana, cost and height limits belong to the tick consumer
+ * (_do_raise_point/_do_lower_point/_do_magnet/_do_swamp). Returns 1 when
+ * posted. core_result and the 0..64 range are host guards. */
+static int core_sculpt_post(int column, int row, int left, int (*post)(int command, int x, int y))
 {
-    if (owner < 0 || owner > 1 || pause || core_result || war_flag || column < 0 || column > 64 || row < 0 || row > 64 ||
-        (direction != 1 && direction != -1) || (game_mode&GAME_MODE_NO_BUILD) ||
-        (direction < 0 && (game_mode&GAME_MODE_BUILD_ONLY_UP)) || core_mana(owner) < 10 ||
-        !(stats_power_mask(owner)&1)) return 0;
-    int original = core_vertex(column,row), target_height = original+direction;
-    if (target_height < 0 || target_height > 8) return 0;
-    /* asm:7433-7438: bit 0 of the last frame's _ok_to_build (byte 0x9a1f),
-     * an own town or an own peep with word 18 set drawn anywhere in view.
-     * The host diagnostic view runs no _move_sprite pass, so it keeps the
-     * former nearby-town scan. */
-    if ((game_mode&GAME_MODE_BUILD_NEAR_TOWNS) && original > 0 && !diagnostic_view) {
-        if (!(ok_to_build&1)) return 0;
-    } else if ((game_mode&GAME_MODE_BUILD_NEAR_TOWNS) && original > 0) {
-        int near_town = 0;
-        for (int person = 0; person < no_peeps; ++person) {
-            int position = peep_position(person);
-            if (peep_population(person)>0 && peep_owner(person)==owner && (peep_flags(person)&1) &&
-                abs(position%64-column)<=2 && abs(position/64-row)<=2) near_town = 1;
+    if (pause || war_flag || core_result) return 0;                 /* asm:7279, 7295 */
+    if (column < 0 || column > 64 || row < 0 || row > 64) return 0;
+    int plain = core_tool != 1 && !core_swamp_selected;            /* _mode == 2 */
+    if (plain && !core_sculpt_visible()) return 0;                  /* asm:7307-7314 */
+    cur_x = (int16_t)column; cur_y = (int16_t)row;                  /* asm:7397-7402 */
+    if (!paint_map && plain) {                                      /* asm:7417-7438 */
+        if (game_mode&GAME_MODE_NO_BUILD) return 0;
+        /* bit 0 of the last frame's _ok_to_build (byte 0x9a1f), an own town
+         * or own peep with word 18 set drawn in view. The host diagnostic
+         * view runs no _move_sprite pass, so it keeps a nearby-town scan. */
+        if ((game_mode&GAME_MODE_BUILD_NEAR_TOWNS) && core_vertex(column,row) > 0) {
+            if (!diagnostic_view) { if (!(ok_to_build&1)) return 0; }
+            else {
+                int near_town = 0;
+                for (int person = 0; person < no_peeps; ++person) {
+                    int position = peep_position(person);
+                    if (peep_population(person)>0 && peep_owner(person)==player && (peep_flags(person)&1) &&
+                        abs(position%64-column)<=2 && abs(position/64-row)<=2) near_town = 1;
+                }
+                if (!near_town) return 0;
+            }
         }
-        if (!near_town) return 0;
     }
+    if (left) {
+        if (core_swamp_selected) {                                  /* asm:7456-7477 */
+            if (!post(4, (column-1)&255, (row-1)&255)) return 0;
+            core_swamp_selected = 0; core_set_pointer();
+        } else if (core_tool == 1) {                                /* asm:7478-7500 */
+            if (!post(5, (column-1)&255, (row-1)&255)) return 0;
+            core_tool = core_magnet_return; core_set_pointer();
+        } else if (!post(1, column&255, row&255)) return 0;         /* asm:7501-7510 */
+        return 1;
+    }
+    /* asm:7511-7524: only _mode == 2 and no BUILD_ONLY_UP. The port takes
+     * one post per press, so the _right_button = 2 latch has no host state. */
+    if (!plain || core_tool == 2 || (game_mode&GAME_MODE_BUILD_ONLY_UP)) return 0;
+    return post(2, column&255, row&255);
+}
+/* Single play: the _player mailbox, consumed by the next game tick. */
+static int core_sculpt_post_own(int command, int x, int y)
+{
+    if (player < 0 || player > 1) return 0;
+    uint8_t *box = stats_bytes(player);
+    box[0] = (uint8_t)command; box[1] = (uint8_t)x; box[2] = (uint8_t)y;
     return 1;
 }
-static int core_sculpt(int owner, int column, int row, int direction)
+static int core_sculpt(int column, int row, int direction)
 {
-    if (!core_sculpt_admit(owner, column, row, direction)) return 0;
-    int target_height = core_vertex(column,row)+direction;
-    int changed = 0, xmin = column, xmax = column, ymin = row, ymax = row;
-    for (int y = 0; y <= 64; ++y) for (int x = 0; x <= 64; ++x) {
-        int distance = abs(x-column)>abs(y-row) ? abs(x-column) : abs(y-row);
-        int height = core_vertex(x,y), bound = target_height-direction*distance;
-        if ((direction > 0 && height < bound) || (direction < 0 && height > bound)) {
-            changed += abs(bound-height); core_set_vertex(x,y,bound);
-            if (x < xmin) xmin = x;
-            if (x > xmax) xmax = x;
-            if (y < ymin) ymin = y;
-            if (y > ymax) ymax = y;
-        }
-    }
-    core_add_mana(owner,-(10+changed*4));
-    /* Original map-update bounds include the cells on both sides of changed
-     * vertices; remote terrain and navigation history must remain untouched. */
-    core_make_map_region(xmin > 0 ? xmin-1 : 0, ymin > 0 ? ymin-1 : 0,
-                         xmax < 64 ? xmax : 63, ymax < 64 ? ymax : 63);
-    /* Host footprint refresh. A town in battle reaches only _do_battle
-     * (_move_peeps asm:4269-4281); _sculpt/_make_map (asm:7271-7420,
-     * 1420-1593) never call _set_town. */
-    for (int person = 0; person < no_peeps; ++person)
-        if (peep_population(person)>0 && (peep_flags(person)&1) && !(peep_flags(person)&8))
-            core_set_town(person,0);
-    return 1;
+    return core_sculpt_post(column, row, direction > 0, core_sculpt_post_own);
 }
 
 static void _place_first_people(void)

@@ -372,6 +372,8 @@ static int core_toolbar(int sx, int sy, int left, int post)
         /* Mode icons asm:2090-2133: 0 query, 1 terrain, 2 papal magnet; each
          * clears the swamp bit. core_tool: 0 terrain, 1 magnet, 2 query. */
         if (line > 2) return 0;
+        /* asm:2117-2128: the magnet sets bit 2 over _mode & 3. */
+        if (line == 2 && core_tool != 1) core_magnet_return = core_tool;
         core_tool = line == 0 ? 2 : line == 2; core_swamp_selected = 0; core_set_pointer();
     } else if (icon == 7) {
         /* asm:2134-2228: left views the leader (else the magnet), right the magnet. */
@@ -493,7 +495,7 @@ static void game_handle_event(const SDL_Event *event)
             if (key == SDLK_r && !game_reset_start(current_start))
             POP_LOG_ERROR("Reset failed; keeping the current game.");
             if (!pause && !core_result && key >= SDLK_0 && key <= SDLK_3) core_tendency(0) = key-SDLK_0;
-            if (key == SDLK_m) { core_tool = core_tool != 1; core_set_pointer(); }
+            if (key == SDLK_m) { if (core_tool != 1) { core_magnet_return = core_tool; core_tool = 1; } else core_tool = core_magnet_return; core_set_pointer(); }
             if (key == SDLK_q) _do_quake();
             if (key == SDLK_f) _do_flood();
             if (key == SDLK_v) _do_volcano();
@@ -590,34 +592,11 @@ static void game_handle_event(const SDL_Event *event)
                 core_serial_world_click(column,row,event->button.button == SDL_BUTTON_LEFT);
             return;
         }
-        if (core_swamp_selected) {
-            if (event->button.button == SDL_BUTTON_LEFT) {
-                /* asm:7451-7489 clears selection before command execution.
-                 * Diagnostic picks use this same vertex-to-byte mapping. */
-                core_swamp_selected = 0; core_set_pointer();
-                core_swamp(player,(column-1)&255,(row-1)&255,___newrand);
-            }
-            return;
-        }
-        if (core_tool == 1) {
-            if (column>=64 || row>=64) return;
-            if (event->button.button == SDL_BUTTON_LEFT && core_leader(0) && core_mana(0)>=200) {
-                core_add_mana(0,-200); core_target(0)=row*64+column; core_tendency(0)=0;
-            }
-        } else if (paint_map && (event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT)) {
-            /* _sculpt asm:7307-7312,7417-7438: the editor skips _ok_to_build
-             * and the game-mode build limits; the raise/lower opcodes then
-             * run free (_do_raise_point/_do_lower_point). */
-            cur_x = (int16_t)column; cur_y = (int16_t)row;
-            if (event->button.button == SDL_BUTTON_LEFT) core_raw_raise(player,column,row);
-            else if (column <= 64 && row <= 64) core_do_lower_point(player,column,row);
-        } else if ((event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT) &&
-                   core_sculpt_visible()) {
-            /* asm:7397-7402: the cursor is stored before the NO_BUILD and
-             * near-towns refusals (asm:7419-7438) and the consumer's mana test. */
-            cur_x = (int16_t)column; cur_y = (int16_t)row;
-            core_sculpt(0,column,row,event->button.button == SDL_BUTTON_LEFT ? 1 : -1);
-        }
+        /* _sculpt asm:7271-7560: raise/lower, swamp and papal magnet only
+         * post into the _player mailbox; the next game tick's consumer
+         * decides mana, cost and bounds (asm:17929-17995). */
+        if (event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT)
+            core_sculpt(column,row,event->button.button == SDL_BUTTON_LEFT ? 1 : -1);
     }
     /* Unsupported special powers remain inert. */
 }
