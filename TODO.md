@@ -44,7 +44,7 @@ Tests gehoeren zu jedem Schritt und werden nicht bis P3 aufgeschoben.
 - [x] Tests fuer Regeln, Eingaben, Grafik, Extraktion, Fehlerpfade und Speicherbereinigung; ASan/UBSan-Testziele.
 
 Belege: `populous_c_port/README.md:11-46`,
-`populous_c_port/populous_prg.c:645-1068`,
+`populous_c_port/modules/02_rules.c` (Regeln, Welterzeugung, `game_reset_start`), `populous_c_port/modules/04_render_input.c` (`_move_peeps`),
 `populous_c_port/graphics.c:42-139`, `populous_c_port/land_data.c:23-69`.
 
 ## P0 - Umfang und Entwicklungsgrundlage absichern
@@ -62,7 +62,7 @@ bauen, testen und starten; das Routineninventar macht die verbleibende Arbeit
 nachvollziehbar. Plattformerweiterungen sind von Original-Spielparitaet getrennt.
 
 Belege: `populous_c_port/Makefile:1-35`,
-`populous_c_port/populous_prg.c:79-80`, `populous_c_port/populous_prg.c:322-487`,
+`populous_c_port/populous_prg.c` (Unity-Build-Huelle), `populous_c_port/modules/02_rules.c` (`game_reset_start`: Asset-/Datenpfade ueber `POPULOUS_ASSET_DIR`/`POPULOUS_DATA_DIR`, sonst `POPULOUS_DEFAULT_ASSET_DIR`),
 `populous_c_port/graphics.c:1-51`.
 
 ## P1 - Originalwelten und Leveldaten
@@ -131,7 +131,7 @@ Starts bestanden.
 Unabhaengiges Review ohne
 blockierende Befunde; kurze Integrationstests sind kein Kampagnen-Paritaetsnachweis.
 
-Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319-1325`;
+Belege: `populous_c_port/modules/02_rules.c` (`core_make_map_region`, `original_make_thing`, `game_reset_start`);
 `src/populous_prg.asm:1189-1270`, `:1475-1517`, `:7652-7859`, `:8535-8626`, `:12340-12362`;
 `docs/_posts/2025-06-14-level-format.md:113-131`.
 
@@ -182,7 +182,7 @@ Historische Belege: `populous_c_port/populous_prg.c:546-600`, `:956-975`, `:1319
 keine lebenden unsichtbaren Siedlungen, verlorenen Anfuehrer oder widerspruechlichen
 Belegungen. Spezialkraefte werden mit betroffenen Bewohnerzustaenden zusammen getestet.
 
-Belege: `populous_c_port/populous_prg.c:803-915`, `:1509-1549`;
+Belege: `populous_c_port/modules/04_render_input.c` (`_move_peeps`, `core_frame_walker`), `populous_c_port/modules/02_rules.c` (`core_move`, `core_settle_tick`, `core_battle`, `core_battle_over`, `core_join_forces`, `core_remove`);
 `src/populous_prg.asm:3425-3432`, `:3613-3633`, `:3998-4006`, `:4068-4079`,
 `:4425-4431`, `:6663-6765`.
 
@@ -211,7 +211,7 @@ Belege: `populous_c_port/populous_prg.c:803-915`, `:1509-1549`;
 **Abnahme:** Jede Kraft besitzt positive und abgewiesene Eingabetests, exakte
 Kosten-/Zustandspruefungen sowie Tests an Kartenraendern und belegten Feldern.
 
-Belege: `populous_c_port/populous_prg.c:917-953`, `:1446`, `:1659-1667`;
+Belege: `populous_c_port/modules/02_rules.c` (`core_set_magnet_to`, `core_quake`, `core_volcano`, `core_sculpt`, `core_consume_terrain_mailboxes`);
 `src/populous_prg.asm:6769-6819`, `:7567`, `:7863`, `:8046`, `:8271`, `:8295`,
 `:8392`, `:8482`, `:17707`, `:18376`.
 
@@ -227,7 +227,7 @@ Belege: `populous_c_port/populous_prg.c:917-953`, `:1446`, `:1659-1667`;
 **Abnahme:** Gegner handeln reproduzierbar nach den Originalentscheidungen statt
 nur dieselben normalen Siedlungs-/Explorationsregeln wie der Spieler auszufuehren.
 
-Belege: `populous_c_port/populous_prg.c:1030-1062`, `:1509-1543`;
+Belege: `populous_c_port/modules/02_rules.c` (`core_set_devil_magnet`, `core_devil_effect`, `core_do_computer_effect`, `core_make_level`, `core_one_block_flat`, `core_tempo_pass`), Aufruf in `populous_c_port/modules/04_render_input.c` (`_move_peeps`);
 `src/populous_prg.asm:3252-3269`, `:9017`, `:9148`, `:9526`.
 
 ## P2 - Originalbedienung und Grafik vervollstaendigen
@@ -254,7 +254,7 @@ Sonderanimationen benoetigen die passenden Spielregeln.
 **Abnahme:** Keine dekorativen Bedienelemente fuer implementierte Aktionen;
 Referenzbilder und Eingabetests decken aktive, gesperrte und modale Zustaende ab.
 
-Belege: `populous_c_port/populous_prg.c:1342-1446`, `:1545-1595`;
+Belege: `populous_c_port/modules/02_rules.c` (`game_render`), `populous_c_port/modules/03_ui_save.c` (`core_draw_requester`, `core_queue_sprite`, `core_draw_funny`), `populous_c_port/modules/04_render_input.c` (`game_handle_event`);
 `populous_c_port/graphics.h:15-20`, `populous_c_port/extract_assets.py:230-234`;
 `src/populous_prg.asm:16668-16684`, `:19894-19920`, `:19973-20025`;
 `src/populous_main.asm:1815-1841`.
@@ -348,7 +348,7 @@ Belege: `populous_c_port/populous_prg.c` (`core_save_game`, `core_load_game`, `c
 Zustandsdefinition und Optionen. Funktionaler Zweispielerbetrieb gehoert zur
 Spielparitaet; ein bestimmter physischer Serialadapter ist eine separate Entscheidung.
 
-Belege: `populous_c_port/populous_prg.c:417-487`, `:1562`;
+Belege: `populous_c_port/modules/02_rules.c` (`_setup_serial_interrupt`, `_free_serial_interrupt`; auf `main` kein Netzwerkcode, der TCP-Modus `8022cd3` liegt nur auf `refactor/c-structure`);
 `src/populous_prg.asm:17734-17833`.
 
 ## Querschnitt - Nachweis der Originaltreue und Abschluss
@@ -372,7 +372,7 @@ Belege: `populous_c_port/Makefile:31-105`,
 `populous_c_port/tests/test_game.c:563-665`,
 `populous_c_port/tests/test_graphics.c:12-90`,
 `populous_c_port/tests/test_runtime.c:86-179`,
-`populous_c_port/populous_prg.c:977-992`.
+`populous_c_port/modules/02_rules.c` (`game_tick`, `_animate`).
 
 ## Separat - Erforderliche Anzeigeeffekte und optionale Hardwaretreue
 
@@ -388,7 +388,7 @@ Amiga-Emulator ist deshalb keine belegte Voraussetzung fuer die funktionale Migr
 Weitere dynamische Hardwarepfade sind dennoch zu pruefen.
 
 Belege: `populous_c_port/sdl_lowlevel.c:114-137`,
-`populous_c_port/populous_prg.c:400`, `:1065-1068`, `:1438-1439`;
+`populous_c_port/modules/01_preamble.c` (`_make_copper`), `populous_c_port/modules/02_rules.c` (`game_render`, `core_vbi_audio`);
 `src/populous_prg.asm:15291-15297`, `:19321-19354`, `:19699-19796`.
 
 ## Empfohlene naechste Etappen
