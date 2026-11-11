@@ -20424,6 +20424,33 @@ static void paint_starve(int owner)
 /* ========================================================================
  * Paint map editor
  * ======================================================================== */
+/* _do_knight asm:8446-8455 sets the magnet through _set_magnet_to, whose
+ * _pause test (asm:8271-8276, ;440d0) skips the store. Only _paint_map
+ * (asm:8404) reaches it while paused: the cast still marks, scores, clears
+ * the leader and sets effect 69, but target and god/devil magnet stay. */
+static void test_knight_paint_pause(void)
+{
+    for (int owner = 0; owner < 2; ++owner)
+        for (int paused = 0; paused < 2; ++paused) {
+            knight_fixture(owner);
+            paint_map = 1;
+            pause = paused;
+            core_target(owner) = 0x111;
+            A4_WORD(owner ? 0xae76 : 0xae78) = 0x222;
+            A4_LONG(0xae72) = 0;
+            uint32_t mana = core_mana_long(owner);
+            assert(core_knight(owner) == 1);
+            assert(peeps[20] == 1 && !core_leader(owner) && A4_WORD(0x2fac) == 69);
+            assert(A4_LONG(0xae72) == 150u && core_mana_long(owner) == mana);
+            if (paused)
+                assert(core_target(owner) == 0x111 && A4_WORD(owner ? 0xae76 : 0xae78) == 0x222);
+            else
+                assert(core_target(owner) == 650 && A4_WORD(owner ? 0xae76 : 0xae78) == 650);
+            pause = 0;
+            paint_map = 0;
+        }
+}
+
 static void test_paint_map_powers(void)
 {
     for (int owner = 0; owner < 2; ++owner)
@@ -21466,6 +21493,11 @@ int main(int argc, char **argv)
         test_armageddon_original(argv[2]);
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--knight-paint-pause")) {
+        test_knight_paint_pause();
+        puts("knight paint-map pause: PASS");
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--armageddon")) {
         test_armageddon_input_smoke();
         test_armageddon_cast();
@@ -21695,6 +21727,7 @@ int main(int argc, char **argv)
     test_war_terrain();
     test_terrain_mailbox();
     test_paint_map_powers();
+    test_knight_paint_pause();
     test_paint_map_editor();
     test_paint_map_options();
     test_magnet();

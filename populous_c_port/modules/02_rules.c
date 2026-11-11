@@ -1447,8 +1447,9 @@ static int core_knight(int owner)
     if (owner == player) score_long+=150;
     peeps[subject*22+20]=1;
     core_get_heading(subject);
-    core_target(owner)=position;
-    owner_magnet(owner)=position;
+    /* asm:8446-8455: _set_magnet_to, whose _pause gate (asm:8271-8276) only
+     * a _paint_map cast can reach. */
+    core_set_magnet_to(owner,(int16_t)position);
     core_leader(owner)=0;
     effect=69;
     return 1;
