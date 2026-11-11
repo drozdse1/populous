@@ -826,12 +826,20 @@ static void core_ai_tendency(int owner, uint8_t value)
     stats_cmd_byte(owner) = 14; stats_cmd_y(owner) = 1; stats_cmd_x(owner) = value; stats_build_latch(owner) = 1;
 }
 /* _stats+$22/$2a are Amiga pointers (slot+1 here). With none, the original
- * dereferences address 8 (an OS exception vector); that compare is not
- * modelled: the magnet branch is skipped and the fallback runs. */
+ * still runs CMP.W (8,A1) and the MOVE.W (8,A0) reads (asm:9745-9764,
+ * 9865-9884) on address 0, i.e. the word at address 8: the high word of the
+ * bus-error vector. $00FC assumes Kickstart 1.3 (ROM at $FC0000); it has not
+ * been measured on real hardware and differs on other ROMs or if a program
+ * patches the vector. That word is the cell: compared with the magnet
+ * target and, if different, stored whole in +$1e with x=60, y=3. */
+#define AMIGA_ADDR8_WORD ((int16_t)0x00FC)
 static int core_ai_town_cell(int owner, int field, int16_t *cell)
 {
     uint32_t reference = A4_LONG(stats_base(owner)+field);
-    if (!reference || reference > 208) return 0;
+    if (!reference) { *cell = AMIGA_ADDR8_WORD; return 1; }
+    /* Host guard: a nonzero reference above 208 names no peep slot and has
+     * no asm counterpart (the pass only stores slot pointers); skip. */
+    if (reference > 208) return 0;
     *cell = peep_position((int)reference-1);
     return 1;
 }

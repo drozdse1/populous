@@ -16637,6 +16637,84 @@ static void test_set_devil_magnet(void)
     ai_run(expected);
     puts("set_devil_magnet: PASS");
 }
+/* _set_devil_magnet with a null town pointer (asm:9745-9764 for _stats+$2a,
+ * asm:9865-9884 for _stats+$22). CMP.W/MOVE.W (8,A1) then read the word at
+ * address 8, modelled as AMIGA_ADDR8_WORD = $00FC: x = $FC&63 = 60,
+ * y = $FC ASR 6 = 3, +$1e = $00FC, +$1c = 2, latch. Called directly so both
+ * owners act; every expected byte is a literal address. */
+static void null_town_fixture(int owner, int population)
+{
+    ai_fixture();
+    A4_WORD(0x82be) = 0;
+    A4_WORD(owner ? 0x82fa : 0x82cc) = 15; /* towns 15 >= 0*2+15; turn 50 */
+    A4_WORD(owner ? 0x99f6 : 0x9a06) = 2;  /* enemy leader = slot 1 */
+    A4_WORD(owner ? 0x9a06 : 0x99f6) = 1;  /* own leader = slot 0 */
+    A4_WORD(owner ? 0x99fa : 0x9a0a) = 0;  /* enemy tendency 0 */
+    A4_WORD(owner ? 0x9a0a : 0x99fa) = 0;  /* own tendency 0 */
+    A4_WORD(owner ? 0x82f2 : 0x82c4) = 2;  /* power bit 1 only */
+    ai_peep(0, 2, owner, population, 600);
+    ai_peep(1, 2, !owner, 5500, 700);
+}
+static void null_town_run(int owner, const uint8_t *expected)
+{
+    core_set_devil_magnet(owner);
+    assert(!memcmp(expected, prg_a4_area, 65536));
+}
+static void test_ai_null_town(void)
+{
+    static uint8_t expected[65536];
+    for (int owner = 0; owner < 2; ++owner) {
+        int b = owner ? 0x82e4 : 0x82b6, target = owner ? 0x9a08 : 0x99f8;
+        /* $2a path: leader 100 < 6000, +$1c 0, target $820 != $00FC. */
+        null_town_fixture(owner, 100);
+        memcpy(expected, prg_a4_area, 65536);
+        AI_EXPECT(b)[0] = 5; AI_EXPECT(b + 1)[0] = 60; AI_EXPECT(b + 2)[0] = 3;
+        ai_expect_word(expected, b + 0x1e, 0x00fc);
+        ai_expect_word(expected, b + 0x1c, 2);
+        ai_expect_word(expected, b + 8, 1);
+        null_town_run(owner, expected);
+        /* $2a equal: target already $00FC -> LAB_452EE tendency reset (1). */
+        null_town_fixture(owner, 100);
+        A4_WORD(target) = 0x00fc;
+        A4_WORD(target + 2) = 1;
+        memcpy(expected, prg_a4_area, 65536);
+        AI_EXPECT(b)[0] = 14; AI_EXPECT(b + 1)[0] = 0; AI_EXPECT(b + 2)[0] = 1;
+        ai_expect_word(expected, b + 8, 1);
+        null_town_run(owner, expected);
+        /* $22 path: leader 6000 is not > 5500+500, bit 1 set, +$1c 0. */
+        null_town_fixture(owner, 6000);
+        memcpy(expected, prg_a4_area, 65536);
+        AI_EXPECT(b)[0] = 5; AI_EXPECT(b + 1)[0] = 60; AI_EXPECT(b + 2)[0] = 3;
+        ai_expect_word(expected, b + 0x1e, 0x00fc);
+        ai_expect_word(expected, b + 0x1c, 2);
+        ai_expect_word(expected, b + 8, 1);
+        null_town_run(owner, expected);
+        /* $22 equal: target $00FC -> LAB_4545A tendency reset (1). */
+        null_town_fixture(owner, 6000);
+        A4_WORD(target) = 0x00fc;
+        A4_WORD(target + 2) = 1;
+        memcpy(expected, prg_a4_area, 65536);
+        AI_EXPECT(b)[0] = 14; AI_EXPECT(b + 1)[0] = 0; AI_EXPECT(b + 2)[0] = 1;
+        ai_expect_word(expected, b + 8, 1);
+        null_town_run(owner, expected);
+        /* $22 gate: compare differs but TST.W ($1C,A2) is 2 -> LAB_4545A;
+         * tendency 0 there, so nothing at all is written. +$1e 0 is not
+         * the leader cell 600, so +$1c is not decremented. */
+        null_town_fixture(owner, 6000);
+        A4_WORD(b + 0x1c) = 2;
+        memcpy(expected, prg_a4_area, 65536);
+        null_town_run(owner, expected);
+        /* Same gate with tendency 1: reset, +$1c stays 2. */
+        null_town_fixture(owner, 6000);
+        A4_WORD(b + 0x1c) = 2;
+        A4_WORD(target + 2) = 1;
+        memcpy(expected, prg_a4_area, 65536);
+        AI_EXPECT(b)[0] = 14; AI_EXPECT(b + 1)[0] = 0; AI_EXPECT(b + 2)[0] = 1;
+        ai_expect_word(expected, b + 8, 1);
+        null_town_run(owner, expected);
+    }
+    puts("ai_null_town: PASS");
+}
 /* Devil effect. */
 static void test_devil_effect(void)
 {
@@ -17316,6 +17394,7 @@ static void test_good_pop(void)
 static void test_computer_ai(void)
 {
     test_set_devil_magnet();
+    test_ai_null_town();
     test_devil_effect();
     test_good_pop();
     test_computer_effect();
@@ -20794,6 +20873,10 @@ int main(int argc, char **argv)
     if (argc == 2 && !strcmp(argv[1], "--war-state")) {
         test_war_state();
         puts("focused war-state regression: PASS");
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--ai-null-town")) {
+        test_ai_null_town();
         return 0;
     }
     if (argc == 2 && !strcmp(argv[1], "--ai-toggle")) {

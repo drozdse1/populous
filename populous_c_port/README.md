@@ -1580,7 +1580,11 @@ so outcomes appear one pass after the last death. Like `_clear_map` (asm 1023-11
 only the next pass clears them, after `_devil_effect` (`--start-reset`). Opcodes 7-13 are editor
 commands the AI never emits (`core_place_people`, `core_paint_cycle`,
 `core_paint_delete`). `_toggle` mana (`--ai-toggle`) and unbounded AI quake/volcano
-targets (`--ai-edge-targets`) are ported. Open: null pointer reads (address 8).
+targets (`--ai-edge-targets`) are ported. Assumption: a null `_stats`+$22/$2a
+town pointer makes `_set_devil_magnet` read the word at address 8 (asm 9745-9764,
+9865-9884); the port uses `AMIGA_ADDR8_WORD` = 0x00FC, the bus-error vector's high
+word under Kickstart 1.3 (ROM $FC0000), unmeasured. A differing target then gets a
+magnet at x 60, y 3 (`--ai-null-town`).
 Death cleanup and battle dispatch (`--zero-population`, `--battle-rounds`):
 `core_remove` follows `_zero_population` (asm 5645-5723): population 0; only an
 exact-8 peep clears bit 3 on its partner (a walker partner is left frozen at 0,
