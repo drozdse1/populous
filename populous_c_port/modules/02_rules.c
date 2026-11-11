@@ -369,7 +369,7 @@ static int core_magnet_direction(int person)
     return 999;
 }
 /* _battle_over asm:6207-6564. Casualties and winner selection stay in core_battle. */
-static int core_battle_over(int winner, int loser, bool raw_loser_nonzero)
+static int core_battle_over(int winner, int loser)
 {
     if (no_peeps < 0 || no_peeps > 208 || winner < 0 || winner >= no_peeps ||
         loser < 0 || loser >= no_peeps || winner == loser ||
@@ -385,10 +385,10 @@ static int core_battle_over(int winner, int loser, bool raw_loser_nonzero)
     battle_won(owner)=(uint16_t)((uint16_t)battle_won(owner)+1u);
     if (peep_flags(loser)&1) {
         peep_flags(loser)=1;
-        /* _do_battle's preliminary combat frames are overwritten here and by
-         * winner frame 85. Exact-zero losers skip both frames and life scratch;
-         * negative host casualties must still reframe before any terrain edit. */
-        if (raw_loser_nonzero) core_frame_town(loser,core_check_life(enemy,loser_position));
+        /* _set_frame(loser) asm:6224-6227 tests the stored word with TST.W/BEQ
+         * (asm:5728): an exact-zero loser skips the frame and life scratch, a
+         * negative one (_do_battle's raw SUB.W) reframes before any terrain edit. */
+        if (peep_population(loser)) core_frame_town(loser,core_check_life(enemy,loser_position));
         int level=(int16_t)(peep_frame(loser)-32);
         reward=level>=0 && level<=10 ? land_battle_add1(level) : 100;
         if (winner_heading) {
@@ -438,22 +438,18 @@ static int core_battle_over(int winner, int loser, bool raw_loser_nonzero)
 }
 static int core_frame_walker(int person);
 /* _set_frame asm:5759-5809: actual combat partner, opaque heading presence.
- * The caller preserves the pre-clamp population test. _do_battle calls the
+ * TST.W/BEQ (asm:5728) skips only an exact-zero word, so the negative words
+ * _do_battle stores still frame. _do_battle calls the
  * whole _set_frame chain (asm:6168-6172), so a side that is no longer a
  * battle state (0x12 after water entry, asm:3562-3580, or 2 once that dried)
  * takes its own branch: exact 2 and bit 4 come before bit 3. */
-static int core_frame_battle(int person, int partner, bool raw_nonzero)
+static int core_frame_battle(int person, int partner)
 {
+    /* Host guard: the slot bounds keep peeps[] accesses inside the table. */
     if (no_peeps < 0 || no_peeps > 208 || person < 0 || person >= no_peeps ||
-        partner < 0 || partner >= no_peeps || person == partner || !raw_nonzero) return 0;
-    if (peep_flags(person) == 2 || (peep_flags(person)&0x10) || !(peep_flags(person)&8)) {
-        /* The stored word is clamped at 0; the source tests the raw word. */
-        int16_t stored = peep_population(person);
-        if (!stored) set_peep_population(person,1);
-        int complete = core_frame_walker(person);
-        set_peep_population(person,stored);
-        return complete;
-    }
+        partner < 0 || partner >= no_peeps || person == partner || !peep_population(person)) return 0;
+    if (peep_flags(person) == 2 || (peep_flags(person)&0x10) || !(peep_flags(person)&8))
+        return core_frame_walker(person);
     uint32_t heading, partner_heading;
     memcpy(&heading,peeps+person*22+14,sizeof heading);
     memcpy(&partner_heading,peeps+partner*22+14,sizeof partner_heading);
@@ -472,25 +468,29 @@ static void core_battle(int first, int second)
     int second_strength = (___newrand()%3+1)*peep_population(second);
     int first_strength = (___newrand()%3+1)*peep_population(first);
     int lesser = first_strength < second_strength ? first_strength : second_strength;
-    /* SUB.W wraps before TST.W and before either raw-nonzero frame test.
-     * Keep host storage normalized without losing the signed source residual. */
+    /* SUB.W D0,(4,A0) (asm:6106-6158) stores the wrapped word, negative
+     * included; _set_frame, TST.W and _battle_over read it back. Every
+     * nonpositive side is zeroed by _zero_population (asm:6165-6181 or
+     * _battle_over asm:6555-6561) before _do_battle returns. */
     uint16_t first_bits = (uint16_t)((uint32_t)peep_population(first)-
         ((uint32_t)(lesser/100)*peep_weapon(second)+10u));
     uint16_t second_bits = (uint16_t)((uint32_t)peep_population(second)-
         ((uint32_t)(lesser/100)*peep_weapon(first)+10u));
     int first_pop = first_bits <= INT16_MAX ? (int)first_bits : (int)first_bits-65536;
     int second_pop = second_bits <= INT16_MAX ? (int)second_bits : (int)second_bits-65536;
-    set_peep_population(first,first_pop > 0 ? first_pop : 0);
-    set_peep_population(second,second_pop > 0 ? second_pop : 0);
-    core_frame_battle(first,second,first_pop!=0);
-    core_frame_battle(second,first,second_pop!=0);
+    set_peep_population(first,(int16_t)first_pop);
+    set_peep_population(second,(int16_t)second_pop);
+    core_frame_battle(first,second);
+    core_frame_battle(second,first);
     if (first_pop > 0 && second_pop > 0) return;
     /* asm:6165-6181: partner first. If it is exact 8 it strips self's bit 3,
      * so self's own _zero_population then leaves the partner's flags alone. */
     if (first_pop <= 0 && second_pop <= 0) { core_remove(second); core_remove(first); return; }
     int winner = first_pop > 0 ? first : second, loser = winner == first ? second : first;
-    bool raw_loser_nonzero=(loser==first ? first_pop : second_pop)!=0;
-    core_battle_over(winner,loser,raw_loser_nonzero);
+    /* A host guard rejection in core_battle_over (corrupt owner, slot or
+     * position) would leave the negative word stored; the source has no such
+     * exit and always zeroes it, so do the same here. */
+    if (!core_battle_over(winner,loser) && peep_population(loser) < 0) set_peep_population(loser,0);
 }
 /* _join_battle asm:6663-6765. Keep the pair's combat state intact. */
 static void core_join_battle(int newcomer, int encountered)
@@ -593,8 +593,8 @@ static void core_move(int person)
             peep_flags(person) = 8;
             peep_flags(occupant) = (peep_flags(occupant)&7)|8;
             set_peep_word(person,6,occupant); set_peep_word(occupant,6,person);
-            core_frame_battle(person,occupant,peep_population(person)!=0);
-            core_frame_battle(occupant,person,peep_population(occupant)!=0);
+            core_frame_battle(person,occupant);
+            core_frame_battle(occupant,person);
             /* _set_battle asm:6604-6656 (its view_who store is a no-op):
              * release the defender's claims, then a town keeps its cell
              * while a walker is pulled back onto the attacker's cell. */

@@ -13890,7 +13890,7 @@ static void test_heading_battle_guards(void)
     setup_heading_battle(1, 0);
     set_peep_word(2, 4, 0);
     memset(peeps + 22 + 14, 0, 4);
-    assert(core_battle_over(1, 2, false));
+    assert(core_battle_over(1, 2));
     /* The dead loser keeps its exact 8 (asm:5645-5723). */
     assert(peeps[22] == 6 && peep_word(1, 12) == 85 && peeps[44] == 8);
     assert(peep_word(1, 4) == 100 && seed == 123 && view_who == 2);
@@ -13901,9 +13901,9 @@ static void test_heading_battle_guards(void)
         set_peep_word(2, 4, 0);
         uint8_t before[sizeof prg_a4_area];
         memcpy(before, prg_a4_area, sizeof before);
-        assert(!core_battle_over(invalid[sample], 2, false));
-        assert(!core_battle_over(1, invalid[sample], false));
-        assert(!core_battle_over(1, 1, false));
+        assert(!core_battle_over(invalid[sample], 2));
+        assert(!core_battle_over(1, invalid[sample]));
+        assert(!core_battle_over(1, 1));
         assert(a4_same(before));
     }
     for (int variant = 0; variant < 13; ++variant) {
@@ -13953,7 +13953,7 @@ static void test_heading_battle_guards(void)
         }
         uint8_t before[sizeof prg_a4_area];
         memcpy(before, prg_a4_area, sizeof before);
-        assert(!core_battle_over(1, 2, false));
+        assert(!core_battle_over(1, 2));
         assert(a4_same(before));
         assert(core_battles == 17 && !core_settlements && !core_result);
     }
@@ -14456,14 +14456,14 @@ static void test_knight_original(const char *directory)
     SDL_Quit();
 }
 
-static void check_battle_frame_only(int person, int partner, bool raw, int want, int reset)
+static void check_battle_frame_only(int person, int partner, int want, int reset)
 {
     uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
     memcpy(before, prg_a4_area, sizeof before);
     if (person >= 0 && person < 208) set_peep_word(person, 12, want);
     memcpy(expected, prg_a4_area, sizeof expected);
     memcpy(prg_a4_area, before, sizeof before);
-    assert(core_frame_battle(person, partner, raw) == reset);
+    assert(core_frame_battle(person, partner) == reset);
     assert(!memcmp(expected, prg_a4_area, sizeof expected));
 }
 
@@ -14500,7 +14500,7 @@ static void test_battle_frame_helper(void)
                         want = own == 0 ? 130 : 134;
                     else if (second)
                         want = enemy == 0 ? 130 : 134;
-                    check_battle_frame_only(1, 2, true, want, 1);
+                    check_battle_frame_only(1, 2, want, 1);
                 }
     /* Independently enumerate every 16-bit encoding, using the three permitted
      * predecessor words rather than duplicating the production signed bounds. */
@@ -14525,15 +14525,17 @@ static void test_battle_frame_helper(void)
                 want = bases[group] + 2;
                 reset = 0;
             }
-            assert(core_frame_battle(1, 2, true) == reset);
+            assert(core_frame_battle(1, 2) == reset);
             assert(peep_word(1, 12) == want);
         }
         set_peep_word(1, 12, 102);
         assert(a4_same(before));
     }
     for (int flags = 0; flags < 256; ++flags)
-        for (int raw = 0; raw < 2; ++raw)
-            for (int population = -1; population <= 1; ++population) {
+        for (int population = -1; population <= 1; ++population) {
+                /* _set_frame tests the stored word itself (asm:5728); the
+                 * former host-only raw flag no longer exists. */
+                int raw = population != 0;
                 setup_heading_battle(1, 0);
                 peeps[22] = flags;
                 set_peep_word(1, 4, population);
@@ -14560,9 +14562,9 @@ static void test_battle_frame_helper(void)
                     want[0] = 131, want[1] = -32768, reset[0] = reset[1] = 1; /* no reset */
                 else if (flags & 0x60)
                     want[0] = want[1] = 101, reset[0] = reset[1] = 1;
-                check_battle_frame_only(1, 2, raw, want[0], reset[0]);
+                check_battle_frame_only(1, 2, want[0], reset[0]);
                 set_peep_word(1, 12, 32767);
-                check_battle_frame_only(1, 2, raw, want[1], reset[1]);
+                check_battle_frame_only(1, 2, want[1], reset[1]);
             }
     const int counts[] = {-32768, -1, 0, 1, 2, 3, 4, 207, 208, 209, 32767};
     const int indices[] = {-32768, -1, 0, 1, 2, 3, 206, 207, 208, 32767};
@@ -14574,13 +14576,15 @@ static void test_battle_frame_helper(void)
                 no_peeps = counts[count];
                 for (int person = 0; person < 208; ++person) {
                     peeps[person * 22] = 8;
+                    /* Nonzero stored word replaces the former raw=true flag. */
+                    set_peep_word(person, 4, 1);
                     set_peep_word(person, 12, 71);
                 }
                 int person = indices[first], partner = indices[second];
                 int valid = counts[count] >= 0 && counts[count] <= 208 && person >= 0 &&
                             person < counts[count] && partner >= 0 && partner < counts[count] &&
                             person != partner;
-                check_battle_frame_only(person, partner, true, valid ? 72 : 71, 0);
+                check_battle_frame_only(person, partner, valid ? 72 : 71, 0);
             }
 }
 
@@ -15003,6 +15007,163 @@ static void test_battle_loss(void)
     test_battle_loss_completion();
     test_battle_loss_both_dead();
     test_battle_loss_ticks();
+}
+
+/* Negative battle population. _do_battle stores the raw SUB.W result,
+ * negative included (asm:6106/6124/6142/6158 SUB.W D0,(4,A0)). _set_frame
+ * tests that stored word with TST.W/BEQ only (asm:5728-5729), so a negative
+ * side reframes like a positive one; _battle_over's loser _set_frame
+ * (asm:6224-6227) likewise. Every path then runs _zero_population on a
+ * nonpositive side (asm:6165-6181, 6555-6561) or stores 1 (asm:6253), so no
+ * negative word survives _do_battle: later readers (good_pop, drawing, AI,
+ * checksum, _join_battle) never observe one. */
+static void test_negative_battle_pop_readers(void)
+{
+    /* _set_frame bit-3 arm on a stored negative: frame 102+1 is outside
+     * [130,133), so it resets to base 130 (winner heading, owner 0). */
+    setup_heading_battle(1, 0);
+    set_peep_word(2, 4, -3);
+    uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+    memcpy(before, prg_a4_area, sizeof before);
+    set_peep_word(2, 12, 130);
+    memcpy(expected, prg_a4_area, sizeof expected);
+    memcpy(prg_a4_area, before, sizeof before);
+    assert(core_frame_battle(2, 1) == 1);
+    assert(!memcmp(expected, prg_a4_area, sizeof expected));
+    /* Same record with exact zero: TST.W/BEQ skips the whole body. */
+    set_peep_word(2, 4, 0);
+    memcpy(before, prg_a4_area, sizeof before);
+    assert(core_frame_battle(2, 1) == 0);
+    assert(a4_same(before));
+    /* Exact-2 walker arm (water entry turned the side into a walker): the
+     * negative word is still nonzero, 102 >= 7 resets to 0 with completion. */
+    setup_heading_battle(1, 0);
+    peeps[44] = 2;
+    set_peep_word(2, 4, -32768);
+    memcpy(before, prg_a4_area, sizeof before);
+    set_peep_word(2, 12, 0);
+    memcpy(expected, prg_a4_area, sizeof expected);
+    memcpy(prg_a4_area, before, sizeof before);
+    assert(core_frame_battle(2, 1) == 1);
+    assert(!memcmp(expected, prg_a4_area, sizeof expected));
+
+    /* _battle_over town-loser path (winner without heading, loser flags 9).
+     * The stored sign decides the loser's _set_frame (asm:6224-6227), hence
+     * the reward: negative -> town frame 32 (check_life 0: ring bk2 37),
+     * level 0 -> _battle_add1[0]; zero -> frame 102 stays, level 70 -> 100. */
+    for (int negative = 0; negative < 2; ++negative) {
+        setup_heading_battle(1, 0);
+        memset(peeps + 22 + 14, 0, 4);
+        peeps[44] = 9;
+        set_peep_word(2, 4, negative ? -3 : 0);
+        land_battle_add1(0) = 77;
+        memcpy(before, prg_a4_area, sizeof before);
+        int reward = negative ? 77 : 100;
+        /* _set_town(loser,1) twice (here and in _zero_population): the 3x3
+         * bk2 cells around 650 cleared; map_blk 15 is not 31+owner. */
+        const int ring[9] = {650, 586, 651, 714, 649, 587, 715, 713, 585};
+        for (int cell = 0; cell < 9; ++cell) map_bk2[ring[cell]] = 0;
+        /* check_life(owner,650): centre 15 -> water flag, ring 37 -> 0. */
+        life_water_flag = 1;
+        life_swamp_count = 0;
+        peeps[44] = 1;
+        if (negative) set_peep_word(2, 12, 32);
+        peeps[22] = 6;
+        set_peep_word(1, 10, 0);
+        set_peep_word(1, 12, 85);
+        map_who[650] = 2;
+        A4_WORD(0x82d4) = 650;
+        A4_WORD(0x82d2) = 2;
+        peeps[22 + 20] = 19;
+        A4_WORD(0x82d2 + 46) = 0;
+        A4_LONG(0x9a02) = (uint32_t)(1000 + reward);
+        A4_LONG(0x9a02 + 16) = (uint32_t)(2000 - reward);
+        A4_WORD(0xae7a) = 8;
+        view_who = 2;
+        set_peep_word(2, 4, 0);
+        map_who[714] = 0;
+        memcpy(expected, prg_a4_area, sizeof expected);
+        memcpy(prg_a4_area, before, sizeof before);
+        assert(core_battle_over(1, 2) == 1);
+        assert(!memcmp(expected, prg_a4_area, sizeof expected));
+    }
+}
+
+static void test_negative_battle_pop_battles(void)
+{
+    /* Loser goes negative: weapons 0 and the 7-strong loser roll at most 21,
+     * so lesser/100 == 0 and both lose exactly 10: 100 -> 90, 7 -> -3.
+     * Seed 123 -> 28505 after the two rolls. The negative loser reframes
+     * (102+1 -> base), then _battle_over's final TST.W/BGT runs
+     * _zero_population (asm:6555-6561): stored 0, never negative. */
+    for (int winner = 1; winner <= 2; ++winner)
+        for (int owner = 0; owner < 2; ++owner) {
+            setup_heading_battle(winner, owner);
+            int loser = 3 - winner;
+            set_peep_word(loser, 4, 7);
+            uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+            memcpy(before, prg_a4_area, sizeof before);
+            /* Loser heading 0, winner heading set: base by the winner's owner. */
+            set_peep_word(loser, 12, owner == 0 ? 130 : 134);
+            peeps[winner * 22] = 6;
+            set_peep_word(winner, 4, 90);
+            set_peep_word(winner, 10, 0);
+            set_peep_word(winner, 12, 85);
+            map_who[650] = (uint8_t)(winner + 1);
+            A4_WORD(0x82d4 + owner * 46) = 650;
+            A4_WORD(0x82d2 + owner * 46) = 2;
+            peeps[winner * 22 + 20] = 19;
+            A4_WORD(0x82d2 + (1 - owner) * 46) = 0;
+            A4_LONG(0x9a02 + owner * 16) = 1023;
+            A4_LONG(0x9a02 + (1 - owner) * 16) = 1977;
+            A4_WORD(0xae7a + owner * 2) = 8;
+            view_who = (uint16_t)(winner + 1);
+            map_who[714] = 0;
+            set_peep_word(loser, 4, 0);
+            seed = 28505;
+            memcpy(expected, prg_a4_area, sizeof expected);
+            memcpy(prg_a4_area, before, sizeof before);
+            core_battle(1, 2);
+            assert(!memcmp(expected, prg_a4_area, sizeof expected));
+        }
+    /* Both go negative: 7 -> -3 and 8 -> -2. Slot 2 is the 0x0A defender.
+     * Both reframe from the raw nonzero words (base 70, no headings):
+     * 71 -> 72, 72 -> 73 resets to 70. _zero_population(partner) then
+     * _zero_population(self) (asm:6175-6181); self's exact 8 strips the
+     * defender's bit 3: 0x0A -> 2. Both stored words end 0. */
+    setup_heading_battle(1, 0);
+    peeps[44] = 0x0a;
+    memset(peeps + 22 + 14, 0, 4);
+    set_peep_word(1, 4, 7);
+    set_peep_word(2, 4, 8);
+    set_peep_word(1, 12, 71);
+    set_peep_word(2, 12, 72);
+    core_leader(1) = 3;
+    map_who[650] = 3;
+    uint8_t before[sizeof prg_a4_area], expected[sizeof prg_a4_area];
+    memcpy(before, prg_a4_area, sizeof before);
+    set_peep_word(1, 4, 0);
+    set_peep_word(2, 4, 0);
+    peeps[44] = 2;
+    set_peep_word(1, 12, 72);
+    set_peep_word(2, 12, 70);
+    core_leader(0) = core_leader(1) = 0;
+    core_target(0) = core_target(1) = 650;
+    A4_WORD(0xae78) = A4_WORD(0xae76) = 650;
+    view_who = 0;
+    map_who[650] = 0;
+    map_who[714] = 0;
+    seed = 28505;
+    memcpy(expected, prg_a4_area, sizeof expected);
+    memcpy(prg_a4_area, before, sizeof before);
+    core_battle(1, 2);
+    assert(!memcmp(expected, prg_a4_area, sizeof expected));
+}
+
+static void test_negative_battle_pop(void)
+{
+    test_negative_battle_pop_readers();
+    test_negative_battle_pop_battles();
 }
 
 static void setup_battle_entry(int attacker, int owner, int destination)
@@ -21199,6 +21360,11 @@ int main(int argc, char **argv)
         puts("focused newly submerged entry: PASS");
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--negative-battle-pop")) {
+        test_negative_battle_pop();
+        puts("focused negative battle population: PASS");
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--battle-loss")) {
         test_battle_loss();
         test_heading_town_casualty_controls();
@@ -21505,6 +21671,7 @@ int main(int argc, char **argv)
     test_water_entry();
     test_water_battle();
     test_battle_loss();
+    test_negative_battle_pop();
     test_zero_population();
     test_battle_rounds();
     test_battle_entry_state();
