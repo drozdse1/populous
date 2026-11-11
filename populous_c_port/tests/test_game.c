@@ -17775,6 +17775,60 @@ static void test_amiga_text(void)
 
 /* _pointer (asm:615-620, 2042, 2110-2131), _a_sprite frames (asm:16783-16830),
  * top-left hotspot (asm:19928-19972), HUD font and _move_mana (asm:3164-3244). */
+/* Port aid (not in the original): a colour-5 cross on the vertex under the
+ * pointer, terrain tool only; everything else in the frame is unchanged. */
+static void test_vertex_marker(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    core_tool = 0;
+    core_swamp_selected = 0;
+    static uint8_t plain[sizeof game_pixels], marked[sizeof game_pixels];
+    mousex = -100;
+    mousey = -100;
+    draw_original(xoff, yoff);
+    memcpy(plain, game_pixels, sizeof plain);
+    int column = 0, row = 0, found = 0, sx = 0, sy = 0;
+    for (int v = 1; v <= 7 && !found; ++v)
+        for (int u = 1; u <= 7 && !found; ++u) {
+            int x, y;
+            assert(graphics_vertex(u, v, core_vertex(xoff + u, yoff + v), &x, &y));
+            if (x - 2 < 64 || x + 2 >= 320 || y - 2 < 0 || y + 2 >= 200) continue;
+            if (!game_pick(x, y, &column, &row) || column != xoff + u || row != yoff + v) continue;
+            sx = x;
+            sy = y;
+            found = 1;
+        }
+    assert(found);
+    mousex = (int16_t)sx;
+    mousey = (int16_t)sy;
+    draw_original(xoff, yoff);
+    memcpy(marked, game_pixels, sizeof marked);
+    for (int delta = -2; delta <= 2; ++delta)
+        assert(marked[sy * 320 + sx + delta] == 5 && marked[(sy + delta) * 320 + sx] == 5);
+    for (int y = 0; y < 200; ++y)
+        for (int x = 0; x < 320; ++x) {
+            int on_cross = (y == sy && abs(x - sx) <= 2) || (x == sx && abs(y - sy) <= 2);
+            if (!on_cross) assert(marked[y * 320 + x] == plain[y * 320 + x]);
+        }
+    core_tool = 1; /* magnet tool: no marker */
+    draw_original(xoff, yoff);
+    assert(game_pixels[sy * 320 + sx - 2] == plain[sy * 320 + sx - 2]);
+    core_tool = 0;
+    core_req.kind = CORE_REQ_GAME; /* an open requester hides it */
+    mousex = -100;
+    mousey = -100;
+    draw_original(xoff, yoff);
+    memcpy(plain, game_pixels, sizeof plain);
+    mousex = (int16_t)sx;
+    mousey = (int16_t)sy;
+    draw_original(xoff, yoff);
+    assert(!memcmp(plain, game_pixels, sizeof plain));
+    core_req.kind = CORE_REQ_NONE;
+    _closeall();
+    SDL_Quit();
+    puts("vertex marker: PASS");
+}
 static void test_pointer_hud_mana(void)
 {
     assert(SDL_Init(SDL_INIT_VIDEO) == 0);
@@ -17828,9 +17882,20 @@ static void test_pointer_hud_mana(void)
         mousex = 100;
         mousey = sample ? 236 : 150;
         game_render();
+        /* The port's vertex marker (test_vertex_marker) follows the pointer
+         * over the field: its colour-5 cross is checked, not counted. */
+        int column, row, mark_x = -10, mark_y = -10;
+        if (game_pick(mousex, mousey, &column, &row))
+            assert(graphics_vertex(column - xoff, row - yoff, core_vertex(column, row), &mark_x, &mark_y));
         int changed = 0;
-        for (int pixel = 0; pixel < 320 * 256; ++pixel)
-            changed += prg_screen->chunky_buffer[pixel] != off[pixel];
+        for (int pixel = 0; pixel < 320 * 256; ++pixel) {
+            int x = pixel % 320, y = pixel / 320;
+            int cross = y < 200 && x >= 64 &&
+                        ((y == mark_y && abs(x - mark_x) <= 2) || (x == mark_x && abs(y - mark_y) <= 2));
+            int pointer_pixel = (y == mousey && x == 100) || (y == mousey + 15 && x == 115);
+            if (cross && !pointer_pixel) assert(prg_screen->chunky_buffer[pixel] == prg_screen->palette[5]);
+            else changed += prg_screen->chunky_buffer[pixel] != off[pixel];
+        }
         assert(prg_screen->chunky_buffer[mousey * 320 + 100] == prg_screen->palette[7]);
         assert(prg_screen->chunky_buffer[(mousey + 15) * 320 + 115] == prg_screen->palette[3]);
         assert(changed <= 2);
@@ -20812,6 +20877,10 @@ int main(int argc, char **argv)
         puts("focused heading battle completion: PASS");
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--vertex-marker")) {
+        test_vertex_marker();
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--flag-bits")) {
         test_flag_bits();
         puts("focused mixed flag bits: PASS");
@@ -21103,6 +21172,7 @@ int main(int argc, char **argv)
     test_next_level();
     test_amiga_text();
     test_pointer_hud_mana();
+    test_vertex_marker();
     test_original_generator();
     test_original_placement();
     prepare_rule_data();

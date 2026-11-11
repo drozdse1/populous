@@ -1284,7 +1284,9 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
   `_get_a_message` (asm:11143-11183) and the other side shows the text
   (asm:18418-18575); see "Two players over a LAN". While a requester is open the game
   is paused, keys other than Escape are ignored and left clicks go to it.
-- Left/right mouse: raise/lower the selected vertex. Neighbouring vertices follow
+- Left/right mouse: raise/lower the selected vertex. With the terrain tool a
+  small colour-5 cross marks that vertex on the field (port aid, not in the
+  original, which only stores `_cur_x`/`_cur_y`; `--vertex-marker`). Neighbouring vertices follow
   the original maximum slope of one, height 0..8. Cost is 10 plus 4 per changed
   vertex; the original admission threshold is 10, so a large operation can leave
   negative mana. NO_BUILD, up-only and near-town restrictions are enforced.

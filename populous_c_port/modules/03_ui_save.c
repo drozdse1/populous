@@ -1668,6 +1668,21 @@ static void draw_original(int view_x, int view_y)
             (column==view_x || column==view_x+7 || row==view_y || row==view_y+7)) colour=5;
         game_pixels[my*320+mx]=(uint8_t)colour;
     }
+    /* Port aid, not in the original (_sculpt only stores _cur_x/_cur_y,
+     * asm:7406-7416; nothing draws them): a 5x5 cross in colour 5 on the
+     * vertex the next raise/lower hits, with the terrain tool only. */
+    int pick_column, pick_row;
+    if (!core_tool && !core_swamp_selected && !core_req.kind && !(core_end_shown && core_result) &&
+        game_pick(mousex,mousey,&pick_column,&pick_row) &&
+        pick_column-view_x >= 0 && pick_column-view_x <= 8 && pick_row-view_y >= 0 && pick_row-view_y <= 8) {
+        int mark_x = 0, mark_y = -100;
+        if (graphics_vertex(pick_column-view_x,pick_row-view_y,core_vertex(pick_column,pick_row),&mark_x,&mark_y))
+            mark_y += dy;
+        for (int delta=-2; delta<=2; ++delta) {
+            if (mark_y>=0 && mark_y<200 && mark_x+delta>=64 && mark_x+delta<320) game_pixels[mark_y*320+mark_x+delta]=5;
+            if (mark_y+delta>=0 && mark_y+delta<200 && mark_x>=64 && mark_x<320) game_pixels[(mark_y+delta)*320+mark_x]=5;
+        }
+    }
     if (core_end_shown && core_result) core_draw_end_screen();
     core_draw_requester();
     for (size_t pixel=0; pixel<sizeof game_pixels; ++pixel)
