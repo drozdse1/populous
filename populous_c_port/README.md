@@ -1577,8 +1577,10 @@ loop (3459-3474) and corrected by slot-order joins (5605-5620, 6725-6740). The
 end check (4323-4347) tests the player first, honours surrender and has no draw,
 so outcomes appear one pass after the last death. Like `_clear_map` (asm 1023-1188), a start or
 `r` reset keeps 0x99fc, good_pop/bad_pop and `_stats`+0x14/+0x16/+0x22/+0x26/+0x2a;
-only the next pass clears them, after `_devil_effect` (`--start-reset`). Open: opcodes 7-13, `_toggle` mana,
-edge-of-map targets (host rejects x/y>56) and null pointer reads (address 8).
+only the next pass clears them, after `_devil_effect` (`--start-reset`). Opcodes 7-13 are editor
+commands the AI never emits (`core_place_people`, `core_paint_cycle`,
+`core_paint_delete`). `_toggle` mana (`--ai-toggle`) and unbounded AI quake/volcano
+targets (`--ai-edge-targets`) are ported. Open: null pointer reads (address 8).
 Death cleanup and battle dispatch (`--zero-population`, `--battle-rounds`):
 `core_remove` follows `_zero_population` (asm 5645-5723): population 0; only an
 exact-8 peep clears bit 3 on its partner (a walker partner is left frozen at 0,
