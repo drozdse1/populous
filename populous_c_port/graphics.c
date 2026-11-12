@@ -86,6 +86,25 @@ failed:
     return NULL;
 }
 
+int graphics_decode_land(const uint8_t *blk, size_t size, uint8_t *indices, uint8_t *keep)
+{
+    if (!blk || !indices || !keep || size != 70u * 24u * 20u) return 0;
+    for (size_t group = 0; group < 70u * 24u; ++group) {
+        uint32_t words[5];
+        for (int word = 0; word < 5; ++word) {
+            const uint8_t *at = blk + group * 20 + word * 4;
+            words[word] = (uint32_t)at[0] << 24 | (uint32_t)at[1] << 16 | (uint32_t)at[2] << 8 | at[3];
+        }
+        for (int bit = 31; bit >= 0; --bit) {
+            size_t pixel = group * 32 + (size_t)(31 - bit);
+            keep[pixel] = (uint8_t)(words[0] >> bit & 1);
+            indices[pixel] = (uint8_t)((words[1] >> bit & 1) | (words[2] >> bit & 1) << 1 |
+                                       (words[3] >> bit & 1) << 2 | (words[4] >> bit & 1) << 3);
+        }
+    }
+    return 1;
+}
+
 void graphics_free(GraphicsAssets *assets) { free(assets); }
 GraphicsSheet graphics_land(const GraphicsAssets *assets)
 {

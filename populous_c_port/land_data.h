@@ -29,9 +29,13 @@ typedef struct {
 int land_rules_parse(const uint8_t *data, size_t size, LandRules *out,
                      char *error, size_t error_size);
 
-/* Read a regular, non-symlink land0..3 in an explicit external directory.
+/* Read a regular, non-symlink land0..8 in an explicit external directory
+ * (_load_ground's "LAND0"+x, asm:16468-16476; 4..8 are user landscapes).
  * No fallback/default tables; no dependency on current working directory. */
 int land_rules_load(const char *directory, unsigned land_index, LandRules *out,
                     char *error, size_t error_size);
+/* The same checks; the whole file into data (LAND_FILE_SIZE bytes). */
+int land_file_read(const char *directory, unsigned land_index, uint8_t *data,
+                   char *error, size_t error_size);
 
 #endif

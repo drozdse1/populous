@@ -259,7 +259,7 @@ static int core_serial_cancel;
 enum { CORE_WORLD_START, CORE_WORLD_OPTIONS, CORE_WORLD_WON };
 static struct { int origin, shown, entry, error, level, length, blink; } core_world;
 /* An open _do_message(strInsertDisk) over the world or file requester. */
-enum { CORE_DISK_NONE, CORE_DISK_WORLD, CORE_DISK_SAVE };
+enum { CORE_DISK_NONE, CORE_DISK_WORLD, CORE_DISK_SAVE, CORE_DISK_GROUND };
 static int core_disk_message;
 static FILE *core_level_dat_open(void);
 static void core_disk_click(void);

@@ -26,6 +26,9 @@ typedef struct {
 extern const uint16_t graphics_palette[16];
 GraphicsAssets *graphics_load(const char *root, unsigned land, unsigned sprites,
                               char *error, size_t error_size);
+/* _blk_data of a LAND file (asm:16514-16518, 0x8340 bytes): 70 frames of
+ * 24 rows, each BE32 keep,p0,p1,p2,p3, MSB = left pixel. 1 on success. */
+int graphics_decode_land(const uint8_t *blk, size_t size, uint8_t *indices, uint8_t *keep);
 void graphics_free(GraphicsAssets *assets);
 GraphicsSheet graphics_land(const GraphicsAssets *assets);
 GraphicsSheet graphics_sprites(const GraphicsAssets *assets);

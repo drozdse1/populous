@@ -462,7 +462,7 @@ static void game_handle_event(const SDL_Event *event)
         /* _read_serial's abort: Shift+Esc while waiting for the other side. */
         if (key == SDLK_ESCAPE && (event->key.keysym.mod & KMOD_SHIFT) && core_serial_blocked()) { core_serial_cancel = 1; return; }
         if (key == SDLK_ESCAPE) { prg_quit = 1; return; }
-        if (core_req.kind && core_disk_message) return;   /* _do_message reads only the mouse */
+        if (core_disk_message) return;   /* _do_message reads only the mouse */
         /* _show_world's _get_name reads ___keyboard (_asckey). */
         if (core_req.kind == CORE_REQ_WORLD) {
             if (key == SDLK_RETURN || key == SDLK_KP_ENTER) core_world_key(13);
@@ -546,11 +546,11 @@ static void game_handle_event(const SDL_Event *event)
         int sx = (int64_t)event->button.x*320/width, sy = (int64_t)event->button.y*256/height;
         /* Requesters take the left press at the pointer (_left_button,
          * _mousex/_mousey); _end_game continues only on its button. */
-        if (core_req.kind || core_lord.shown || (core_end_shown && core_result)) {
+        if (core_req.kind || core_disk_message || core_lord.shown || (core_end_shown && core_result)) {
             if (event->button.button != SDL_BUTTON_LEFT) return;
             mousex = (int16_t)sx; mousey = (int16_t)sy;
             if (core_lord.shown) core_lord_leave();   /* _left_button cleared, asm:14503 loop */
-            else if (core_req.kind && core_disk_message) core_disk_click();
+            else if (core_disk_message) core_disk_click();
             else if (core_req.kind) core_requester_click();
             else { core_end_button_layout(0); if (core_check_cancel(core_end_button,NULL)) core_leave_end(); }
             return;

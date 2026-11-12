@@ -1078,9 +1078,16 @@ clears it (asm:12769); it is part of saved games. There is no host key for it
   executed by `_get_message` opcodes 7..13 and `_do_action` y=9..13
   (asm:18017-18183, 18943-18999). Outside editor mode the keys keep their
   normal bindings (digits 1..3 still set the tendency).
-- Port limits: only landscapes 0..3 exist, so keys 5..9 keep the current
-  landscape (the original sets `_ground_in` and tries to load a custom one);
-  byte coordinates outside the 64x64 map are dropped instead of writing past
+- Keys 5..9 load the user's own landscapes LAND4..LAND8 from
+  `POPULOUS_DATA_DIR` like `___load_ground(x,1)` (asm:16468-16533): rules,
+  `_map_colour`, sprite set and the 0x8340 `_blk_data` decoded from the file.
+  `_ground_in` is set first (asm:18984); a missing file shows INSERT DISK with
+  OK (open again) and CANCEL (keep the old rules and graphics). The original
+  disk has only LAND0..3.
+- While paused or in editor mode the overview plots every person with
+  population as `_animate` does (asm:676-738): flag bit 0 in the side colour
+  word (A4 0x82d6+side*0x2e), bit 1 in colour 15/8.
+- Port limits: byte coordinates outside the 64x64 map are dropped instead of writing past
   `_map_who`; paused games do not consume the posted commands until unpaused,
   as for all mailbox commands in the port.
 

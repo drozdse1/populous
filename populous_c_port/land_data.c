@@ -74,11 +74,11 @@ int land_rules_parse(const uint8_t *data, size_t size, LandRules *out,
     return 1;
 }
 
-int land_rules_load(const char *directory, unsigned land_index, LandRules *out,
-                    char *error, size_t error_size)
+int land_file_read(const char *directory, unsigned land_index, uint8_t *out,
+                   char *error, size_t error_size)
 {
-    if (!directory || !directory[0] || land_index > 3 || !out)
-        return fail(error, error_size, "provide an external data directory, land index 0..3 and output object");
+    if (!directory || !directory[0] || land_index > 8 || !out)
+        return fail(error, error_size, "provide an external data directory, land index 0..8 and output buffer");
     int directory_fd = open(directory, O_RDONLY | O_DIRECTORY);
     if (directory_fd < 0)
         return fail(error, error_size, "cannot open LAND data directory");
@@ -108,5 +108,21 @@ int land_rules_load(const char *directory, unsigned land_index, LandRules *out,
         used += (size_t)count;
     }
     close(descriptor);
-    return land_rules_parse(data, used, out, error, error_size);
+    if (used != LAND_FILE_SIZE)
+        return fail(error, error_size, "LAND must be a regular file of exactly 33714 bytes");
+    memcpy(out, data, LAND_FILE_SIZE);
+    if (error && error_size)
+        error[0] = '\0';
+    return 1;
+}
+
+int land_rules_load(const char *directory, unsigned land_index, LandRules *out,
+                    char *error, size_t error_size)
+{
+    uint8_t data[LAND_FILE_SIZE];
+    if (!out)
+        return fail(error, error_size, "provide an external data directory, land index 0..8 and output object");
+    if (!land_file_read(directory, land_index, data, error, error_size))
+        return 0;
+    return land_rules_parse(data, sizeof data, out, error, error_size);
 }

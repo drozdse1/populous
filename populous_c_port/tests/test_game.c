@@ -20571,6 +20571,7 @@ static void test_power_audio(void)
     assert(power_audio_frames == 20 && !effect);
     for (int ch = 0; ch < 4; ++ch)
         assert(!audio_busy(ch));
+    _closeall();
     SDL_Quit();
 }
 
@@ -20700,6 +20701,15 @@ static void test_paint_map_powers(void)
     paint_map = 0;
 }
 
+/* A left press at Amiga (x,y); the test window is 640x512. */
+static void editor_disk_click(int x, int y)
+{
+    SDL_Event click = {.type = SDL_MOUSEBUTTONDOWN};
+    click.button.button = SDL_BUTTON_LEFT;
+    click.button.x = x * 2;
+    click.button.y = y * 2;
+    game_handle_event(&click);
+}
 static void paint_key(SDL_Keycode sym, int shift)
 {
     SDL_Event key = {.type = SDL_KEYDOWN};
@@ -20866,9 +20876,13 @@ static void test_paint_map_editor(void)
     assert(A4_DISP(0x82b6)[0] == 14 && A4_DISP(0x82b6)[1] == 1 && A4_DISP(0x82b6)[2] == 13);
     game_tick();
     assert(ground_in == 1 && game_assets);
+    /* 7 = LAND6, absent: _ground_in = 6 first (asm:18984), then the
+     * _do_message(strInsertDisk,1) loop until CANCEL (editor_disk_cancel). */
     paint_key(SDLK_7, 0);
     game_tick();
-    assert(ground_in == 1);
+    assert(ground_in == 6 && core_disk_message == CORE_DISK_GROUND);
+    editor_disk_click(0xc4, 0x5e);
+    assert(ground_in == 6 && core_disk_message == CORE_DISK_NONE);
     paint_key(SDLK_1, 0);
     game_tick();
     assert(ground_in == 0);
@@ -20881,6 +20895,145 @@ static void test_paint_map_editor(void)
     for (int i = 0; i < 4096; ++i)
         assert(!map_who[i] && !map_blk[i] && !map_bk2[i]);
     paint_map = 0;
+    _closeall();
+    SDL_Quit();
+}
+
+/* Keys 5..9 = LAND4..LAND8 (asm:15198-15214 x = (0x10-(inkey-0xed))>>1).
+ * _do_action y=13 (asm:18983-18999): _ground_in = x, ___load_ground(x,1)
+ * reads LANDx (asm:16468-16533: 2 walk_death, 4x22 rules, 6 battle_add2,
+ * 16 _map_colour, 2 sprite set, 0x8340 _blk_data = 70 frames of 24 rows
+ * BE32 keep,p0..p3). A missing file: _do_message(strInsertDisk,1)
+ * (asm:16527-16533, _requester 0x28,0x3c,0x100,0x30 with OK and CANCEL)
+ * until CANCEL; OK retries the Open. */
+static void test_editor_landscapes(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    paint_map = 1;
+    player = 0;
+    const char *previous = getenv("POPULOUS_DATA_DIR");
+    char saved[4096] = {0}, path[4200], directory[] = "/tmp/populous-editor-land-XXXXXX";
+    if (previous) snprintf(saved, sizeof saved, "%s", previous);
+    else snprintf(saved, sizeof saved, "%s/raw", POPULOUS_DEFAULT_ASSET_DIR);
+    /* LAND5 = the current LAND0 with new colours and one hand-made row. */
+    uint8_t land[LAND_FILE_SIZE];
+    snprintf(path, sizeof path, "%s/land0", saved);
+    FILE *in = fopen(path, "rb");
+    assert(in && fread(land, 1, sizeof land, in) == sizeof land && !fclose(in));
+    for (int i = 0; i < 16; ++i) land[96 + i] = (uint8_t)(15 - i);
+    static const uint8_t row[20] = {0x80,0,0,0, 0x40,0,0,0, 0,0,0,0, 0x40,0,0,0, 0,0,0,1};
+    memcpy(land + 114 + 3 * 480 + 2 * 20, row, sizeof row);   /* frame 3, row 2 */
+    assert(mkdtemp(directory));
+    assert(!setenv("POPULOUS_DATA_DIR", directory, 1));
+    snprintf(path, sizeof path, "%s/land5", directory);
+    FILE *out = fopen(path, "wb");
+    assert(out && fwrite(land, 1, sizeof land, out) == sizeof land && !fclose(out));
+    paint_key(SDLK_6, 0);
+    assert(A4_DISP(0x82b6)[0] == 14 && A4_DISP(0x82b6)[1] == 5 && A4_DISP(0x82b6)[2] == 13);
+    game_tick();
+    assert(ground_in == 5 && core_disk_message == CORE_DISK_NONE && game_assets);
+    for (int i = 0; i < 16; ++i)
+        assert(map_colour_data[i] == 15 - i && map_colour_data[16 + i] == 15 - i);
+    GraphicsSheet sheet = graphics_land(game_assets);
+    const uint8_t *indices = sheet.indices + 3 * 768 + 2 * 32, *keep = sheet.keep + 3 * 768 + 2 * 32;
+    assert(keep[0] == 1 && !indices[0] && !keep[1] && indices[1] == 5 && indices[31] == 8);
+    for (int x = 2; x < 31; ++x) assert(!keep[x] && !indices[x]);
+    assert(!keep[31]);
+    /* 9 = LAND8, absent: _ground_in 8, LAND5 rules kept, the game waits. */
+    paint_key(SDLK_9, 0);
+    game_tick();
+    assert(ground_in == 8 && core_disk_message == CORE_DISK_GROUND && map_colour_data[0] == 15);
+    paint_key(SDLK_F3, 0);   /* _do_message reads only the mouse */
+    assert(A4_DISP(0x82b6)[0] == 0);
+    A4_DISP(0x82b6)[0] = 11;
+    game_tick();
+    assert(A4_DISP(0x82b6)[0] == 11);
+    A4_DISP(0x82b6)[0] = 0;
+    editor_disk_click(0x20, 0x5e);   /* outside both buttons */
+    assert(core_disk_message == CORE_DISK_GROUND);
+    editor_disk_click(0x34, 0x5e);   /* OK: Open again, still missing */
+    assert(core_disk_message == CORE_DISK_GROUND && map_colour_data[0] == 15);
+    land[96] = 9;
+    snprintf(path, sizeof path, "%s/land8", directory);
+    out = fopen(path, "wb");
+    assert(out && fwrite(land, 1, sizeof land, out) == sizeof land && !fclose(out));
+    editor_disk_click(0x5f, 0x6c);   /* OK, inclusive corner: now it loads */
+    assert(core_disk_message == CORE_DISK_NONE && ground_in == 8 && map_colour_data[0] == 9);
+    /* 8 = LAND7, absent: CANCEL leaves _ground_in 7 and the LAND8 rules. */
+    paint_key(SDLK_8, 0);
+    game_tick();
+    assert(ground_in == 7 && core_disk_message == CORE_DISK_GROUND);
+    editor_disk_click(0x110, 0x5c);
+    assert(core_disk_message == CORE_DISK_NONE && ground_in == 7 && map_colour_data[0] == 9);
+    unlink(path);
+    snprintf(path, sizeof path, "%s/land5", directory);
+    unlink(path);
+    rmdir(directory);
+    if (previous) assert(!setenv("POPULOUS_DATA_DIR", saved, 1));
+    else unsetenv("POPULOUS_DATA_DIR");
+    /* With the real data the decoded LAND0 _blk_data equals the export. */
+    if (getenv("POPULOUS_TEST_REAL_DATA")) {
+        snprintf(path, sizeof path, "%s/land0", saved);
+        in = fopen(path, "rb");
+        assert(in && fread(land, 1, sizeof land, in) == sizeof land && !fclose(in));
+        static uint8_t decoded[GFX_LAND_PIXELS], mask[GFX_LAND_PIXELS];
+        assert(graphics_decode_land(land + LAND_HEADER_SIZE, 0x8340, decoded, mask));
+        char error[256];
+        const char *assets = getenv("POPULOUS_ASSET_DIR");
+        GraphicsAssets *exported = graphics_load(assets ? assets : POPULOUS_DEFAULT_ASSET_DIR, 0, 0, error, sizeof error);
+        assert(exported);
+        assert(!memcmp(decoded, exported->land_indices, sizeof decoded) &&
+               !memcmp(mask, exported->land_keep, sizeof mask));
+        graphics_free(exported);
+    }
+    paint_map = 0;
+    _closeall();
+    SDL_Quit();
+}
+
+/* _animate asm:676-738: with _pause or _paint_map set the frame plots each
+ * peep with population != 0 (own side, or any with _serial_off): flag bit 0
+ * in the side colour word (A4 0x82d6 + side*0x2e: 5 and 1, asm data
+ * 0x516c4/0x516f2), then bit 1 in (side==0)*7+8, via _a_putpixel
+ * (asm:16758-16777, x = 64+(pos&63)-(pos>>6), y = ((pos>>6)+(pos&63))>>1). */
+static void test_editor_map_points(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    for (int variant = 0; variant < 3; ++variant) {
+        assert(game_reset(0));
+        assert(A4_WORD(0x82d6) == 5 && A4_WORD(0x82d6 + 46) == 1);
+        player = 0;
+        paint_map = variant != 1;
+        pause = variant == 1;
+        serial_off = 1;
+        if (variant == 2) { serial_off = 0; core_link = (SerialLink *)&variant; }
+        xoff = yoff = 6;
+        memset(map_who, 0, 4096);
+        static const int place[5][4] = {   /* column, row, side, flags */
+            {20,30,0,1}, {40,5,1,3}, {50,50,0,2}, {3,40,1,0}, {60,1,0,1}};
+        no_peeps = 5;
+        for (int k = 0; k < 5; ++k) {
+            memset(&peeps[k * 22], 0, 22);
+            peeps[k * 22] = (uint8_t)place[k][3];
+            peeps[k * 22 + 1] = (uint8_t)place[k][2];
+            set_peep_word(k, 4, k == 4 ? 0 : 3);
+            set_peep_word(k, 8, place[k][1] * 64 + place[k][0]);
+        }
+        draw_original(xoff, yoff);
+        for (int k = 0; k < 5; ++k) {
+            int column = place[k][0], row = place[k][1], cell = row * 64 + column;
+            int x = 64 + column - row, y = (column + row) / 2, expected = map_colour_data[map_blk[cell] & 15];
+            int shown = k != 4 && (place[k][2] == player || variant != 2);
+            if (shown && (place[k][3] & 1)) expected = place[k][2] ? 1 : 5;
+            if (shown && (place[k][3] & 2)) expected = place[k][2] ? 8 : 15;
+            assert(game_pixels[y * 320 + x] == expected);
+        }
+        core_link = NULL;
+    }
+    pause = 0;
+    paint_map = 0;
+    serial_off = 1;
     _closeall();
     SDL_Quit();
 }
@@ -21616,6 +21769,16 @@ int main(int argc, char **argv)
         test_armageddon_original(argv[2]);
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--editor-landscapes")) {
+        test_editor_landscapes();
+        puts("editor landscapes: PASS");
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--editor-map-points")) {
+        test_editor_map_points();
+        puts("editor map points: PASS");
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--power-audio")) {
         test_power_audio();
         puts("power audio: PASS");
@@ -21858,6 +22021,8 @@ int main(int argc, char **argv)
     test_knight_paint_pause();
     test_power_audio();
     test_paint_map_editor();
+    test_editor_landscapes();
+    test_editor_map_points();
     test_paint_map_options();
     test_magnet();
     test_war_state();

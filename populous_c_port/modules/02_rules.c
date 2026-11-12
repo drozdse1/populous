@@ -2328,6 +2328,11 @@ static int game_reset_start(StartSelection selection)
                    (size_t)serial_kept[field].size);
     }
     memcpy(prg_a4_area, staged, sizeof prg_a4_area);
+    /* The side colour words of _animate/_move_peeps' map points (asm data
+     * 0x516c4/0x516f2: 5, 1) persist in the original's A4 from the boot; only
+     * whole-_stats copies (tutorial asm:13976-13987, a loaded game) write
+     * them, from records holding the same 5 and 1. */
+    A4_WORD(stats_base(0) + 0x20) = 5; A4_WORD(stats_base(1) + 0x20) = 1;
     core_install_land(&loaded);
     for (int index = 0; index < 25; ++index) dir_offset_table(index) = core_offsets[index];
     for (int index = 0; index < 9; ++index) city_block_table(index) = core_city[index];
@@ -2402,6 +2407,8 @@ static int game_reset_start(StartSelection selection)
 static void game_tick(void)
 {
     /* Two players: _get_message's exchange every pass (05_serial.c). */
+    /* ___load_ground's _do_message loop (asm:16527-16533) holds the game. */
+    if (core_disk_message == CORE_DISK_GROUND) return;
     if (core_serial_engaged()) { core_serial_tick(); return; }
     if (pause || prg_quit || core_result || core_req.kind) return;
     /* _animate asm:676-738: with _paint_map set neither _do_funny nor

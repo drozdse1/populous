@@ -714,15 +714,12 @@ static int core_load_game(const char *name)
     return 1;
 }
 
-/* _do_action y=13 asm:18983-18999: _ground_in = x, ___load_ground(x,1),
- * redraw. The port has LAND rules and graphics only for 0..3 (keys 1..4);
- * 4..8 ("custom", keys 5..9) keep the current landscape. */
-static int core_load_ground(int terrain)
+/* ___load_ground(x,1) asm:16468-16533 for _do_action y=13: LANDx (0..8;
+ * 4..8 are the user's own landscapes, not on the original disk) gives the
+ * rules, _map_colour, the sprite set and the 0x8340 _blk_data. 0..3 take
+ * the extract_assets.py export of that _blk_data, 4..8 decode it. */
+static int core_ground_try(int terrain)
 {
-    if (terrain < 0 || terrain > 3) {
-        POP_LOG_WARN("Paint map: landscape %d is not available.", terrain);
-        return 0;
-    }
     char error[256];
     const char *asset_directory = getenv("POPULOUS_ASSET_DIR");
     if (!asset_directory) asset_directory = POPULOUS_DEFAULT_ASSET_DIR;
@@ -730,18 +727,40 @@ static int core_load_ground(int terrain)
     if ((size_t)snprintf(default_data, sizeof default_data, "%s/raw", asset_directory) >= sizeof default_data) return 0;
     const char *directory = getenv("POPULOUS_DATA_DIR");
     if (!directory) directory = default_data;
+    static uint8_t data[LAND_FILE_SIZE];
     LandRules rules;
-    if (!land_rules_load(directory, (unsigned)terrain, &rules, error, sizeof error)) {
-        POP_LOG_WARN("Paint map: LAND data: %s", error);
+    if (!land_file_read(directory, (unsigned)terrain, data, error, sizeof error) ||
+        !land_rules_parse(data, sizeof data, &rules, error, sizeof error)) {
+        POP_LOG_WARN("Paint map: LAND%d: %s", terrain, error);
         return 0;
     }
-    GraphicsAssets *assets = graphics_load(asset_directory, (unsigned)terrain, rules.sprite_set, error, sizeof error);
+    GraphicsAssets *assets = graphics_load(asset_directory, terrain > 3 ? 0u : (unsigned)terrain, rules.sprite_set, error, sizeof error);
     if (!assets) { POP_LOG_WARN("Paint map: graphics: %s", error); return 0; }
-    ground_in = (int16_t)terrain;
+    if (terrain > 3 && !graphics_decode_land(data + LAND_HEADER_SIZE, sizeof data - LAND_HEADER_SIZE,
+                                             assets->land_indices, assets->land_keep)) {
+        graphics_free(assets);
+        return 0;
+    }
     core_install_land(&rules);
     graphics_free(game_assets);
     game_assets = assets;
     return 1;
+}
+/* _do_action y=13 asm:18983-18999: _ground_in = x before ___load_ground
+ * (x,1), which on a failed Open loops _do_message(strInsertDisk,1)
+ * (asm:16527-16533): OK opens again, CANCEL returns 0 with the old rules
+ * and graphics but _ground_in x. The loop is core_disk_click here; the
+ * _draw_map(0,0,63,63) is the port's per-frame overview. */
+static int core_disk_ground;
+static int core_load_ground(int terrain)
+{
+    if (terrain < 0 || terrain > 8) return 0;
+    ground_in = (int16_t)terrain;
+    if (core_ground_try(terrain)) return 1;
+    core_disk_ground = terrain;
+    core_disk_message = CORE_DISK_GROUND;
+    left_button = 2;
+    return 0;
 }
 
 /* _save_load(save) asm:10493-10972: _requester(d_screen,0x48,0x10,0xb0,0xb0)
@@ -938,7 +957,12 @@ static FILE *core_level_dat_open(void)
     return fopen(path, "rb");
 }
 /* _do_message(strInsertDisk,0) asm:11098-11141. */
-static void core_disk_layout(int draw) { core_buttons_install(); core_requester(0x28,0x3c,0x100,0x30,core_end_ok,NULL,draw); }
+/* The argument 1 of ___load_ground's call adds CANCEL (asm:11100-11104). */
+static void core_disk_layout(int draw)
+{
+    core_buttons_install();
+    core_requester(0x28,0x3c,0x100,0x30,core_end_ok,core_disk_message == CORE_DISK_GROUND ? core_end_cancel : NULL,draw);
+}
 static void core_draw_disk_message(void)
 {
     core_disk_layout(1);
@@ -947,6 +971,13 @@ static void core_draw_disk_message(void)
 static void core_disk_click(void)
 {
     core_disk_layout(0);
+    if (core_disk_message == CORE_DISK_GROUND) {
+        int result = core_check_cancel(core_end_ok, core_end_cancel);
+        if (!result) return;
+        left_button = 2;
+        if (result == 2 || core_ground_try(core_disk_ground)) core_disk_message = CORE_DISK_NONE;
+        return;
+    }
     if (!core_check_cancel(core_end_ok, NULL)) return;
     int retry = core_disk_message;
     core_disk_message = CORE_DISK_NONE; left_button = 2;
@@ -983,7 +1014,7 @@ static void core_draw_requester(void)
     else if (core_req.kind == CORE_REQ_WORLD) core_draw_world();
     else if (core_req.kind == CORE_REQ_FILE) core_draw_file();
     core_serial_draw();
-    if (core_req.kind && core_disk_message) core_draw_disk_message();
+    if (core_disk_message) core_draw_disk_message();
     else if (core_req.kind == CORE_REQ_SET) {
         /* _set_options draws over the game options screen. */
         core_draw_game_options();
@@ -1656,13 +1687,31 @@ static void draw_original(int view_x, int view_y)
         core_draw_peep(small,u,v,cell);
     }
     core_show_the_shield(small);
+    /* _animate asm:676-738: paused or in the editor _move_peeps does not
+     * run; the frame plots every peep with population != 0 instead, flag
+     * bit 0 in the side colour word (A4 0x82d6+side*0x2e), then bit 1 in
+     * (side==0)*7+8. With the link up only the own side (asm:690-699). */
+    static int16_t plotted[4096];
+    int frozen = pause || paint_map;
+    if (frozen) {
+        for (int cell=0; cell<4096; ++cell) plotted[cell] = -1;
+        for (int person=0; person<no_peeps; ++person) {
+            int side = peep_owner(person), flags = peep_flags(person);
+            if (!peep_population(person) || (side != player && core_serial_live())) continue;
+            int cell = (uint16_t)peep_position(person);
+            if (cell >= 4096) continue;   /* no map cell: outside the port's 64x64 overview grid */
+            if (flags & 1) plotted[cell] = A4_WORD(stats_base(side) + 0x20);
+            if (flags & 2) plotted[cell] = (int16_t)((side == 0) * 7 + 8);
+        }
+    }
     /* Original overview projection (_a_putpixel, asm:16758-16777). */
     for (int row=0; row<64; ++row) for (int column=0; column<64; ++column) {
         int cell=row*64+column, mx=64+column-row, my=(column+row)/2;
         int colour=map_colour_data[map_blk[cell]&15];
         int person=(int)map_who[cell]-1;
         /* asm:690-699: with the link up only the own people are plotted. */
-        if (person>=0 && person<no_peeps && peep_population(person)>0 && (!core_serial_live() || peep_owner(person)==player))
+        if (frozen) { if (plotted[cell] >= 0) colour = plotted[cell] & 15; }
+        else if (person>=0 && person<no_peeps && peep_population(person)>0 && (!core_serial_live() || peep_owner(person)==player))
             colour=peep_owner(person) ? 8 : 15;
         if (column>=view_x && column<=view_x+7 && row>=view_y && row<=view_y+7 &&
             (column==view_x || column==view_x+7 || row==view_y || row==view_y+7)) colour=5;
@@ -1721,7 +1770,7 @@ static void draw_original(int view_x, int view_y)
  * are composed into game_pixels then copied onto the chunky buffer. */
 static void core_draw_diagnostic_overlay(void)
 {
-    if (!(core_end_shown && core_result) && !core_req.kind) return;
+    if (!(core_end_shown && core_result) && !core_req.kind && !core_disk_message) return;
     memset(game_pixels, 0xff, sizeof game_pixels);
     if (core_end_shown && core_result) core_draw_end_screen();
     core_draw_requester();
