@@ -2411,11 +2411,12 @@ static void game_tick(void)
     /* ___load_ground's _do_message loop (asm:16527-16533) holds the game. */
     if (core_disk_message == CORE_DISK_GROUND) return;
     if (core_serial_engaged()) { core_serial_tick(); return; }
-    if (pause || prg_quit || core_result || core_req.kind) return;
-    /* _animate asm:676-738: with _paint_map set neither _do_funny nor
-     * _move_peeps runs (people stand still, _game_turn stays, no end-game
-     * check); the frame only plots the peeps. Mailboxes are still read. */
-    if (paint_map) {
+    if (prg_quit || core_result || core_req.kind) return;
+    /* _animate asm:676-738: with _pause or _paint_map set neither _do_funny
+     * nor _move_peeps runs (people stand still, _game_turn stays, no end-game
+     * check); the frame only plots the peeps. The view timer (asm:739-750)
+     * and the mailboxes (asm:1010-1012) still run. */
+    if (pause || paint_map) {
         if (view_timer && !--view_timer) view_who = old_view_who;
         core_consume_terrain_mailboxes();
         return;

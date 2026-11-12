@@ -1259,12 +1259,16 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
   flood, Armageddon, volcano, earthquake, knight and swamp. Either button posts
   the original mailbox command, executed on the next tick; volcano and quake use
   the current viewport. Swamp arms map targeting like `s`. Costs, permissions
-  and war are checked by the power routines; paused or finished games ignore
-  the icons. In editor mode the Armageddon icon posts nothing.
+  and war are checked by the power routines (they refuse while paused); a
+  finished game ignores the icons. As in `_animate` (asm:676-682, 1010-1012)
+  a paused game still reads the mailboxes every frame and counts down the
+  temporary view; only people and `_game_turn` stand still. In editor mode the
+  Armageddon icon posts nothing.
 - Other lower-left toolbar icons (`_zoom_map` asm:1838-2395), left or right button:
   - Arrow pad: scroll one cell; its centre shield recentres on the viewed figure.
   - Tendency icons: settle, join, fight and go to magnet, posted as mailbox
-    commands like the powers (ignored while paused or finished).
+    commands `{14,t,1}` (asm:2043-2089); paused they apply at once, finished
+    games ignore them (`--zoom-map-icons`).
   - Mode icons: query, terrain and papal magnet select the tool and disarm the
     swamp target. In query mode (`_interogate` asm:2719-2765) world clicks never
     sculpt or move the magnet: left-clicking a drawn figure views it permanently,
@@ -1305,6 +1309,8 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
   vertex; the original admission threshold is 10, so a large operation can leave
   negative mana. NO_BUILD, up-only and near-town restrictions are enforced.
 - `1`: settle/explore (default); `2`: join friendly walkers; `3`: seek nearby foes.
+  Like the tendency icons these port keys post `{14,t,1}` into your side's
+  mailbox (also while paused), applied by the next mailbox read.
 - `0`: gather walkers at the initial magnet (32,32). After a leader reaches it,
   `m` selects magnet placement; left-click moves the target for 200 mana. `m`
   again returns to terrain (from query mode `m` selects the magnet). Settlements release walkers when over capacity.
@@ -1315,8 +1321,10 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
 - `q`: earthquake on the current viewport, if allowed, for 2500 mana.
 - `s`: select one-shot swamp targeting when allowed and mana exceeds 5000;
   left-click targets, then the previous terrain/magnet tool returns.
-- Arrows/numpad: scroll by world cells. Click the upper-left diamond minimap to
-  recenter anywhere (also while paused); its white outline marks the viewport.
+- Arrows/numpad: scroll by world cells. Click the upper-left diamond minimap
+  with either button to recenter anywhere (also while paused): as in `_zoom_map`
+  (asm:1658-1697) the cell `(x>>1)+y-32`, `y-(x>>1)+32` minus 3 becomes the
+  view origin, clamped to 0..56; its white outline marks the viewport.
   `d`: explicit top-down diagnostic view (in editor mode it shows people as dots).
   Space: pause. `r`: reset the selected start and original graphics; synthetic
   starts return to view (6,6), original starts center near the friendly leader.

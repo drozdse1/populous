@@ -457,10 +457,12 @@ static void core_game_options_received(const uint8_t *packet)
     }
     serial_off = packet[2];
     paint_map = packet[3];
-    if (packet[4] != not_player) core_notice(CORE_G_SIDES);
+    int sides = packet[4] != not_player;
+    if (sides) core_notice(CORE_G_SIDES);
     not_player = packet[4];
     player = not_player ? 0 : 1;
-    core_set_pointer();
+    /* asm:18847-18852: only _mode 2 (plain terrain) refreshes _pointer. */
+    if (sides && core_tool == 0 && !core_swamp_selected) core_set_pointer();
     stats_build_mode(0) = packet[5];
     stats_build_mode(1) = packet[6];
     options_new_map = packet[7];

@@ -22,6 +22,7 @@
 #undef amiga_free_mem
 #undef main
 
+static void paused_frame_expectation(uint8_t *expected);
 static int allocation_calls, fail_allocation, live_allocations;
 static void *checked_calloc(size_t count, size_t size)
 {
@@ -348,6 +349,10 @@ static void test_load_failure_and_magnet(void)
     key.key.keysym.sym = SDLK_0;
     assert(SDL_PushEvent(&key) == 1);
     ___keyboard();
+    /* Key 0 posts {14,0,1}; the frame's _get_message applies it. */
+    assert(A4_DISP(0x82b6)[0] == 14 && A4_DISP(0x82b6)[1] == 0 && A4_DISP(0x82b6)[2] == 1);
+    core_consume_terrain_mailboxes();
+    assert(core_tendency(0) == 0);
     for (int tick = 0; tick < 1024 && !core_leader(0); ++tick)
         game_tick();
     assert(core_leader(0) > 0);
@@ -2579,6 +2584,7 @@ static void test_collision_wait_tick(void)
             else
                 prg_quit = 1;
             memcpy(expected, prg_a4_area, sizeof expected);
+            if (pause) paused_frame_expectation(expected);
             game_tick();
             collision_check(expected, "stopped", gate);
             prg_quit = 0;
@@ -2894,6 +2900,7 @@ static void test_celebration_tick_gates(void)
             core_result = gate;
             uint8_t expected[sizeof prg_a4_area];
             memcpy(expected, prg_a4_area, sizeof expected);
+            if (pause) paused_frame_expectation(expected);
             game_tick();
             assert(!memcmp(expected, prg_a4_area, sizeof expected));
             assert(core_result == gate && !core_battles && !core_settlements);
@@ -3318,6 +3325,7 @@ static void test_water_entry_tick_gates(void)
                 prg_quit = gate == 4;
                 uint8_t expected[sizeof prg_a4_area];
                 memcpy(expected, prg_a4_area, sizeof expected);
+                if (pause) paused_frame_expectation(expected);
                 game_tick();
                 assert(!memcmp(expected, prg_a4_area, sizeof expected));
                 assert(core_result == (gate >= 1 && gate <= 3 ? gate : 0));
@@ -3946,6 +3954,7 @@ static void test_water_loss_gates(void)
                 prg_quit = gate == 4;
                 uint8_t expected[sizeof prg_a4_area];
                 memcpy(expected, prg_a4_area, sizeof expected);
+                if (pause) paused_frame_expectation(expected);
                 game_tick();
                 assert(!memcmp(expected, prg_a4_area, sizeof expected));
                 assert(core_result == (gate >= 1 && gate <= 3 ? gate : 0));
@@ -4199,6 +4208,7 @@ static void test_water_recovery_gates(void)
                 prg_quit = gate == 4;
                 uint8_t expected[sizeof prg_a4_area];
                 memcpy(expected, prg_a4_area, sizeof expected);
+                if (pause) paused_frame_expectation(expected);
                 game_tick();
                 assert(!memcmp(expected, prg_a4_area, sizeof expected));
             }
@@ -4461,6 +4471,7 @@ static void test_water_celebration_gates(void)
                     prg_quit = gate == 4;
                     uint8_t expected[sizeof prg_a4_area];
                     memcpy(expected, prg_a4_area, sizeof expected);
+                    if (pause) paused_frame_expectation(expected);
                     game_tick();
                     assert(!memcmp(expected, prg_a4_area, sizeof expected));
                 }
@@ -4785,6 +4796,7 @@ static void test_water_wait_gates(void)
                     prg_quit = gate == 4;
                     uint8_t expected[sizeof prg_a4_area];
                     memcpy(expected, prg_a4_area, sizeof expected);
+                    if (pause) paused_frame_expectation(expected);
                     game_tick();
                     assert(!memcmp(expected, prg_a4_area, sizeof expected));
                 }
@@ -5025,6 +5037,7 @@ static void test_water_remnant_gates(void)
                     prg_quit = gate == 4;
                     uint8_t expected[sizeof prg_a4_area];
                     memcpy(expected, prg_a4_area, sizeof expected);
+                    if (pause) paused_frame_expectation(expected);
                     game_tick();
                     assert(!memcmp(expected, prg_a4_area, sizeof expected));
                 }
@@ -7069,6 +7082,38 @@ static void main_loop_step(void);
  * tick, MATCH_PEEP_MAJOR under our own peeps), with the computer-player AI. */
 static const MatchOutcome events_defeat_phase = {2, 942, 6, 62, 0, 6403};
 static const MatchOutcome isometric_defeat_phase = {2, 951, 5, 68, 0, 6430};
+/* The test scroll that the click helpers have always used: the press at
+ * (64+x-y, (x+y)/2) read as column y'+(x'-64)/2, row y'-(x'-64)/2 minus 4,
+ * clamped to 0..56. The faithful _zoom_map minimap (asm:1658-1697) sets
+ * cell-3, and (x>>1)+y-32 / y-(x>>1)+32 only reaches cells with an even
+ * sum, so pick a reachable cell giving that same view. */
+static void minimap_scroll(int center_x, int center_y)
+{
+    int sx = 64 + center_x - center_y, sy = (center_x + center_y) / 2;
+    int view[2] = {sy + (sx - 64) / 2 - 4, sy - (sx - 64) / 2 - 4}, cells[2][5], counts[2];
+    assert(sy < 64 && sx >= 1 && sx <= 127 && view[0] >= -4 && view[0] < 60 && view[1] >= -4 && view[1] < 60);
+    for (int axis = 0; axis < 2; ++axis) {
+        if (view[axis] < 0) view[axis] = 0;
+        if (view[axis] > 56) view[axis] = 56;
+        counts[axis] = 0;
+        for (int cell = 0; cell < 64; ++cell) {
+            int v = cell - 3 < 0 ? 0 : cell - 3 > 56 ? 56 : cell - 3;
+            if (v == view[axis] && counts[axis] < 5) cells[axis][counts[axis]++] = cell;
+        }
+    }
+    for (int a = 0; a < counts[0]; ++a) for (int b = 0; b < counts[1]; ++b) {
+        int c = cells[0][a], r = cells[1][b];
+        if ((c + r) & 1) continue;
+        SDL_Event event = {.type = SDL_MOUSEBUTTONDOWN};
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.x = 2 * (2 * ((c - r) / 2 + 32));
+        event.button.y = 2 * ((c + r) / 2);
+        game_handle_event(&event);
+        assert(xoff == view[0] && yoff == view[1]);
+        return;
+    }
+    assert(!"minimap view unreachable");
+}
 static void match_click(int iso, int column, int row)
 {
     if (iso) {
@@ -7077,10 +7122,7 @@ static void match_click(int iso, int column, int row)
          * skipped instead of asserted: the player could not click it. */
         int center_x = column > 63 ? 63 : column, center_y = row > 63 ? 63 : row;
         SDL_Event event = {.type = SDL_MOUSEBUTTONDOWN};
-        event.button.button = SDL_BUTTON_LEFT;
-        event.button.x = 2 * (64 + center_x - center_y);
-        event.button.y = 2 * ((center_x + center_y) / 2);
-        game_handle_event(&event);
+        minimap_scroll(center_x, center_y);
         int u = column - xoff, v = row - yoff;
         if (u < 0 || u > 8 || v < 0 || v > 8) return;
         event.button.button = SDL_BUTTON_RIGHT;
@@ -7175,6 +7217,10 @@ static void test_match_events_cadence(const MatchScript *script, const MatchOutc
     key.key.keysym.sym = SDLK_0 + script->tendency;
     assert(SDL_PushEvent(&key) == 1);
     ___keyboard();
+    /* The key posts {14,t,1} (asm:2043-2089); that frame's _get_message
+     * applies it before the next _move_peeps. */
+    assert(A4_DISP(0x82b6)[0] == 14 && A4_DISP(0x82b6)[1] == script->tendency && A4_DISP(0x82b6)[2] == 1);
+    core_consume_terrain_mailboxes();
     assert(core_tendency(0) == script->tendency);
     SDL_SetWindowSize(prg_screen->window, 640, 512);
     unsigned step = 0;
@@ -7357,10 +7403,7 @@ static void iso_click_vertex(int column, int row, int button)
 {
     int center_x = column > 63 ? 63 : column, center_y = row > 63 ? 63 : row;
     SDL_Event event = {.type = SDL_MOUSEBUTTONDOWN};
-    event.button.button = SDL_BUTTON_LEFT;
-    event.button.x = 2 * (64 + center_x - center_y);
-    event.button.y = 2 * ((center_x + center_y) / 2);
-    game_handle_event(&event);
+    minimap_scroll(center_x, center_y);
     int u = column - xoff, v = row - yoff;
     assert(u >= 0 && u <= 8 && v >= 0 && v <= 8);
     event.button.button = button;
@@ -7583,10 +7626,7 @@ static void iso_click_vertex_drawn(int column, int row, int button)
 {
     int center_x = column > 63 ? 63 : column, center_y = row > 63 ? 63 : row;
     SDL_Event event = {.type = SDL_MOUSEBUTTONDOWN};
-    event.button.button = SDL_BUTTON_LEFT;
-    event.button.x = 2 * (64 + center_x - center_y);
-    event.button.y = 2 * ((center_x + center_y) / 2);
-    game_handle_event(&event);
+    minimap_scroll(center_x, center_y);
     game_render();
     ok_to_build_click(column, row, button);
 }
@@ -7858,6 +7898,75 @@ static void test_query_buttons(void)
     game_handle_event(&click);
     assert(view_who == 1 && view_timer == 10 && old_view_who == 0);
     core_tool = 0;
+}
+
+/* _zoom_map's minimap (asm:1658-1697), the tendency post while paused
+ * (_animate asm:676-682,739-750,1010-1012), the 0-3 hotkeys as {14,t,1}
+ * posts (asm:2043-2089) and the received y=8 side change (asm:18843-18852). */
+static void test_zoom_map_icons(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    SDL_SetWindowSize(prg_screen->window, 640, 512);
+    core_tool = 2; core_swamp_selected = 0; no_sprites = 0; pause = 0;
+    SDL_Event click = {.type = SDL_MOUSEBUTTONDOWN};
+    /* (40,40): (40>>1)+40-32 = 28, 40-20+32 = 52, minus 3. */
+    xoff = yoff = 10;
+    click.button.button = SDL_BUTTON_LEFT; click.button.x = 80; click.button.y = 80;
+    game_handle_event(&click);
+    assert(xoff == 25 && yoff == 49);
+    /* Right button too; odd x shifts down: (41,31) -> 19,43. */
+    click.button.button = SDL_BUTTON_RIGHT; click.button.x = 82; click.button.y = 62;
+    game_handle_event(&click);
+    assert(xoff == 16 && yoff == 40);
+    /* (2,32) -> 1,63: clamped to 0 and 56. */
+    click.button.button = SDL_BUTTON_LEFT; click.button.x = 4; click.button.y = 64;
+    game_handle_event(&click);
+    assert(xoff == 0 && yoff == 56);
+    /* (1,31) -> -1,63: outside the diamond. */
+    xoff = yoff = 10;
+    click.button.x = 2; click.button.y = 62;
+    game_handle_event(&click);
+    assert(xoff == 10 && yoff == 10);
+    /* Paused: the tendency icon (5,3) posts {14,2,1}, the frame consumes it
+     * and the temporary view lapses; no game turn passes. */
+    pause = 1; player = 0; not_player = 1; core_tendency(0) = 1;
+    view_who = 5; old_view_who = 3; view_timer = 2;
+    int16_t turn = game_turn;
+    click.button.x = 96; click.button.y = 384;   /* iso 184,200 */
+    game_handle_event(&click);
+    assert(A4_DISP(0x82b6)[0] == 14 && A4_DISP(0x82b6)[1] == 2 && A4_DISP(0x82b6)[2] == 1);
+    game_tick();
+    assert(core_tendency(0) == 2 && view_who == 5 && view_timer == 1 && game_turn == turn);
+    game_tick();
+    assert(view_who == 3 && view_timer == 0 && A4_DISP(0x82b6)[0] == 0);
+    pause = 0;
+    /* Hotkey 2 for player 1: a post into its mailbox, not tendency 0. */
+    player = 1; not_player = 0; core_tendency(0) = 1; core_tendency(1) = 1;
+    SDL_Event key = {.type = SDL_KEYDOWN};
+    key.key.keysym.sym = SDLK_2;
+    assert(SDL_PushEvent(&key) == 1);
+    ___keyboard();
+    assert(core_tendency(0) == 1 && core_tendency(1) == 1);
+    assert(A4_DISP(0x82b6 + 46)[0] == 14 && A4_DISP(0x82b6 + 46)[1] == 2 && A4_DISP(0x82b6 + 46)[2] == 1);
+    core_consume_terrain_mailboxes();
+    assert(core_tendency(1) == 2 && core_tendency(0) == 1);
+    /* Received side change: only _mode 2 resets _pointer (not_player*3+1). */
+    uint8_t packet[12] = {0};
+    packet[0] = (uint8_t)((uint16_t)game_mode >> 8); packet[1] = (uint8_t)game_mode;
+    packet[2] = packet[10] = (uint8_t)serial_off; packet[3] = (uint8_t)paint_map;
+    packet[5] = (uint8_t)stats_build_mode(0); packet[6] = (uint8_t)stats_build_mode(1);
+    player = 0; not_player = 1; core_tool = 1; pointer = 2; packet[4] = 0;
+    core_game_options_received(packet);
+    assert(player == 1 && not_player == 0 && pointer == 2);
+    player = 0; not_player = 1; core_tool = 0; pointer = 1;
+    core_game_options_received(packet);
+    assert(player == 1 && pointer == 4);
+    core_tool = 1; pointer = 7; packet[4] = 0;   /* same side: untouched */
+    core_game_options_received(packet);
+    assert(pointer == 7);
+    core_notice_count = 0; core_sync.tail = core_sync.pending_save = 0;
+    player = 0; not_player = 1; core_tool = 0; core_set_pointer();
 }
 
 /* Query and shield. */
@@ -9557,14 +9666,16 @@ static void test_power_toolbar(void)
         memcpy(before, prg_a4_area, sizeof before);
         int16_t old_pointer = pointer;
         power_icon_click(2, 2, SDL_BUTTON_LEFT);
-        assert(core_swamp_selected == (gate == 2));
+        /* asm:2021-2042 has no _pause test: paused, it arms too. */
+        int armed = gate == 2 || gate == 4;
+        assert(core_swamp_selected == armed);
         /* Only the armed swamp writes _pointer = 5 (asm:2042). */
-        assert(pointer == (gate == 2 ? 5 : old_pointer));
+        assert(pointer == (armed ? 5 : old_pointer));
         pointer = old_pointer;
         assert(a4_same(before));
     }
-    /* Paused, finished, invalid player and diagnostic view post nothing;
-     * non-power cells keep their former (camera/world) handling. */
+    /* Finished, invalid player and diagnostic view post nothing (paused
+     * posts); non-power cells keep their former (camera/world) handling. */
     for (int gate = 0; gate < 5; ++gate)
         for (int p = 0; p < 5; ++p) {
             assert(game_reset(0));
@@ -9579,7 +9690,15 @@ static void test_power_toolbar(void)
             uint8_t before[sizeof prg_a4_area];
             memcpy(before, prg_a4_area, sizeof before);
             power_icon_click(posts[p][0], posts[p][1], SDL_BUTTON_LEFT);
-            if (gate != 4)
+            if (gate == 0) {
+                /* Paused, _zoom_map still posts (asm:1942-2042); the power
+                 * routines refuse on _pause when _animate reads it. */
+                size_t box = (size_t)(A4_DISP(0x82b6) - (uint8_t *)prg_a4_area);
+                before[box] = (uint8_t)posts[p][2];
+                if (posts[p][3] < 0) before[box + 1] = 20;
+                before[box + 2] = (uint8_t)(posts[p][4] < 0 ? 30 : posts[p][4]);
+                assert(a4_same(before));
+            } else if (gate != 4)
                 assert(a4_same(before));
             else {
                 /* The diagnostic view takes the press as a world click: its
@@ -9640,11 +9759,15 @@ static void test_toolbar_icons(void)
             pause = gate;
             grid_click(tendencies[k][0], tendencies[k][1], SDL_BUTTON_RIGHT);
             uint8_t *mailbox = A4_DISP(0x82b6);
+            assert(mailbox[0] == 14 && mailbox[1] == tendencies[k][2] && mailbox[2] == 1);
             if (gate) {
-                assert(!mailbox[0] && core_tendency(0) == 7);
+                /* Paused, _animate still reads the post (asm:676-682,1010-1012). */
+                int16_t turn = game_turn;
+                game_tick();
+                assert(core_tendency(0) == tendencies[k][2] && !mailbox[0] && game_turn == turn);
+                pause = 0;
                 continue;
             }
-            assert(mailbox[0] == 14 && mailbox[1] == tendencies[k][2] && mailbox[2] == 1);
             core_consume_terrain_mailboxes();
             assert(core_tendency(0) == tendencies[k][2] && !mailbox[0]);
         }
@@ -9786,7 +9909,13 @@ static void test_toolbar_icons(void)
         toolbar_fixture();
         pause = 1;
         system_click(requests[k][0], requests[k][1], SDL_BUTTON_LEFT);
-        assert(!A4_DISP(0x82b6)[0]);
+        /* Paused, the post stands and the paused frame reads it
+         * (asm:676-682,1010-1012): the requesters open all the same. */
+        assert(mailbox[0] == 14 && mailbox[2] == requests[k][2] && mailbox[1] == requests[k][3]);
+        game_tick();
+        assert(!mailbox[0] && core_req.kind == (k == 2 ? CORE_REQ_NONE : k ? CORE_REQ_GAME : CORE_REQ_OPTIONS));
+        core_req.kind = CORE_REQ_NONE;
+        pause = 0;
     }
     toolbar_fixture();
     system_click(0, 0, SDL_BUTTON_RIGHT);
@@ -11205,6 +11334,11 @@ static void test_terrain_mailbox_gates(void)
             core_result = gate - 1;
         uint8_t before[sizeof prg_a4_area];
         memcpy(before, prg_a4_area, sizeof before);
+        /* Paused, both raises are still read (asm:1010-1012). */
+        if (pause) {
+            paused_frame_expectation(before);
+            assert(memcmp(before, prg_a4_area, sizeof before));
+        }
         game_tick();
         assert(a4_same(before));
     }
@@ -12191,7 +12325,8 @@ static void test_armageddon_locks(void)
     click.button.x = 64 * width / 320;
     click.button.y = 32 * height / 256;
     game_handle_event(&click);
-    assert(xoff == 28 && yoff == 28 && core_swamp_selected == 1);
+    /* Minimap (64,32): cell 32,32 minus 3 (asm:1658-1697). */
+    assert(xoff == 29 && yoff == 29 && core_swamp_selected == 1);
     key.key.keysym.sym = SDLK_SPACE;
     game_handle_event(&key);
     assert(pause);
@@ -16036,6 +16171,7 @@ static void test_water_town_gates(void)
                         prg_quit = gate == 4;
                         uint8_t expected[sizeof prg_a4_area];
                         memcpy(expected, prg_a4_area, sizeof expected);
+                        if (pause) paused_frame_expectation(expected);
                         game_tick();
                         assert(!memcmp(expected, prg_a4_area, sizeof expected));
                         assert(core_result == (gate >= 1 && gate <= 3 ? gate : 0) &&
@@ -16194,6 +16330,20 @@ static void test_water_rescue_bounds(void)
         }
 }
 
+/* Paused, _animate skips only _do_funny/_move_peeps (asm:676-682); with no
+ * view timer running the frame is exactly the mailbox read (asm:1010-1012). */
+static void paused_frame_expectation(uint8_t *expected)
+{
+    static uint8_t before[sizeof prg_a4_area];
+    memcpy(before, prg_a4_area, sizeof before);
+    assert(pause && !view_timer);
+    int16_t turn = game_turn;
+    core_consume_terrain_mailboxes();
+    assert(game_turn == turn && !A4_DISP(0x82b6)[0] && !A4_DISP(0x82b6 + 46)[0]);
+    memcpy(expected, prg_a4_area, sizeof prg_a4_area);
+    memcpy(prg_a4_area, before, sizeof before);
+}
+
 static void water_rescue_fixture(int owner, int population, int terminal)
 {
     war_terrain_fixture();
@@ -16293,6 +16443,7 @@ static void test_water_rescue_deferred(void)
             core_result = gate >= 2 ? gate - 1 : 0;
             uint8_t expected[sizeof prg_a4_area];
             memcpy(expected, prg_a4_area, sizeof expected);
+            if (pause) paused_frame_expectation(expected);
             game_tick();
             assert(!memcmp(expected, prg_a4_area, sizeof expected));
         }
@@ -16703,6 +16854,7 @@ static void test_magnet_rescue_deferred(void)
             core_result = gate >= 2 ? gate - 1 : 0;
             uint8_t expected[sizeof prg_a4_area];
             memcpy(expected, prg_a4_area, sizeof expected);
+            if (pause) paused_frame_expectation(expected);
             game_tick();
             assert(!memcmp(expected, prg_a4_area, sizeof expected));
         }
@@ -16932,6 +17084,7 @@ static void test_swamp_rescue_deferred(void)
             core_result = gate >= 2 ? gate - 1 : 0;
             uint8_t expected[sizeof prg_a4_area];
             memcpy(expected, prg_a4_area, sizeof expected);
+            if (pause) paused_frame_expectation(expected);
             game_tick();
             assert(!memcmp(expected, prg_a4_area, sizeof expected));
         }
@@ -20782,7 +20935,8 @@ static void test_paint_map_editor(void)
         game_tick();
         assert(core_result == (paint ? 0 : 2));
     }
-    /* Outside the editor the keys post nothing (digits keep the host tendency). */
+    /* Outside the editor the keys post nothing; the host digit posts the
+     * tendency icon's {14,t,1} (asm:2043-2089). */
     assert(game_reset(0));
     paint_map = 0;
     A4_WORD(0x3028) = 10;
@@ -20792,6 +20946,9 @@ static void test_paint_map_editor(void)
     paint_key(SDLK_DELETE, 0);
     assert(!A4_DISP(0x82b6)[0] && !A4_DISP(0x82b6)[1] && !A4_DISP(0x82b6)[2]);
     paint_key(SDLK_2, 0);
+    assert(core_tendency(0) != 2 && A4_DISP(0x82b6)[0] == 14 && A4_DISP(0x82b6)[1] == 2 &&
+           A4_DISP(0x82b6)[2] == 1);
+    core_consume_terrain_mailboxes();
     assert(core_tendency(0) == 2 && !A4_DISP(0x82b6)[0]);
     /* F1/F2 men, Shift leaders, at _cur_x/_cur_y; repeats are ignored. */
     assert(game_reset(0));
@@ -21454,6 +21611,10 @@ int main(int argc, char **argv)
     setenv("POPULOUS_SAVE_DIR", "/nonexistent-populous-saves", 1);
     /* Shake frames are checked in test_quake_shake; elsewhere skip the 20 ms vblanks. */
     core_quake_delay = no_quake_delay;
+    if (argc == 2 && !strcmp(argv[1], "--zoom-map-icons")) {
+        test_zoom_map_icons();
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--query-buttons")) {
         test_query_buttons();
         return 0;
@@ -22134,6 +22295,7 @@ int main(int argc, char **argv)
     test_toolbar_icon_highlight();
     test_query_and_shield();
     test_query_buttons();
+    test_zoom_map_icons();
     test_shield_icons();
     test_icon_flashes();
     test_special_sprites();

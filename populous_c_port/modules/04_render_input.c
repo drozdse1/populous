@@ -325,8 +325,9 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else if (icon == 0 && line == 3) { if ((music_off = !music_off)) core_kill_effect(0,4); }
         else if (icon == 0 && line == 4) { if ((effect_off = !effect_off)) core_kill_effect(0,4); }
         else if (icon == 1 && line == 1) { if (post) { mailbox[0] = 14; mailbox[2] = 8; } }
-        /* _do_action y=6 asm:18591-18608. The port's pause also stops the
-         * mailbox consumer, so this icon toggles directly rather than posting. */
+        /* _do_action y=6 asm:18591-18608. Single play toggles at once instead
+         * of posting for the next mailbox read, so the icon also works after
+         * the end (port convenience; the toggle itself is the original's). */
         else if (icon == 1 && line == 3) {
             /* With the link up the original y=6 post toggles on both sides. */
             if (core_serial_live()) { if (post) { mailbox[0] = 14; mailbox[2] = 6; } }
@@ -495,7 +496,12 @@ static void game_handle_event(const SDL_Event *event)
             if (key == SDLK_d) { diagnostic_view = !diagnostic_view; xoff = yoff = diagnostic_view ? 0 : 6; }
             if (key == SDLK_r && !game_reset_start(current_start))
             POP_LOG_ERROR("Reset failed; keeping the current game.");
-            if (!pause && !core_result && key >= SDLK_0 && key <= SDLK_3) core_tendency(0) = key-SDLK_0;
+            /* Port keys 0-3 post like the tendency icons (asm:2043-2089). */
+            if (key >= SDLK_0 && key <= SDLK_3 && player >= 0 && player <= 1 &&
+                (!core_serial_live() ? !core_result : !core_result && core_serial_can_post())) {
+                uint8_t *mailbox = stats_bytes(player);
+                mailbox[0] = 14; mailbox[1] = (uint8_t)(key-SDLK_0); mailbox[2] = 1;
+            }
             if (key == SDLK_m) { if (core_tool != 1) { core_magnet_return = core_tool; core_tool = 1; } else core_tool = core_magnet_return; core_set_pointer(); }
             if (key == SDLK_q) _do_quake();
             if (key == SDLK_f) _do_flood();
@@ -556,23 +562,25 @@ static void game_handle_event(const SDL_Event *event)
             else { core_end_button_layout(0); if (core_check_cancel(core_end_button,NULL)) core_leave_end(); }
             return;
         }
-        int column,row;
-        if (!diagnostic_view && sy<64 && sx>=1 && sx<=127) {
-            column=sy+(sx-64)/2; row=sy-(sx-64)/2;
-            if (column>=0 && column<64 && row>=0 && row<64) {
-                if (event->button.button==SDL_BUTTON_LEFT) {
-                    xoff=column<4 ? 0 : column>60 ? 56 : column-4;
-                    yoff=row<4 ? 0 : row>60 ? 56 : row-4;
-                }
-                return;
+        /* _zoom_map minimap asm:1658-1697: (mousex>>1)+mousey-32 and
+         * mousey-(mousex>>1)+32 inside 0..63, minus 3, clamped to 0..56;
+         * either button (_animate asm:976-989). */
+        int column = (sx>>1) + sy - 32, row = sy - (sx>>1) + 32;
+        if (!diagnostic_view && column>=0 && column<64 && row>=0 && row<64) {
+            if (event->button.button == SDL_BUTTON_LEFT || event->button.button == SDL_BUTTON_RIGHT) {
+                column -= 3; row -= 3;
+                xoff = (int16_t)(column < 0 ? 0 : column > 56 ? 56 : column);
+                yoff = (int16_t)(row < 0 ? 0 : row > 56 ? 56 : row);
             }
+            return;
         }
-        /* A paused or finished game never consumes mailboxes; drop the post.
+        /* A finished game never consumes mailboxes; drop the post. Paused,
+         * _animate still reads them every frame (asm:676-682,1010-1012).
          * _zoom_map runs only for the left or right button (asm:976-989). */
         if (!diagnostic_view && (event->button.button == SDL_BUTTON_LEFT ||
             event->button.button == SDL_BUTTON_RIGHT) &&
             core_toolbar(sx,sy,event->button.button == SDL_BUTTON_LEFT,
-                         !core_serial_live() ? !pause && !core_result : !core_result && core_serial_can_post())) return;
+                         !core_serial_live() ? !core_result : !core_result && core_serial_can_post())) return;
         /* Query mode skips _sculpt: clicks only interrogate (asm:963-975). */
         if (core_tool == 2 && !core_swamp_selected) {
             if (!diagnostic_view && (event->button.button == SDL_BUTTON_LEFT ||
