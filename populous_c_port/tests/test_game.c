@@ -20451,6 +20451,129 @@ static void test_knight_paint_pause(void)
         }
 }
 
+/* Power audio: casts reach Paula only through _effect, consumed by the vbi
+ * on channels 2 and 3 (asm:19633-19647): quake 0x4c (asm:7900), volcano
+ * 0x4b (asm:8088, again 8266), knight 0x45 (asm:8477), flood 0x4a
+ * (asm:7605, again 7629/7630/7647), Armageddon 0x49 (asm:8529), magnet
+ * 0x4d (asm:6786). _do_swamp (asm:8295-8387) writes no _effect. Rejected
+ * casts leave _effect alone. During the quake shake (asm:7911-7925) the vbi
+ * plays 0x4c and _kill_effect(2,4) (asm:8037-8040) cuts it afterwards. */
+static int power_audio_frames;
+static void power_audio_delay(int ms)
+{
+    assert(ms == 20);
+    core_vbi_audio();
+    if (!power_audio_frames++)
+        assert(!effect && sound_playing(2, 0x4c) && sound_playing(3, 0x4c) && music == 0x28);
+}
+static void power_audio_expect(int sound)
+{
+    for (int ch = 0; ch < 4; ++ch)
+        assert(!audio_busy(ch));
+    assert(effect == sound);
+    no_sounds = (int16_t)core_bank.kit_count; /* the fixtures clear A4 */
+    music_off = 0; /* no _PlayMeas on channels 0..3 */
+    effect_off = 1;
+    tempo = 0;
+    music = 10;
+    core_vbi_audio();
+    assert(!effect);
+    for (int ch = 0; ch < 4; ++ch)
+        assert(ch >= 2 && sound ? sound_playing(ch, sound) : !audio_busy(ch));
+    assert(music == (sound ? 0x28 : 10));
+    core_kill_effect(0, 4);
+    for (int ch = 0; ch < 4; ++ch)
+        Soundpri(ch) = 0;
+}
+static void test_power_audio(void)
+{
+    const char *old = getenv("POPULOUS_ASSET_DIR");
+    char saved[4096] = "";
+    if (old) snprintf(saved, sizeof saved, "%s", old);
+    assert(!setenv("POPULOUS_ASSET_DIR", POPULOUS_DEFAULT_ASSET_DIR, 1));
+    audio_close();
+    int loaded = core_load_sound("gmusic1") == 0;
+    if (old)
+        setenv("POPULOUS_ASSET_DIR", saved, 1);
+    else
+        unsetenv("POPULOUS_ASSET_DIR");
+    if (!loaded) {
+        puts("power audio: extracted gmusic1 absent, skipped");
+        return;
+    }
+    music_off = 0;
+    effect_off = 1;
+    for (int owner = 0; owner < 2; ++owner)
+        for (int paint = 0; paint < 2; ++paint) {
+            /* paint 0: starved and paused, every cast is rejected. */
+            tempo = 0;
+            effect = 0;
+            quake_fixture(1);
+            paint_starve(owner);
+            paint_map = paint;
+            assert(core_quake(owner, 20, 30, quake_random) == paint);
+            power_audio_expect(paint ? 0x4c : 0); /* headless: no shake */
+            volcano_fixture(0);
+            paint_starve(owner);
+            paint_map = paint;
+            assert(core_volcano(owner, 20, 30, volcano_random) == paint);
+            power_audio_expect(paint ? 0x4b : 0);
+            swamp_fixture();
+            paint_starve(owner);
+            paint_map = paint;
+            assert(core_swamp(owner, 20, 20, swamp_random) == paint);
+            power_audio_expect(0);
+            flood_fixture(2);
+            paint_starve(owner);
+            paint_map = paint;
+            assert(core_flood(owner) == paint);
+            power_audio_expect(paint ? 0x4a : 0);
+            knight_fixture(owner);
+            paint_starve(owner);
+            paint_map = paint;
+            assert(core_knight(owner) == paint);
+            power_audio_expect(paint ? 0x45 : 0);
+            armageddon_fixture();
+            paint_starve(owner);
+            A4_WORD(0xae80) = 0;
+            paint_map = paint;
+            assert(core_war(owner) == paint);
+            power_audio_expect(paint ? 0x49 : 0);
+            paint_map = 0;
+            pause = 0;
+            A4_WORD(0xae80) = 0;
+        }
+    /* Paid magnet (no _paint_map bypass, asm:6769-6786). */
+    knight_fixture(0);
+    A4_LONG(0x9a02) = 1000;
+    A4_WORD(0xae80) = 0;
+    effect = 0;
+    assert(core_do_magnet(0, 5, 5));
+    power_audio_expect(0x4d);
+
+    /* Quake with the shake on screen: the vbi plays the rumble, the end cuts it. */
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    A4_LONG(0x9a02) = 10000;
+    A4_WORD(0x82c4) |= 8;
+    pause = 0;
+    core_result = 0;
+    A4_WORD(0xae80) = 0;
+    effect = 0;
+    tempo = 0;
+    for (int ch = 0; ch < 4; ++ch)
+        Soundpri(ch) = 0;
+    power_audio_frames = 0;
+    void (*delay)(int) = core_quake_delay;
+    core_quake_delay = power_audio_delay;
+    assert(core_quake(0, 0, 0, ___newrand));
+    core_quake_delay = delay;
+    assert(power_audio_frames == 20 && !effect);
+    for (int ch = 0; ch < 4; ++ch)
+        assert(!audio_busy(ch));
+    SDL_Quit();
+}
+
 static void test_paint_map_powers(void)
 {
     for (int owner = 0; owner < 2; ++owner)
@@ -21493,6 +21616,11 @@ int main(int argc, char **argv)
         test_armageddon_original(argv[2]);
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--power-audio")) {
+        test_power_audio();
+        puts("power audio: PASS");
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--knight-paint-pause")) {
         test_knight_paint_pause();
         puts("knight paint-map pause: PASS");
@@ -21728,6 +21856,7 @@ int main(int argc, char **argv)
     test_terrain_mailbox();
     test_paint_map_powers();
     test_knight_paint_pause();
+    test_power_audio();
     test_paint_map_editor();
     test_paint_map_options();
     test_magnet();
