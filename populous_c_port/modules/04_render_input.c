@@ -241,7 +241,8 @@ static void core_set_temp_view(int16_t who)
     view_who = who;
 }
 /* _interogate asm:2719-2765: first sprite entry with mx in [x,x+12] and
- * my in [y,y+8]; query mode only. Right keeps the view, else temporary. */
+ * my in [y,y+8]; query mode only. right = _right_button nonzero (up, the
+ * left press) keeps the view; a right press (0) is temporary. */
 static void core_interogate(int mx, int my, int right)
 {
     for (int i = 0; i < no_sprites && i < 64; ++i) {
@@ -535,8 +536,8 @@ static void game_handle_event(const SDL_Event *event)
                 game_pick(mousex,mousey,&column,&row)) {
                 cur_x = (int16_t)column; cur_y = (int16_t)row;
             }
-            /* continue_3EC20 asm:963-975 also interrogates while hovering. */
-            if (!event->motion.state && !diagnostic_view && !core_req.kind && !core_lord.shown) core_interogate(mousex,mousey,0);
+            /* continue_3EC20 asm:969-975 interrogates only while a button
+             * is down (active-low 0); hovering selects nothing. */
         }
     }
     if (event->type == SDL_MOUSEBUTTONDOWN && prg_screen) {
@@ -576,7 +577,7 @@ static void game_handle_event(const SDL_Event *event)
         if (core_tool == 2 && !core_swamp_selected) {
             if (!diagnostic_view && (event->button.button == SDL_BUTTON_LEFT ||
                 event->button.button == SDL_BUTTON_RIGHT))
-                core_interogate(sx,sy,event->button.button == SDL_BUTTON_RIGHT);
+                core_interogate(sx,sy,event->button.button == SDL_BUTTON_LEFT);   /* right up: kept, asm:2745-2747 */
             return;
         }
         /* _sculpt asm:7295 / _do_magnet asm:6784: keep camera usable,

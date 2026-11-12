@@ -7822,6 +7822,44 @@ static void test_icon_flashes(void)
     assert(frame_diff(base, &first) == 0);
 }
 
+/* Query-mode buttons, _animate asm:963-975 and _interogate asm:2737-2747
+ * (buttons active-low, 0 = pressed): only a press interrogates; with the
+ * right button up (left press) the sprite becomes the kept view
+ * (_view_timer 0), a right press takes _set_temp_view (asm:3151-3160).
+ * Hovering without a button interrogates nothing. */
+static void test_query_buttons(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    memset(game_assets->background, 1, sizeof game_assets->background);
+    memset(game_assets->sprite_keep, 1, sizeof game_assets->sprite_keep);
+    set_peep_word(0, 12, 0);
+    game_render();
+    assert(no_sprites > 0 && A4_WORD(0x9a22) == 184 && A4_WORD(0x9a24) == 88 &&
+           A4_WORD(0x9a28) == 1);
+    SDL_SetWindowSize(prg_screen->window, 640, 512);
+    core_tool = 2; core_swamp_selected = 0;
+    /* Hover: nothing. */
+    view_who = 0; view_timer = 0; old_view_who = 7;
+    SDL_Event motion = {.type = SDL_MOUSEMOTION};
+    motion.motion.x = (184 + 4) * 2; motion.motion.y = (88 + 4) * 2;
+    game_handle_event(&motion);
+    assert(view_who == 0 && view_timer == 0 && old_view_who == 7);
+    /* Left press: kept view, timer cleared, old_view_who untouched. */
+    view_who = 0; view_timer = 5; old_view_who = 7;
+    SDL_Event click = {.type = SDL_MOUSEBUTTONDOWN};
+    click.button.button = SDL_BUTTON_LEFT;
+    click.button.x = (184 + 4) * 2; click.button.y = (88 + 4) * 2;
+    game_handle_event(&click);
+    assert(view_who == 1 && view_timer == 0 && old_view_who == 7);
+    /* Right press: temporary view, saves the kept one. */
+    view_who = 0; view_timer = 0; old_view_who = 7;
+    click.button.button = SDL_BUTTON_RIGHT;
+    game_handle_event(&click);
+    assert(view_who == 1 && view_timer == 10 && old_view_who == 0);
+    core_tool = 0;
+}
+
 /* Query and shield. */
 static void test_query_and_shield(void)
 {
@@ -7879,14 +7917,15 @@ static void test_query_and_shield(void)
     assert(core_mana(0) == mana && core_target(0) == target);
     for (int v = 0; v < 65 * 65; ++v)
         assert(heights[v] == core_vertex(v % 65, v / 65));
-    /* Hover over the first sprite selects it temporarily. */
+    /* Hovering over the first sprite selects nothing (asm:969-975 needs a
+     * pressed button); the press cases are in test_query_buttons. */
     view_who = 0;
     view_timer = 0;
     SDL_Event motion = {.type = SDL_MOUSEMOTION};
     motion.motion.x = (184 + 4) * 2;
     motion.motion.y = (88 + 4) * 2;
     game_handle_event(&motion);
-    assert(view_who == 1 && view_timer == 10);
+    assert(view_who == 0 && view_timer == 0);
     /* Shield panel: pixels change only when view_who is set. */
     memset(game_assets->sprite_indices, 7, sizeof game_assets->sprite_indices);
     view_who = 0;
@@ -21415,6 +21454,10 @@ int main(int argc, char **argv)
     setenv("POPULOUS_SAVE_DIR", "/nonexistent-populous-saves", 1);
     /* Shake frames are checked in test_quake_shake; elsewhere skip the 20 ms vblanks. */
     core_quake_delay = no_quake_delay;
+    if (argc == 2 && !strcmp(argv[1], "--query-buttons")) {
+        test_query_buttons();
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--sculpt-admission")) {
         test_sculpt_admission();
         return 0;
@@ -22090,6 +22133,7 @@ int main(int argc, char **argv)
     test_original_graphics_output();
     test_toolbar_icon_highlight();
     test_query_and_shield();
+    test_query_buttons();
     test_shield_icons();
     test_icon_flashes();
     test_special_sprites();

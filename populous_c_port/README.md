@@ -1267,8 +1267,14 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
     commands like the powers (ignored while paused or finished).
   - Mode icons: query, terrain and papal magnet select the tool and disarm the
     swamp target. In query mode (`_interogate` asm:2719-2765) world clicks never
-    sculpt or move the magnet: hovering or left-clicking a drawn figure gives a
-    10-turn temporary view, right-click views it permanently.
+    sculpt or move the magnet: left-clicking a drawn figure views it permanently,
+    right-click gives a 10-turn temporary view (buttons are active-low; the
+    original only interrogates while a button is down, so hovering selects
+    nothing; asm:969-975, 2737-2747; `--query-buttons`).
+  - Holding a button does not repeat an action: `_zoom_map` (called every frame
+    a button is down, asm:976-989) ends by latching each pressed button to 2
+    (asm:2441-2448) until release, so raise/lower, swamp, magnet and toolbar
+    icons act once per press, as in the port.
   - Shield (top right, `_show_the_shield` asm:2769-3147): for the viewed figure
     the walker/town/battle sprite with its population, capacity or strength bars,
     plus the good/bad population bars. A dead figure clears the view. The owner

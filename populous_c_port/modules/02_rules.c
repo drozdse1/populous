@@ -1047,8 +1047,9 @@ static int core_sculpt_post(int column, int row, int left, int (*post)(int comma
         } else if (!post(1, column&255, row&255)) return 0;         /* asm:7501-7510 */
         return 1;
     }
-    /* asm:7511-7524: only _mode == 2 and no BUILD_ONLY_UP. The port takes
-     * one post per press, so the _right_button = 2 latch has no host state. */
+    /* asm:7511-7524: only _mode == 2 and no BUILD_ONLY_UP. One post per
+     * press: this _right_button = 2 latch and the one _zoom_map applies to
+     * every pressed button each frame (asm:2441-2448) stop held repeats. */
     if (!plain || core_tool == 2 || (game_mode&GAME_MODE_BUILD_ONLY_UP)) return 0;
     return post(2, column&255, row&255);
 }
