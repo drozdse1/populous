@@ -11338,6 +11338,90 @@ static void test_offmap_cell(void)
     assert(stats_cmd_byte(1) == 2 && stats_cmd_x(1) == 0 && stats_cmd_y(1) == 65);
     assert(stats_build_latch(1) == 1);
 }
+/* _battle_over city ruin (asm:6233-6312): the 25-cell loop has no
+ * _valid_move gate and indexes (0,A0,D0.W) unbounded. _map_bk2 is A4 $ef88,
+ * so _map_bk2[-k] is _map_alt[4096-k] and _map_bk2[4096+j] byte j of the
+ * big-endian _map_steps (A4 $ff88); _map_blk is A4 $cf88, directly after
+ * the 65x65 vertex words (A4 $ae86), so _map_blk[-k] is big-endian vertex
+ * byte 8450-k and _map_blk[4096+j] is _map_alt[j]. bk2 +21 for indices
+ * 1..8 holding 41..44, blk 31+enemy -> 0x42 for all 25. */
+static void ruin_fixture(int position)
+{
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    start_state();
+    memset(map_blk, 32, 4096);
+    no_peeps = 2;
+    peep_flags(0) = 2; peeps[1] = 0; set_peep_population(0, 10);
+    set_peep_position(0, 2000); peeps[14] = 1;   /* headed winner */
+    peep_flags(1) = 1; peeps[23] = 1; set_peep_population(1, 0);
+    set_peep_position(1, position); set_peep_frame(1, 42);
+}
+static void test_ruin_edge(void)
+{
+    /* Row 0, column 5. Index 1 (-64) cell -59: bk2 = _map_alt[4037],
+     * blk = vertex byte 8391 = low byte of word 4195 = (35,64); index 5
+     * (-63) cell -58: alt[4038], hi byte of (36,64); index 8 (-65) cell -60:
+     * alt[4036], hi byte of (35,64); index 9 (-128) cell -123: alt[3973]
+     * (index>=9: no bk2 change), blk byte 8327 = low of (3,64). */
+    ruin_fixture(5);
+    map_bk2[5] = 42;
+    map_alt[4037] = 41; map_alt[4038] = 44; map_alt[4036] = 45; map_alt[3973] = 42;
+    core_set_vertex(35, 64, 0x2020); core_set_vertex(36, 64, 0x2005);
+    core_set_vertex(3, 64, 0x0020); core_set_vertex(4, 64, 0x2020);
+    map_bk2[6] = 43; map_bk2[69] = 44;   /* in-map indices 2,3 */
+    assert(core_battle_over(0, 1));
+    assert(map_alt[4037] == 62 && map_alt[4038] == 65 && map_alt[4036] == 45 && map_alt[3973] == 42);
+    assert((uint16_t)core_vertex(35, 64) == 0x4242 && (uint16_t)core_vertex(36, 64) == 0x4205);
+    /* (4,64) bytes 8328/8329 are cells -122 (index 17) and -121 (13). */
+    assert((uint16_t)core_vertex(3, 64) == 0x0042 && (uint16_t)core_vertex(4, 64) == 0x4242);
+    assert(map_bk2[6] == 64 && map_bk2[69] == 65 && map_bk2[5] == 63);
+    assert(map_blk[5] == 66 && map_blk[135] == 66 && map_blk[136] == 32 && map_blk[2] == 32);
+
+    /* Row 1, column 0 (cell 64): index 4 (-1) cell 63 wraps to row 0;
+     * index 8 (-65) cell -1: alt[4095], blk = low byte of (64,64);
+     * index 12 (-2) cell 62; index 23 (-66) cell -2: hi byte of (64,64);
+     * index 16 (-130) cell -66: hi byte of (32,64) (its low byte is cell
+     * -65, index 24); index 9 (-128) cell -64 and index 17 (-127) cell -63:
+     * hi/low of (33,64), not 32 -> unchanged. */
+    ruin_fixture(64);
+    map_bk2[64] = 42;
+    map_alt[4095] = 43; map_bk2[63] = 41;
+    core_set_vertex(64, 64, 0x2020); core_set_vertex(32, 64, 0x2033); core_set_vertex(33, 64, 0x2133);
+    assert(core_battle_over(0, 1));
+    assert(map_alt[4095] == 64 && map_bk2[63] == 62);
+    assert((uint16_t)core_vertex(64, 64) == 0x4242 && (uint16_t)core_vertex(32, 64) == 0x4233 &&
+           (uint16_t)core_vertex(33, 64) == 0x2133);
+    assert(map_blk[63] == 66 && map_blk[62] == 66 && map_blk[0] == 66 && map_blk[1] == 66 && map_blk[2] == 66);
+
+    /* Corner cell 0: index 4 (-1) cell -1 -> alt[4095]; index 1 (-64) ->
+     * alt[4032]; index 8 (-65) -> alt[4031]; blk -1 low of (64,64), -64
+     * byte 8386 hi of (33,64), -65 low of (32,64). */
+    ruin_fixture(0);
+    map_bk2[0] = 42;
+    map_alt[4095] = 41; map_alt[4032] = 42; map_alt[4031] = 44;
+    core_set_vertex(64, 64, 0x0020); core_set_vertex(33, 64, 0x2000); core_set_vertex(32, 64, 0x0020);
+    assert(core_battle_over(0, 1));
+    assert(map_alt[4095] == 62 && map_alt[4032] == 63 && map_alt[4031] == 65);
+    assert((uint16_t)core_vertex(64, 64) == 0x0042 && (uint16_t)core_vertex(33, 64) == 0x4200 &&
+           (uint16_t)core_vertex(32, 64) == 0x0042);
+    assert(map_bk2[0] == 63 && map_blk[0] == 66 && map_blk[130] == 66);
+
+    /* City on 4096 (_map_bk2[4096] = high byte of _map_steps[0] = 42):
+     * index 2 (+1) bk2 4097 = low byte of _map_steps[0]; index 3 (+64)
+     * 4160 = hi of _map_steps[32]; index 6 (+65) low of [32]; index 7
+     * (+63) low of [31]; blk 4096+j = _map_alt[j] for j in 0..130. */
+    ruin_fixture(4096);
+    map_step_word(0) = 0x2a29; map_step_word(32) = 0x2c2b; map_step_word(31) = 0x002a;
+    map_bk2[4032] = 41;
+    memset(map_alt, 0, 4096);
+    map_alt[0] = 32; map_alt[1] = 32; map_alt[130] = 32; map_alt[129] = 32; map_alt[3] = 32;
+    assert(core_battle_over(0, 1));
+    assert((uint16_t)map_step_word(0) == 0x3f3e && (uint16_t)map_step_word(32) == 0x4140 &&
+           (uint16_t)map_step_word(31) == 0x003f);
+    assert(map_bk2[4032] == 62);
+    assert(map_alt[0] == 66 && map_alt[1] == 66 && map_alt[130] == 66 && map_alt[129] == 66 && map_alt[3] == 32);
+    assert(map_blk[4032] == 66 && map_blk[3966] == 66 && map_blk[3967] == 66 && map_blk[3965] == 32);
+}
 /* _do_quake asm:7863-8042 and _do_volcano asm:8046-8267 bound no target.
  * Quake probes _alt[y*65+x] (asm:7932-7940 words from A4 0xae86) for the
  * 9x9 square; rows past the vertex map read _map_blk (0xcf88, fixture
@@ -22668,6 +22752,41 @@ static void test_editor_map_points(void)
     SDL_Quit();
 }
 
+/* Paused overview past the map: _a_putpixel (asm:16758-16777) has no cell
+ * bound, _pixel clips only to 320x200 (asm:19140-19160). Cell 4096 (column
+ * 0, row 64) plots (0,32), 4097 plots (1,32); 65535 gives x = 63+64-1023
+ * < 0 and is clipped. Bit 0 then bit 1 as on the map. */
+static void test_overview_offmap(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    player = 0; paint_map = 0; serial_off = 1;
+    xoff = yoff = 6;
+    memset(map_who, 0, 4096);
+    static const int place[3][3] = {{4096,1,3}, {4097,0,1}, {65535,0,3}};   /* position, side, flags */
+    no_peeps = 3;
+    for (int k = 0; k < 3; ++k) {
+        memset(&peeps[k * 22], 0, 22);
+        peeps[k * 22] = (uint8_t)place[k][2];
+        peeps[k * 22 + 1] = (uint8_t)place[k][1];
+        set_peep_word(k, 4, 0);
+        set_peep_word(k, 8, place[k][0]);
+    }
+    /* Baseline: the same paused frame with every population 0 (not plotted). */
+    pause = 1;
+    draw_original(xoff, yoff);
+    static uint8_t empty[320 * 200];
+    memcpy(empty, game_pixels, sizeof empty);
+    assert(empty[32 * 320 + 0] != 8 && empty[32 * 320 + 1] != 5);
+    for (int k = 0; k < 3; ++k) set_peep_word(k, 4, 3);
+    draw_original(xoff, yoff);
+    assert(game_pixels[32 * 320 + 0] == 8 && game_pixels[32 * 320 + 1] == 5);
+    for (int pixel = 0; pixel < 320 * 200; ++pixel)
+        if (pixel != 32 * 320 && pixel != 32 * 320 + 1) assert(game_pixels[pixel] == empty[pixel]);
+    pause = 0;
+    _closeall();
+    SDL_Quit();
+}
 /* Entry/exit: GAME SETUP PAINT MAP / PLAY GAME (asm:13044-13056), kept on
  * OK and restored on CANCEL (asm:13326); START GAME clears it (asm:12769). */
 static void test_paint_map_options(void)
@@ -23526,6 +23645,16 @@ int main(int argc, char **argv)
         test_ai_null_town();
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--overview-offmap")) {
+        test_overview_offmap();
+        puts("overview offmap tests passed");
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--ruin-edge")) {
+        test_ruin_edge();
+        puts("ruin edge tests passed");
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--offmap-cell")) {
         test_offmap_cell();
         return 0;
@@ -23738,6 +23867,7 @@ int main(int argc, char **argv)
     test_paint_map_editor();
     test_editor_landscapes();
     test_editor_map_points();
+    test_overview_offmap();
     test_paint_map_options();
     test_magnet();
     test_war_state();
@@ -23758,6 +23888,7 @@ int main(int argc, char **argv)
     test_tick_order();
     test_ai_rng_order();
     test_offmap_cell();
+    test_ruin_edge();
     test_ai_edge_targets();
     test_swamp_cast();
     test_swamp_hazard();

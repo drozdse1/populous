@@ -1693,16 +1693,26 @@ static void draw_original(int view_x, int view_y)
      * bit 0 in the side colour word (A4 0x82d6+side*0x2e), then bit 1 in
      * (side==0)*7+8. With the link up only the own side (asm:690-699). */
     static int16_t plotted[4096];
-    int frozen = pause || paint_map;
+    /* Positions past the map (cell 4096 = column 0, row 64) still go through
+     * _a_putpixel (asm:16758-16777): x = (p&63)+64-(p LSR 6), y =
+     * ((p LSR 6)+(p&63)) LSR 1, clipped by _pixel to 320x200 (asm:19140-19160);
+     * those pixels lie outside the 64x64 projection, so plot them after it. */
+    static struct { int16_t x, y, colour; } offmap[2*208];
+    int frozen = pause || paint_map, offmap_count = 0;
     if (frozen) {
         for (int cell=0; cell<4096; ++cell) plotted[cell] = -1;
         for (int person=0; person<no_peeps; ++person) {
             int side = peep_owner(person), flags = peep_flags(person);
             if (!peep_population(person) || (side != player && core_serial_live())) continue;
             int cell = (uint16_t)peep_position(person);
-            if (cell >= 4096) continue;   /* no map cell: outside the port's 64x64 overview grid */
-            if (flags & 1) plotted[cell] = A4_WORD(stats_base(side) + 0x20);
-            if (flags & 2) plotted[cell] = (int16_t)((side == 0) * 7 + 8);
+            for (int bit=1; bit<=2; bit<<=1) {
+                if (!(flags & bit)) continue;
+                int16_t colour = bit == 1 ? A4_WORD(stats_base(side) + 0x20) : (int16_t)((side == 0) * 7 + 8);
+                if (cell < 4096) { plotted[cell] = colour; continue; }
+                int16_t x = (int16_t)((cell & 63) + 64 - (cell >> 6)), y = (int16_t)(((cell >> 6) + (cell & 63)) >> 1);
+                if (x < 0 || x >= 320 || y < 0 || y >= 200 || offmap_count >= (int)(sizeof offmap / sizeof offmap[0])) continue;
+                offmap[offmap_count].x = x; offmap[offmap_count].y = y; offmap[offmap_count++].colour = colour;
+            }
         }
     }
     /* Original overview projection (_a_putpixel, asm:16758-16777). */
@@ -1718,6 +1728,8 @@ static void draw_original(int view_x, int view_y)
             (column==view_x || column==view_x+7 || row==view_y || row==view_y+7)) colour=5;
         game_pixels[my*320+mx]=(uint8_t)colour;
     }
+    for (int plot=0; plot<offmap_count; ++plot)
+        game_pixels[offmap[plot].y*320+offmap[plot].x]=(uint8_t)(offmap[plot].colour & 15);
     /* Port aid, not in the original (_sculpt only stores _cur_x/_cur_y,
      * asm:7406-7416; nothing draws them): a 5x5 cross in colour 5 on the
      * vertex the next raise/lower hits, with the terrain tool only. */

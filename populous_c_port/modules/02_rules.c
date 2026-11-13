@@ -57,6 +57,37 @@ static int16_t core_vertex_index(int index)
     int byte = 2*(index - 65*65);
     return (int16_t)(map_blk[byte] << 8 | map_blk[byte+1]);
 }
+/* Byte at signed A4 displacement disp as the original addresses it. The word
+ * arrays it can land in (65x65 vertices A4 $ae86..$cf88, _map_steps from
+ * $ff88 up to $1f88) are host-endian here, so their bytes are composed
+ * big-endian; every other A4 object reached is a byte array. The bound is
+ * only the edge of prg_a4_area (host memory safety). */
+static uint8_t *core_a4_be_word(int disp, int *low)
+{
+    int base = disp >= -20858 && disp < -12408 ? -20858 : disp >= -120 && disp < 8072 ? -120 : 1;
+    if (base == 1) return NULL;
+    *low = (disp-base)&1;
+    return prg_a4+base+((disp-base)&~1);
+}
+static uint8_t core_a4_byte(int disp)
+{
+    if (disp < -32768 || disp > 32767) return 0;
+    int low; uint8_t *word = core_a4_be_word(disp,&low);
+    if (!word) return prg_a4[disp];
+    uint16_t value = (uint16_t)((A4Word *)word)->value;
+    return (uint8_t)(low ? value : value >> 8);
+}
+static void core_set_a4_byte(int disp, int byte)
+{
+    if (disp < -32768 || disp > 32767) return;
+    int low; uint8_t *word = core_a4_be_word(disp,&low);
+    if (!word) { prg_a4[disp] = (uint8_t)byte; return; }
+    uint16_t value = (uint16_t)((A4Word *)word)->value;
+    value = low ? (uint16_t)((value & 0xff00) | (byte & 0xff)) : (uint16_t)((value & 0xff) | (byte & 0xff) << 8);
+    ((A4Word *)word)->value = (int16_t)value;
+}
+#define CORE_A4_MAP_BLK ((int16_t)0xcf88)
+#define CORE_A4_MAP_BK2 ((int16_t)0xef88)
 
 /* ---- Map vertices / make_map ------------------------------------------- */
 
@@ -450,12 +481,21 @@ static int core_battle_over(int winner, int loser)
             int city=core_bk2(loser_position)==42;
             for (int index=0; index<(city ? 25 : 17); ++index) {
                 int cell=loser_position+core_offsets[index];
-                /* Source city loop has no valid_move gate: retain row wrap,
-                 * guarding only accesses outside the host's flat map array. */
-                if (city ? (cell<0 || cell>=4096) : core_valid_move(loser_position,core_offsets[index])!=0) continue;
-                if (city && index>0 && index<9 && map_bk2[cell]>=41 && map_bk2[cell]<=44)
-                    map_bk2[cell]+=21;
-                if (map_blk[cell]==31+enemy) map_blk[cell]=66;
+                /* The city loop (asm:6233-6312) has no valid_move gate and
+                 * indexes (0,A0,D0.W) unbounded: rows 0/1 reach cells <0
+                 * (_map_bk2[-k] = _map_alt tail, _map_blk[-k] = big-endian
+                 * vertex bytes), a city on 4096 cells up to 4226 (_map_bk2 ->
+                 * _map_steps bytes, _map_blk -> _map_alt). */
+                if (!city) {
+                    if (core_valid_move(loser_position,core_offsets[index])!=0) continue;
+                    if (map_blk[cell]==31+enemy) map_blk[cell]=66;
+                    continue;
+                }
+                if (index>0 && index<9) {
+                    int building=core_a4_byte(CORE_A4_MAP_BK2+cell);
+                    if (building>=41 && building<=44) core_set_a4_byte(CORE_A4_MAP_BK2+cell,building+21);
+                }
+                if (core_a4_byte(CORE_A4_MAP_BLK+cell)==31+enemy) core_set_a4_byte(CORE_A4_MAP_BLK+cell,66);
             }
             if (core_bk2(loser_position)>=32 && core_bk2(loser_position)<=42)
                 core_set_bk2(loser_position,core_bk2(loser_position)+21);

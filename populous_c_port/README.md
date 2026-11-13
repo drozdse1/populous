@@ -582,15 +582,15 @@ asm:6695-6698 `_join_battle`) and the `occupant < 208` encounter test in
 
 | C file:line | Original (asm line) | Why kept | Observable difference |
 | --- | --- | --- | --- |
-| `modules/02_rules.c:500-502` `core_join_battle` slot `<0`, `>=no_peeps`, `>=208`; owner `>1` | `_join_battle` asm:6663-6683: none | Index of `_peeps`, `_magnet`, `good_pop` | None in play: callers pass the walker and a `map_who` occupant `<208` with owners 0/1 |
-| `modules/02_rules.c:508` `core_join_battle` raw `+6` partner `<0`, `>=no_peeps`, `>=208` | asm:6676-6683 `MOVE.W (6,A0)`, `MULS #22`: none | A corrupt `+6` would write outside the record table | None in play: `_set_battle` always stores a real slot |
-| `modules/02_rules.c:532-534` `core_join_forces` slot/owner bounds | `_join_forces` asm:5540-5560: none | Same as above | None in play |
-| `modules/02_rules.c:150` `core_remove` exact-8 partner `<208` | `_zero_population` asm:5652-5658: none | Raw `+6` index | None in play |
-| `core_remove`, `core_move`, `core_battle_over`, `core_valid_move`, `core_magnet_direction`, `core_queue_terrain_raise` cell `0..4096`; funny cells `0..4095` | asm:5665-5684, 4438-4617, 6207ff, 20912-20954, 4912-5060, 3491-3543: none | Cell 4096 (the `_place_people` fallback) is legal and goes through the A4 alias helpers (`core_who`, `core_bk2`, `core_steps`, `core_vertex_index`); other cells would leave the A4 area | None in play: from 4096 every destination is below 4096 |
-| `modules/02_rules.c:374-380` `core_battle_over` slot/owner/position/population guards, and fallback `:493` | `_battle_over` asm:6207ff: none | Indices; the fallback zeroes the negative word as the source always does | None in play: `core_battle` only calls it with one positive winner and a nonpositive enemy-owned loser |
-| `modules/02_rules.c:186,222` funny type `0..2` | `_funny` table asm:24161-24171 | Table index | None in play |
-| `modules/02_rules.c:720` `core_ai_slot` | AI leader reads: none | Index | None in play |
-| `modules/02_rules.c:74-80` `core_add_mana` clamp `-250..1999999` | none | Unused helper (no caller); mana paths use original long arithmetic | None |
+| `modules/02_rules.c:594-596` `core_join_battle` slot `<0`, `>=no_peeps`, `>=208`; owner `>1` | `_join_battle` asm:6663-6683: none | Index of `_peeps`, `_magnet`, `good_pop` | None in play: callers pass the walker and a `map_who` occupant `<208` with owners 0/1 |
+| `modules/02_rules.c:602` `core_join_battle` raw `+6` partner `<0`, `>=no_peeps`, `>=208` | asm:6676-6683 `MOVE.W (6,A0)`, `MULS #22`: none | A corrupt `+6` would write outside the record table | None in play: `_set_battle` always stores a real slot |
+| `modules/02_rules.c:626-628` `core_join_forces` slot/owner bounds | `_join_forces` asm:5540-5560: none | Same as above | None in play |
+| `modules/02_rules.c:234` `core_remove` exact-8 partner `<208` | `_zero_population` asm:5652-5658: none | Raw `+6` index | None in play |
+| `core_remove`, `core_move`, `core_battle_over`, `core_valid_move`, `core_magnet_direction`, `core_queue_terrain_raise` cell `0..4096`; funny cells `0..4095` | asm:5665-5684, 4438-4617, 6207ff, 20912-20954, 4912-5060, 3491-3543: none | Cell 4096 (the `_place_people` fallback) is legal and goes through the A4 alias helpers (`core_who`, `core_bk2`, `core_steps`, `core_vertex_index`); other cells would leave the A4 area. The `_battle_over` city ruin loop has no cell guard at all: its cells `-130..4226` go through `core_a4_byte`/`core_set_a4_byte` (`modules/02_rules.c:60-90`), bounded only at the `prg_a4_area` edge | None in play: from 4096 every destination is below 4096 |
+| `modules/02_rules.c:458-465` `core_battle_over` slot/owner/position/population guards, and fallback `:587` | `_battle_over` asm:6207ff: none | Indices; the fallback zeroes the negative word as the source always does | None in play: `core_battle` only calls it with one positive winner and a nonpositive enemy-owned loser |
+| `modules/02_rules.c:270,306` funny type `0..2` | `_funny` table asm:24161-24171 | Table index | None in play |
+| `modules/02_rules.c:814` `core_ai_slot` | AI leader reads: none | Index | None in play |
+| `modules/02_rules.c:156-162` `core_add_mana` clamp `-250..1999999` | none | Unused helper (no caller); mana paths use original long arithmetic | None |
 
 Removed as unfaithful (they changed reachable play): the population, flag,
 owner-match and partner-state rejections in `core_join_forces` and
@@ -1013,10 +1013,16 @@ composed big-endian: `_map_who[4096]` is the high byte of `_build_count`,
 `_map_bk2[4096]` the high byte of `_map_steps[0]`, `_map_steps[4096]` the
 word over `_map_who[0..1]`, and `_one_block_flat`'s vertex row 65 the words
 over `_map_blk[0..]` (`modules/02_rules.c` "Cell 4096", test `--offmap-cell`).
-Not ported: a city at 4096 is impossible (at most 125 life), but a ruined
-"city" whose `_map_bk2[4096]` alias reads 42 would let `_battle_over`'s
-unguarded city loop write cells 4097..4226 (aliases into `_map_alt`/`_map_steps`);
-the port skips those cells. The paused overview does not plot the 4096 peep. Preferred placement
+`_battle_over`'s city ruin loop (asm:6233-6312) has no `_valid_move` gate
+and indexes `(0,A0,D0.W)` unbounded; it is ported through the A4 area
+(`core_a4_byte`/`core_set_a4_byte`, big-endian bytes of the word arrays): a
+ruined city on row 0/1 writes `_map_bk2[-k]` = `_map_alt[4096-k]` and
+`_map_blk[-k]` = vertex byte `8450-k` (the vertex words end at A4 $cf88); a
+"city" on 4096 (`_map_bk2[4096]` alias 42) writes `_map_bk2[4097..4161]` =
+`_map_steps` bytes and `_map_blk[4097..4226]` = `_map_alt[1..130]` (test
+`--ruin-edge`). The paused overview plots off-map positions through
+`_a_putpixel`/`_pixel` like the original (4096 at screen (0,32); test
+`--overview-offmap`). Preferred placement
 preserves co-located inhabitants and uses the original last-writer `map_who`
 representative; fallback scans still require an empty cell. The enemy fallback's
 original leader-order quirk is preserved.
