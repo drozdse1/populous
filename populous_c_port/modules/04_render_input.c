@@ -72,6 +72,13 @@ static void core_collision_wait(int person)
     peep_flags(other) |= 0x20;
     set_peep_frame(other,101); set_peep_word(other,6,0);
 }
+/* LAB_4117A (asm:4186-4210) and asm:4221-4245: a walker plots while
+ * _toggle is set, (side==0)*7+8. */
+static void core_plot_walker(int person)
+{
+    int side = peeps[person*22+1];
+    if (toggle && core_plot_side(side)) core_a_putpixel(peep_position(person), (int16_t)((side == 0) * 7 + 8));
+}
 static void _move_peeps(void)
 {
     /* asm:3254-3270: the computer player acts on last pass's pointers while
@@ -165,7 +172,7 @@ static void _move_peeps(void)
             /* asm:4040-4046: exact 2 with a nonpositive word (a dry-out
              * loss) goes straight to the death check. */
             if (peep_population(person)<=0) { core_remove(person); continue; }
-            if (!core_frame_walker(person)) { core_collision_wait(person); continue; }
+            if (!core_frame_walker(person)) { core_collision_wait(person); core_plot_walker(person); continue; }
             int position = peep_position(person);
             /* asm:4061-4081: ordinary frame completion, before move/loss.
              * Water cells never get here: they end the turn at the top. */
@@ -187,11 +194,13 @@ static void _move_peeps(void)
                 set_peep_word(person,18,0);
             set_peep_population(person,peep_population(person)-a4_walk_death);
             core_collision_wait(person);
+            if (peep_population(person)>0) core_plot_walker(person);   /* asm:4140-4144 */
             if (peep_population(person)<=0) core_remove(person);
         } else if (flags&0x60) {
             /* _move_peeps asm:4213-4268, tested before bit 3: loss every
              * tick, unsigned old counter. */
             core_frame_walker(person);
+            core_plot_walker(person);   /* asm:4220-4245, before the loss */
             set_peep_population(person,peep_population(person)-a4_walk_death);
             unsigned previous = (uint16_t)peep_word(person,6);
             set_peep_word(person,6,(uint16_t)(previous+1));
@@ -214,6 +223,8 @@ static void _move_peeps(void)
              * (outside the slot table, or self) that the source would chase. */
             int other = (uint16_t)peep_word(person,6);
             if (flags == 8) {
+                /* _do_battle asm:6074-6082: toggle*7+8, no side filter. */
+                core_a_putpixel(peep_position(person), (int16_t)(toggle*7+8));
                 if (other < no_peeps && other != person) core_battle(person,other);
             } else if (peep_population(person)<=0) core_remove(person);
         } else if (flags&0x80) {

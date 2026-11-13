@@ -89,6 +89,71 @@ static void core_set_a4_byte(int disp, int byte)
 #define CORE_A4_MAP_BLK ((int16_t)0xcf88)
 #define CORE_A4_MAP_BK2 ((int16_t)0xef88)
 
+
+/* ---- Overview (map) pixels -------------------------------------------- */
+/* _draw_map(x0,y0,x1,y1) (asm:1543-1590) is the only writer of the overview
+ * in _back_scr; _clr_wsc (asm:611, 16282-16293) copies _back_scr to the work
+ * screen at every _animate pass and _a_putpixel (asm:16758-16777) writes the
+ * work screen, so a plotted dot lasts exactly one frame. Both go through
+ * _pixel (asm:19140-19172): signed 320x200 clip, colour low 4 bits. */
+static uint8_t core_back_overview[320*200], core_back_overview_set[320*200];
+static int core_back_left = 320, core_back_right = -1, core_back_top = 200, core_back_bottom = -1;   /* written box */
+enum { CORE_WSC_DOTS = 2048 };
+static struct { int16_t x, y; uint8_t colour; } core_wsc_dot[CORE_WSC_DOTS];
+static int core_wsc_dots;
+/* _map_colour (A4 $8370) indexed by the whole block byte: 32 bytes from the
+ * LAND file ([16..31] copy [0..15], asm:16544-16552), then the static data
+ * up to _baud_rate (asm:24255-24260): 0x19 except 47..49 = 2. Blocks are at
+ * most 66 in play; bytes past 71 (_baud_rate on) read the live A4. */
+static uint8_t core_map_colour_byte(int block)
+{
+    block &= 255;
+    if (block < 32) return map_colour_data[block];
+    if (block < 72) return block >= 47 && block <= 49 ? 2 : 0x19;
+    return core_a4_byte(0x8370 + block);
+}
+static void core_draw_map(int left, int top, int right, int bottom)
+{
+    for (int16_t x = (int16_t)left; x <= right; ++x)
+        for (int16_t y = (int16_t)top; y <= bottom; ++y) {
+            uint8_t colour = core_map_colour_byte(core_a4_byte(CORE_A4_MAP_BLK + (int16_t)(y*64 + x)));
+            if (colour == 0x19) colour = map_colour_data[31];   /* LAB_5177D */
+            int16_t px = (int16_t)(x + 64 - y), py = (int16_t)((x + y) >> 1);   /* ASR.W #1 */
+            if (px < 0 || px >= 320 || py < 0 || py >= 200) continue;
+            core_back_overview[py*320+px] = colour & 15;
+            core_back_overview_set[py*320+px] = 1;
+            if (px < core_back_left) core_back_left = px;
+            if (px > core_back_right) core_back_right = px;
+            if (py < core_back_top) core_back_top = py;
+            if (py > core_back_bottom) core_back_bottom = py;
+        }
+}
+static void core_a_putpixel(int16_t position, int16_t colour)
+{
+    uint16_t p = (uint16_t)position;
+    int16_t x = (int16_t)((p & 63) + 64 - (p >> 6)), y = (int16_t)((uint16_t)((p >> 6) + (p & 63)) >> 1);
+    if (x < 0 || x >= 320 || y < 0 || y >= 200 || core_wsc_dots >= CORE_WSC_DOTS) return;
+    core_wsc_dot[core_wsc_dots].x = x; core_wsc_dot[core_wsc_dots].y = y;
+    core_wsc_dot[core_wsc_dots++].colour = (uint8_t)(colour & 15);
+}
+/* _move_peeps' filter (asm:4016-4024, 4186-4194, 4221-4229, 690-699). */
+static int core_plot_side(int side) { return side == player || serial_off; }
+/* The _animate pass's work screen: _clr_wsc, then with _pause or _paint_map
+ * the frozen plot (asm:676-738): every peep with population != 0, bit 0 in
+ * the side colour word (A4 $82d6+side*$2e), then bit 1 in (side==0)*7+8.
+ * Unpaused, _do_funny and _move_peeps plot as they run. */
+static void core_wsc_pass(void)
+{
+    core_wsc_dots = 0;
+    if (!pause && !paint_map) return;
+    for (int person = 0; person < no_peeps; ++person) {
+        int side = peeps[person*22+1], flags = peep_flags(person);
+        if (!peep_population(person) || !core_plot_side(side)) continue;
+        if (flags & 1) core_a_putpixel(peep_position(person), A4_WORD(0x82d6 + side*0x2e));
+        if (flags & 2) core_a_putpixel(peep_position(person), (int16_t)((side == 0) * 7 + 8));
+    }
+}
+
 /* ---- Map vertices / make_map ------------------------------------------- */
 
 static int core_vertex(int column, int row)
@@ -314,7 +379,11 @@ static void core_do_funny(void)
             int cell = position+offset, block = map_blk[cell];
             if (type == 0) { if (block && block != 16) map_bk2[cell] = (uint8_t)(50+index); }
             else if (type == 1) { if (block == 15 || block == 31 || block == 32 || block == 66) map_blk[cell] = 53; }
-            else if (block && block != 16) map_blk[cell] = (uint8_t)(47+index);
+            else if (block && block != 16) {
+                map_blk[cell] = (uint8_t)(47+index);
+                /* asm:8806-8818: the new rock in _map_colour[47+index], work screen only. */
+                core_a_putpixel((int16_t)cell, core_map_colour_byte(47+index));
+            }
             int victim = map_who[cell]-1;
             if (victim < 0) continue;
             if (victim < 208) core_remove(victim);
@@ -1080,6 +1149,8 @@ static void core_settle_tick(int person)
         /* asm:4007-4014: ADD.W can revive or kill; store before maintenance. */
         set_peep_population(person,(uint16_t)((uint16_t)peep_population(person)+(uint16_t)land_population_add(level)));
     }
+    /* LAB_40F58 (asm:4015-4036): a town plots while _toggle is 0. */
+    if (!toggle && core_plot_side(owner)) core_a_putpixel(peep_position(person), A4_WORD(0x82d6 + owner*0x2e));
     /* asm:4037-4055: use this resident's life-scan scratch after economy.
      * Evacuation bypasses both maintenance and signed cleanup (asm:3633). */
     int frame = peep_frame(person);
@@ -1228,6 +1299,7 @@ static int core_raw_raise(int owner, int column, int row)
     if (raise_max_row > 63) raise_max_row = 63;
     core_make_map_region(raise_min_col-1, raise_min_row-1,
                          raise_max_col, raise_max_row);
+    core_draw_map(raise_min_col-1, raise_min_row-1, raise_max_col, raise_max_row);   /* asm:7260 */
     return 1;
 }
 
@@ -1249,6 +1321,7 @@ static void core_do_lower_point(int owner, int column, int row)
     if ((int16_t)raise_min_row < 1) raise_min_row = 1;
     if ((int16_t)raise_max_row > 63) raise_max_row = 63;
     core_make_map_region(raise_min_col-1, raise_min_row-1, raise_max_col, raise_max_row);
+    core_draw_map(raise_min_col-1, raise_min_row-1, raise_max_col, raise_max_row);   /* asm:7169 */
 }
 /* _place_people(side,x,y,leader) asm:6982-7087: a new leader replaces the
  * current one (_zero_population), else the next free slot. Byte map
@@ -1287,6 +1360,7 @@ static void core_rotate_all_map(void)
         else if (map_bk2[0xfff-i] >= 50 && map_bk2[0xfff-i] <= 55) map_bk2[i] = map_bk2[0xfff-i];
     }
     _make_map();
+    core_draw_map(0,0,63,63);   /* asm:6918 */
 }
 /* _clear_all_map asm:6926-6978: flat sea, no objects, no people. */
 static void core_clear_all_map(void)
@@ -1298,6 +1372,7 @@ static void core_clear_all_map(void)
     for (int person = 0; person < no_peeps; ++person) core_remove(person);
     no_peeps = 0;
     _make_map();
+    core_draw_map(0,0,63,63);   /* asm:6974 */
 }
 static int core_load_ground(int terrain);
 /* _paint_the_map asm:15123-15274, editor keys into the _player mailbox at
@@ -1520,6 +1595,7 @@ static int core_flood(int owner)
     for (int index = 0; index < 4225; ++index)
         if (((A4Word *)map_vertices)[index].value > 0) --((A4Word *)map_vertices)[index].value;
     _make_map();
+    core_draw_map(0,0,63,63);   /* asm:7640 */
     return 1;
 }
 
@@ -1747,6 +1823,7 @@ static int core_quake(int owner, int column, int row, WorldRandom random)
     if (raise_max_row > 63) raise_max_row = 63;
     core_make_map_region(raise_min_col-1,raise_min_row-1,
                          raise_max_col,raise_max_row);
+    core_draw_map(raise_min_col-1,raise_min_row-1,raise_max_col,raise_max_row);   /* asm:8031 */
     core_kill_effect(2,4);   /* asm:8037-8040: cut the rumble */
     return 1;
 }
@@ -1796,6 +1873,7 @@ static int core_volcano(int owner, int column, int row, WorldRandom random)
     if (raise_max_row > 63) raise_max_row = 63;
     core_make_map_region(raise_min_col-1,raise_min_row-1,
                          raise_max_col,raise_max_row);
+    core_draw_map(raise_min_col-1,raise_min_row-1,raise_max_col,raise_max_row);   /* asm:8259 */
     effect = 75;
     return 1;
 }
@@ -2519,6 +2597,10 @@ static int game_reset_start(StartSelection selection)
         if (yoff < 0) yoff = 0;
         if (yoff > 56) yoff = 56;
     }
+    /* _setup_display's _draw_map(0,0,63,63) into _back_scr (asm:471-481),
+     * after _make_map/_make_woods_rocks, before _place_first_people. */
+    core_draw_map(0,0,63,63);
+    core_wsc_dots = 0;   /* ___copy_screen of _back_scr to both screens (asm:482-490) */
     SDL_SetWindowTitle(prg_screen->window,"Populous - original-rule intermediate port");
     return 1;
 }
@@ -2534,6 +2616,7 @@ static void game_tick(void)
      * nor _move_peeps runs (people stand still, _game_turn stays, no end-game
      * check); the frame only plots the peeps. The view timer (asm:739-750), the turn-4096 funny (asm:752-760)
      * and the mailboxes (asm:1010-1012) still run. */
+    core_wsc_pass();
     if (!pause && !paint_map) {
         game_turn = (int16_t)((uint16_t)game_turn + 1u);   /* asm:3250 */
         core_do_funny();   /* asm:680, before _move_peeps */

@@ -704,6 +704,8 @@ static int core_load_game(const char *name)
     core_result = core_tool = core_swamp_selected = 0; core_set_pointer();
     core_end_shown = 0; core_end_next = -1;
     core_custom_live = 1;
+    /* asm:17607-17616: _draw_map(0,0,63,63) into _back_scr. */
+    core_draw_map(0,0,63,63);
     /* RESTART THIS MAP rebuilds the loaded world (port bookkeeping; the
      * synthetic demo starts have no original level to point at). */
     if (in_conquest == -1) {
@@ -756,7 +758,7 @@ static int core_load_ground(int terrain)
 {
     if (terrain < 0 || terrain > 8) return 0;
     ground_in = (int16_t)terrain;
-    if (core_ground_try(terrain)) return 1;
+    if (core_ground_try(terrain)) { core_draw_map(0,0,63,63); return 1; }   /* asm:18997 */
     core_disk_ground = terrain;
     core_disk_message = CORE_DISK_GROUND;
     left_button = 2;
@@ -975,7 +977,10 @@ static void core_disk_click(void)
         int result = core_check_cancel(core_end_ok, core_end_cancel);
         if (!result) return;
         left_button = 2;
-        if (result == 2 || core_ground_try(core_disk_ground)) core_disk_message = CORE_DISK_NONE;
+        if (result == 2 || core_ground_try(core_disk_ground)) {
+            core_disk_message = CORE_DISK_NONE;
+            core_draw_map(0,0,63,63);   /* asm:18997, after ___load_ground returns */
+        }
         return;
     }
     if (!core_check_cancel(core_end_ok, NULL)) return;
@@ -1652,6 +1657,10 @@ static void draw_original(int view_x, int view_y)
     memset(game_pixels,0,sizeof game_pixels);
     memcpy(game_pixels,game_assets->background,sizeof game_assets->background);
     core_draw_icons();
+    /* _clr_wsc (asm:611): the overview as _draw_map last left it in _back_scr. */
+    for (int y=core_back_top; y<=core_back_bottom; ++y)
+        for (int x=core_back_left; x<=core_back_right; ++x)
+            if (core_back_overview_set[y*320+x]) game_pixels[y*320+x]=core_back_overview[y*320+x];
     /* asm:615-622: terrain mode refreshes _pointer, then _move_mana. */
     if (!core_tool && !core_swamp_selected) core_set_pointer();
     _move_mana();
@@ -1687,49 +1696,15 @@ static void draw_original(int view_x, int view_y)
         if (map_who[cell]>=0xd1) { core_draw_funny(u,v,cell); continue; }
         core_draw_peep(small,u,v,cell);
     }
-    core_show_the_shield(small);
-    /* _animate asm:676-738: paused or in the editor _move_peeps does not
-     * run; the frame plots every peep with population != 0 instead, flag
-     * bit 0 in the side colour word (A4 0x82d6+side*0x2e), then bit 1 in
-     * (side==0)*7+8. With the link up only the own side (asm:690-699). */
-    static int16_t plotted[4096];
-    /* Positions past the map (cell 4096 = column 0, row 64) still go through
-     * _a_putpixel (asm:16758-16777): x = (p&63)+64-(p LSR 6), y =
-     * ((p LSR 6)+(p&63)) LSR 1, clipped by _pixel to 320x200 (asm:19140-19160);
-     * those pixels lie outside the 64x64 projection, so plot them after it. */
-    static struct { int16_t x, y, colour; } offmap[2*208];
-    int frozen = pause || paint_map, offmap_count = 0;
-    if (frozen) {
-        for (int cell=0; cell<4096; ++cell) plotted[cell] = -1;
-        for (int person=0; person<no_peeps; ++person) {
-            int side = peep_owner(person), flags = peep_flags(person);
-            if (!peep_population(person) || (side != player && core_serial_live())) continue;
-            int cell = (uint16_t)peep_position(person);
-            for (int bit=1; bit<=2; bit<<=1) {
-                if (!(flags & bit)) continue;
-                int16_t colour = bit == 1 ? A4_WORD(stats_base(side) + 0x20) : (int16_t)((side == 0) * 7 + 8);
-                if (cell < 4096) { plotted[cell] = colour; continue; }
-                int16_t x = (int16_t)((cell & 63) + 64 - (cell >> 6)), y = (int16_t)(((cell >> 6) + (cell & 63)) >> 1);
-                if (x < 0 || x >= 320 || y < 0 || y >= 200 || offmap_count >= (int)(sizeof offmap / sizeof offmap[0])) continue;
-                offmap[offmap_count].x = x; offmap[offmap_count].y = y; offmap[offmap_count++].colour = colour;
-            }
-        }
-    }
-    /* Original overview projection (_a_putpixel, asm:16758-16777). */
-    for (int row=0; row<64; ++row) for (int column=0; column<64; ++column) {
-        int cell=row*64+column, mx=64+column-row, my=(column+row)/2;
-        int colour=map_colour_data[map_blk[cell]&15];
-        int person=(int)map_who[cell]-1;
-        /* asm:690-699: with the link up only the own people are plotted. */
-        if (frozen) { if (plotted[cell] >= 0) colour = plotted[cell] & 15; }
-        else if (person>=0 && person<no_peeps && peep_population(person)>0 && (!core_serial_live() || peep_owner(person)==player))
-            colour=peep_owner(person) ? 8 : 15;
-        if (column>=view_x && column<=view_x+7 && row>=view_y && row<=view_y+7 &&
-            (column==view_x || column==view_x+7 || row==view_y || row==view_y+7)) colour=5;
-        game_pixels[my*320+mx]=(uint8_t)colour;
-    }
-    for (int plot=0; plot<offmap_count; ++plot)
-        game_pixels[offmap[plot].y*320+offmap[plot].x]=(uint8_t)(offmap[plot].colour & 15);
+    /* _animate asm:653-670: the view marker, sprite 0x54 on the work screen
+     * after the occupants. */
+    graphics_blit(game_pixels,64000,320,200,small,0x54,
+                  (int16_t)(xoff+0x43-(yoff+3)-3),(int16_t)((int16_t)(xoff+yoff+6)/2-3));
+    /* This pass's _a_putpixel dots (_do_funny/_move_peeps, or the frozen
+     * plot), over the work screen copied from _back_scr (core_wsc_pass). */
+    for (int dot=0; dot<core_wsc_dots; ++dot)
+        game_pixels[core_wsc_dot[dot].y*320+core_wsc_dot[dot].x]=core_wsc_dot[dot].colour;
+    core_show_the_shield(small);   /* asm:760, after the dots */
     /* Port aid, not in the original (_sculpt only stores _cur_x/_cur_y,
      * asm:7406-7416; nothing draws them): a 5x5 cross in colour 5 on the
      * vertex the next raise/lower hits, with the terrain tool only. */

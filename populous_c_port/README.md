@@ -1160,9 +1160,24 @@ clears it (asm:12769); it is part of saved games. There is no host key for it
   `_ground_in` is set first (asm:18984); a missing file shows INSERT DISK with
   OK (open again) and CANCEL (keep the old rules and graphics). The original
   disk has only LAND0..3.
-- While paused or in editor mode the overview plots every person with
+- Overview frame model as in the original: the terrain of the overview lives
+  in `_back_scr` and is written only by `_draw_map` (asm:1543-1590) after
+  start/load, LAND load, rotate/clear, raise/lower, flood, quake and volcano
+  (`core_draw_map`, `modules/02_rules.c`); swamp, towns, ruins, funny objects,
+  AI flattening and editor painting leave it stale until the next redraw, as
+  in the original. Colour is `_map_colour[block]` over the whole block byte
+  (rocks 47..49 = 2, other blocks 32..71 = 0x19 -> `_map_colour[31]`). Each
+  `_animate` pass starts from a copy of `_back_scr` (`_clr_wsc`), so person
+  dots (`_a_putpixel`) last one frame: unpaused, `_move_peeps` plots towns
+  while `_toggle` is 0 in the side colour word (A4 0x82d6+side*0x2e) and
+  walkers/fighters while `_toggle` is set in colour 15/8, only `_player`'s
+  unless `_serial_off` (asm:4016-4036, 4186-4245); `_do_battle` plots
+  `_toggle`*7+8 for any side (asm:6074-6082); `_do_funny` plots a new rock
+  (asm:8818). Paused or in editor mode the pass plots every person with
   population as `_animate` does (asm:676-738): flag bit 0 in the side colour
-  word (A4 0x82d6+side*0x2e), bit 1 in colour 15/8.
+  word, bit 1 in colour 15/8. Positions have no cell bound (4096 at (0,32)).
+  The view marker is sprite 0x54 (asm:653-670), drawn before the dots; the
+  shield after them. Tests `--overview-plot`, `--overview-offmap`.
 - Port limits: byte coordinates outside the 64x64 map are dropped instead of writing past
   `_map_who`; paused games do not consume the posted commands until unpaused,
   as for all mailbox commands in the port.
@@ -1415,7 +1430,7 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
 - Arrows/numpad: scroll by world cells. Click the upper-left diamond minimap
   with either button to recenter anywhere (also while paused): as in `_zoom_map`
   (asm:1658-1697) the cell `(x>>1)+y-32`, `y-(x>>1)+32` minus 3 becomes the
-  view origin, clamped to 0..56; its white outline marks the viewport.
+  view origin, clamped to 0..56; sprite 0x54 marks the viewport (asm:653-670).
   `d`: explicit top-down diagnostic view (in editor mode it shows people as dots).
   Space: pause. `r`: reset the selected start and original graphics; synthetic
   starts return to view (6,6), original starts center near the friendly leader.

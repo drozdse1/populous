@@ -22734,6 +22734,7 @@ static void test_editor_map_points(void)
             set_peep_word(k, 4, k == 4 ? 0 : 3);
             set_peep_word(k, 8, place[k][1] * 64 + place[k][0]);
         }
+        core_wsc_pass();   /* the _animate pass plots (asm:676-738) */
         draw_original(xoff, yoff);
         for (int k = 0; k < 5; ++k) {
             int column = place[k][0], row = place[k][1], cell = row * 64 + column;
@@ -22752,6 +22753,94 @@ static void test_editor_map_points(void)
     SDL_Quit();
 }
 
+
+/* Unpaused overview, hand-derived from the original frame model:
+ * _draw_map (asm:1543-1590) writes _map_colour[_map_blk] (0x19 -> the byte
+ * at LAB_5177D, _map_colour[31]) into _back_scr, called only after the
+ * terrain powers, raise/lower, rotate/clear, start and load; _clr_wsc
+ * (asm:611, 16282-16293) copies _back_scr to the work screen every pass, so
+ * a _move_peeps dot (_a_putpixel asm:16758-16777) lasts one frame. Towns
+ * plot while _toggle == 0 in the side colour word (asm:4016-4036), walkers
+ * while _toggle != 0 in (side==0)*7+8 (asm:4186-4210), both only for
+ * _player or with _serial_off; _do_battle plots toggle*7+8 unfiltered
+ * (asm:6074-6082). _map_colour[47] is the static byte 2 (asm:24257).
+ * The view marker is sprite 0x54 (asm:653-670), not a rectangle. */
+static int overview_px(int cell) { return ((cell & 63) + 64 - (cell >> 6)) + (((cell >> 6) + (cell & 63)) >> 1) * 320; }
+static void test_overview_plot(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    for (int link_off = 0; link_off < 2; ++link_off) {
+        assert(game_reset(0));
+        player = 0; paint_map = 0; pause = 0; war_flag = 0; serial_off = (int16_t)link_off;
+        xoff = yoff = 6; game_turn = 100;
+        for (int i = 0; i < 16; ++i) map_colour_data[i] = map_colour_data[16 + i] = (uint8_t)((i * 7 + 3) & 15);
+        const int back = (15 * 7 + 3) & 15;   /* flat land: block 15 */
+        for (int i = 0; i < 4225; ++i) A4_WORD(0xae86 + i * 2) = 2;
+        memset(map_bk2, 0, 4096); memset(map_who, 0, 4096);
+        core_rotate_all_map();   /* asm:6912-6918: _make_map then _draw_map(0,0,63,63) */
+        assert(map_blk[0] == 15 && map_alt[0] == 1);
+        stats_build_latch(0) = stats_build_latch(1) = 1;
+        core_mana_long(0) = 100000;
+        /* Protected rock kept by _make_map and redrawn by the raise. */
+        const int rock = 40 * 64 + 30, stale = 10 * 64 + 50;
+        map_blk[rock] = 47;
+        map_blk[stale] = 3;   /* no _draw_map covers it */
+        assert(core_raw_raise(0, 31, 41));
+        assert(map_blk[rock] == 47);
+        no_peeps = 7;
+        for (int slot = CORE_FUNNY_FIRST; slot < CORE_FUNNY_END; ++slot) set_peep_population(slot, 0);
+        static const int place[7][4] = {   /* cell, side, flags, population */
+            {30*64+20,0,1,3}, {5*64+40,1,1,3}, {50*64+50,0,2,50}, {20*64+10,1,2,50},
+            {4096,0,2,50}, {45*64+45,1,8,1000}, {45*64+45,0,10,1000}};
+        for (int k = 0; k < 7; ++k) {
+            memset(&peeps[k * 22], 0, 22);
+            peeps[k * 22] = (uint8_t)place[k][2]; peeps[k * 22 + 1] = (uint8_t)place[k][1];
+            set_peep_population(k, place[k][3]); set_peep_position(k, place[k][0]);
+            if (place[k][0] < 4096) map_who[place[k][0]] = (uint8_t)(k + 1);
+        }
+        set_peep_word(5, 6, 6); set_peep_word(6, 6, 5);
+        map_who[45*64+45] = 6;
+        GraphicsSheet small = graphics_sprites(game_assets);
+        static uint8_t marker0[320 * 200], marker1[320 * 200];
+        memset(marker0, 0, sizeof marker0); memset(marker1, 0xff, sizeof marker1);
+        int mx = xoff + 0x43 - (yoff + 3) - 3, my = (xoff + yoff + 6) / 2 - 3;
+        graphics_blit(marker0, sizeof marker0, 320, 200, small, 0x54, mx, my);
+        graphics_blit(marker1, sizeof marker1, 320, 200, small, 0x54, mx, my);
+        int offmap_back = -1;
+        for (int frame = 0; frame < 4; ++frame) {
+            toggle = (int16_t)(frame & 1);
+            game_tick();
+            assert(!core_result);
+            draw_original(xoff, yoff);
+            int t = toggle != 0;
+            /* towns (toggle 0) */
+            assert(game_pixels[overview_px(place[0][0])] == (t ? back : 5));
+            assert(game_pixels[overview_px(place[1][0])] == (t || !link_off ? back : 1));
+            /* walkers (toggle 1); the 4096 walker at (0,32) */
+            assert(game_pixels[overview_px(place[2][0])] == (t ? 15 : back));
+            assert(game_pixels[overview_px(place[3][0])] == (t && link_off ? 8 : back));
+            if (!frame) { offmap_back = game_pixels[32 * 320]; assert(offmap_back != 15); }
+            assert(overview_px(4096) == 32 * 320 && game_pixels[32 * 320] == (t ? 15 : offmap_back));
+            /* battle: both phases, any side */
+            assert(game_pixels[overview_px(place[5][0])] == t * 7 + 8);
+            /* back_scr: rock 2, the stale cell keeps flat land */
+            assert(game_pixels[overview_px(rock)] == 2);
+            assert(game_pixels[overview_px(stale)] == back);
+            /* no colour-5 view rectangle: its border cells show back_scr or the marker */
+            for (int k = 0; k < 8; ++k) {
+                int cells[4] = {yoff * 64 + xoff + k, (yoff + 7) * 64 + xoff + k, (yoff + k) * 64 + xoff, (yoff + k) * 64 + xoff + 7};
+                for (int c = 0; c < 4; ++c) {
+                    int px = overview_px(cells[c]);
+                    if (marker0[px] != marker1[px]) assert(map_blk[cells[c]] == 15 && game_pixels[px] == back);
+                }
+            }
+            for (int px = 0; px < 320 * 200; ++px)
+                if (marker0[px] == marker1[px]) assert(game_pixels[px] == marker0[px]);
+        }
+    }
+    _closeall();
+    SDL_Quit();
+}
 /* Paused overview past the map: _a_putpixel (asm:16758-16777) has no cell
  * bound, _pixel clips only to 320x200 (asm:19140-19160). Cell 4096 (column
  * 0, row 64) plots (0,32), 4097 plots (1,32); 65535 gives x = 63+64-1023
@@ -22774,11 +22863,13 @@ static void test_overview_offmap(void)
     }
     /* Baseline: the same paused frame with every population 0 (not plotted). */
     pause = 1;
+    core_wsc_pass();
     draw_original(xoff, yoff);
     static uint8_t empty[320 * 200];
     memcpy(empty, game_pixels, sizeof empty);
     assert(empty[32 * 320 + 0] != 8 && empty[32 * 320 + 1] != 5);
     for (int k = 0; k < 3; ++k) set_peep_word(k, 4, 3);
+    core_wsc_pass();
     draw_original(xoff, yoff);
     assert(game_pixels[32 * 320 + 0] == 8 && game_pixels[32 * 320 + 1] == 5);
     for (int pixel = 0; pixel < 320 * 200; ++pixel)
@@ -23645,6 +23736,11 @@ int main(int argc, char **argv)
         test_ai_null_town();
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--overview-plot")) {
+        test_overview_plot();
+        puts("overview plot tests passed");
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--overview-offmap")) {
         test_overview_offmap();
         puts("overview offmap tests passed");
@@ -23867,6 +23963,7 @@ int main(int argc, char **argv)
     test_paint_map_editor();
     test_editor_landscapes();
     test_editor_map_points();
+    test_overview_plot();
     test_overview_offmap();
     test_paint_map_options();
     test_magnet();

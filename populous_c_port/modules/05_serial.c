@@ -400,6 +400,7 @@ static void core_serial_tick(void)
     }
     if (!core_turn_pending) {
         if (core_result) return;
+        core_wsc_pass();
         if (!pause && !paint_map) {
             game_turn = (int16_t)((uint16_t)game_turn + 1u);
             core_do_funny();
