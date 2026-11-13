@@ -19163,6 +19163,48 @@ static void test_good_pop(void)
     core_clear_terrain_mailboxes();
     puts("good_pop: PASS");
 }
+/* _move_peeps end check (asm:4323-4347), hand-derived truth table: the
+ * _player test runs first (LAB_41300: good_pop[_player] == 0 or _surender ==
+ * _player -> ___end_game(1), LOST, core_result 2); only otherwise the
+ * _not_player test (LAB_41328 -> ___end_game(0), WON, core_result 1). A
+ * pre-move good_pop counts a peep that drowns in the same pass. With _pause
+ * or _paint_map no _move_peeps runs (asm:676-738): no check at all. */
+static void test_end_conditions(void)
+{
+    /* {player, alive0, alive1, surrender, pause, paint, result} */
+    static const int table[][7] = {
+        {0, 1, 1, -1, 0, 0, 0}, {0, 0, 1, -1, 0, 0, 2}, {0, 1, 0, -1, 0, 0, 1},
+        {0, 0, 0, -1, 0, 0, 2}, {0, 1, 1, 0, 0, 0, 2},  {0, 1, 1, 1, 0, 0, 1},
+        {0, 1, 0, 0, 0, 0, 2},  {0, 0, 1, 1, 0, 0, 2},  {0, 1, 1, 255, 0, 0, 0},
+        {1, 1, 1, -1, 0, 0, 0}, {1, 0, 1, -1, 0, 0, 1}, {1, 1, 0, -1, 0, 0, 2},
+        {1, 0, 0, -1, 0, 0, 2}, {1, 1, 1, 1, 0, 0, 2},  {1, 1, 1, 0, 0, 0, 1},
+        {1, 0, 1, 1, 0, 0, 2},  {1, 1, 0, 0, 0, 0, 2},  {0, 0, 0, 0, 1, 0, 0},
+        {0, 0, 0, 0, 0, 1, 0},  {1, 0, 0, 1, 1, 1, 0}};
+    for (size_t i = 0; i < sizeof table / sizeof table[0]; ++i) {
+        const int *t = table[i];
+        ai_fixture();
+        game_mode = GAME_MODE_WATER_FATAL;
+        player = (int16_t)t[0];
+        not_player = (int16_t)!t[0];
+        int slot = 0;
+        for (int owner = 0; owner < 2; ++owner)
+            if (t[1 + owner]) { ai_peep(slot, 0x12, owner, 5, 500 + slot); ++slot; }
+        no_peeps = (int16_t)slot;
+        A4_WORD(0x8258) = (int16_t)t[3];
+        pause = (int16_t)t[4];
+        paint_map = (int16_t)t[5];
+        game_tick();
+        if (core_result != t[6]) {
+            fprintf(stderr, "end conditions row %zu: result %d, expected %d\n", i, core_result, t[6]);
+            assert(0);
+        }
+        assert(game_turn == (t[4] || t[5] ? 50 : 51));
+        core_result = 0;
+        pause = paint_map = 0;
+        core_clear_terrain_mailboxes();
+    }
+    puts("end conditions: PASS");
+}
 /* Computer ai. */
 static void test_computer_ai(void)
 {
@@ -19862,6 +19904,108 @@ static void save_fixture(void)
     start_seed = 0x0bad;
     seed = 0x0bee;
     A4_WORD(0xae80) = 0;
+}
+/* A .GAM built byte by byte from _load_game's _Read sequence (asm:17412-
+ * 17585), not from the port's encoder: $FFFFB615, _alt $2102, _map_alt/
+ * _map_blk/_map_bk2/_map_who $1000 each, _magnet $20, _peeps $1222, _stats
+ * and strABC $2E each, _mode, _seed, _start_seed, _player, _ground_in, _war,
+ * _game_turn (2 each), _conquest $A, _in_conquest, _paint_map 2, _battle_won
+ * 4, _game_mode, _level_number 2, _score 4, _land_checksum 2. All big-endian
+ * (68000). The checksum is _save_game's (asm:17160-17200): word sums of _alt
+ * ($1081 words) and the four maps ($800 each) plus good_pop+bad_pop. */
+static void put_be(uint8_t *p, uint32_t v, int n)
+{ for (int i = n - 1; i >= 0; --i) { p[i] = (uint8_t)v; v >>= 8; } }
+static void test_save_hand_file(void)
+{
+    assert(mkdtemp(save_directory));
+    assert(!setenv("POPULOUS_SAVE_DIR", save_directory, 1));
+    save_fixture();
+    static uint8_t f[29646], again[29646];
+    memset(f, 0, sizeof f);
+    size_t at = 0;
+    put_be(f, 0xffffb615u, 4); at = 4;
+    size_t h_alt = at;
+    for (int i = 0; i < 0x1081; ++i) put_be(f + h_alt + 2 * i, (uint32_t)(i % 9), 2);
+    at += 0x2102;
+    size_t h_maps = at;
+    for (int m = 0; m < 4; ++m)
+        for (int i = 0; i < 0x1000; ++i) f[h_maps + m * 0x1000 + i] = (uint8_t)(m == 3 ? 0 : (i + m) % 13);
+    at += 0x4000;
+    size_t h_magnet = at;
+    put_be(f + h_magnet + 0, 3, 2);       /* leader 0 */
+    put_be(f + h_magnet + 2, 0x0821, 2);  /* target 0 */
+    put_be(f + h_magnet + 8, 0x00012345u, 4);  /* good_pop */
+    put_be(f + h_magnet + 12, 0x00000777u, 4); /* mana 0 */
+    put_be(f + h_magnet + 16 + 2, 0x0a10, 2);  /* target 1 */
+    put_be(f + h_magnet + 16 + 8, 0x00000042u, 4); /* bad_pop */
+    at += 0x20;
+    size_t h_records = at;
+    for (int p = 0; p < 10; ++p) {
+        uint8_t *r = f + h_records + p * 22;
+        r[0] = 2; r[1] = (uint8_t)(p & 1); r[2] = 1; r[3] = (uint8_t)p;
+        put_be(r + 4, (uint32_t)(100 + p), 2);      /* population */
+        put_be(r + 6, (uint32_t)(0x0100 + p), 2);
+        put_be(r + 8, (uint32_t)(0x0800 + p * 3), 2);
+        put_be(r + 10, (uint32_t)(0x1000 - p), 2);
+        put_be(r + 12, (uint32_t)p, 2);
+        put_be(r + 18, (uint32_t)(0x2000 + p), 2);
+        r[20] = 0x30; r[21] = (uint8_t)p;                  /* bytes +20/+21 */
+    }
+    at += 0x1222;
+    size_t h_stats = at;
+    for (int o = 0; o < 2; ++o) {
+        f[h_stats + o * 46] = 14; f[h_stats + o * 46 + 1] = 5; f[h_stats + o * 46 + 2] = 7; /* mailbox */
+        put_be(f + h_stats + o * 46 + 0x10, (uint32_t)(0x0607 + o), 2);
+    }
+    at += 0x5c;
+    size_t sc = at;
+    put_be(f + sc + 0, 2, 2);        /* _mode */
+    put_be(f + sc + 2, 0x0bee, 2);   /* _seed */
+    put_be(f + sc + 4, 0x0bad, 2);   /* _start_seed */
+    put_be(f + sc + 6, 1, 2);        /* _player */
+    put_be(f + sc + 8, (uint32_t)(uint16_t)ground_in, 2);
+    put_be(f + sc + 10, 0, 2);       /* _war */
+    put_be(f + sc + 12, 0x2345, 2);  /* _game_turn */
+    for (int i = 0; i < 10; ++i) f[sc + 14 + i] = (uint8_t)(0x90 + i); /* _conquest */
+    put_be(f + sc + 24, 0xffff, 2);  /* _in_conquest */
+    put_be(f + sc + 26, 0, 2);       /* _paint_map */
+    put_be(f + sc + 28, 3, 2);       /* _battle_won[0] */
+    put_be(f + sc + 30, 0x104, 2);   /* _battle_won[1] */
+    put_be(f + sc + 32, (uint32_t)(uint16_t)game_mode, 2);
+    put_be(f + sc + 34, 77, 2);      /* _level_number */
+    put_be(f + sc + 36, 0xdeadbeefu, 4); /* _score */
+    at = sc + 40;
+    assert(at + 2 == sizeof f && (int)sc == CORE_SAVE_SCALARS_AT);
+    uint16_t sum = 0;
+    for (size_t k = h_alt; k < h_magnet; k += 2) sum = (uint16_t)(sum + be16_at(f + k));
+    sum = (uint16_t)(sum + 0x00012345u + 0x00000042u);
+    put_be(f + at, sum, 2);
+    save_write("HAND.GAM", f, sizeof f);
+    assert(core_load_game("HAND"));
+    /* Native values after the field-wise big-endian decode. */
+    assert(A4_WORD(0xae86) == 0 && A4_WORD(0xae86 + 2 * 10) == 1 && A4_WORD(0xae86 + 2 * 0x1080) == 0x1080 % 9);
+    assert(((uint8_t *)map_alt)[5] == 5 && ((uint8_t *)map_blk)[12] == 0 && ((uint8_t *)map_bk2)[4095] == (4095 + 2) % 13);
+    assert(core_leader(0) == 3 && core_target(0) == 0x0821 && core_target(1) == 0x0a10);
+    assert(core_good_pop(0) == 0x00012345u && core_good_pop(1) == 0x42 && A4_LONG(0x9a02) == 0x777);
+    assert(no_peeps == 10 && peep_population(9) == 109 && peep_word(4, 8) == 0x080c &&
+           peeps[7 * 22 + 20] == 0x30 && peeps[7 * 22 + 21] == 7 && peeps[3 * 22 + 3] == 3 && peep_owner(5) == 1);
+    for (int o = 0; o < 2; ++o)
+        assert(!stats_bytes(o)[0] && !stats_bytes(o)[1] && !stats_bytes(o)[2] &&
+               A4_WORD(0x82b6 + o * 46 + 0x10) == 0x0607 + o);
+    assert(A4_WORD(0x8256) == 2 && seed == 0x0bee && start_seed == 0x0bad && player == 1 &&
+           not_player == 0 && game_turn == 0x2345 && conquest == 0x90 && in_conquest == -1 &&
+           A4_WORD(0xae7a) == 3 && A4_WORD(0xae7c) == 0x104 && A4_WORD(0xae7e) == 77 &&
+           A4_LONG(0xae72) == 0xdeadbeefu && (uint16_t)land_checksum == sum);
+    assert(A4_WORD(0xae78) == 0x0821 && A4_WORD(0xae76) == 0x0a10); /* _god/_devil_magnet */
+    /* Re-encoding the loaded game gives the hand-built bytes back, except the
+     * mailboxes _load_game clears (asm:17617-17629). */
+    assert(core_save_encode(again) == sum);
+    for (int o = 0; o < 2; ++o) memset(f + h_stats + o * 46, 0, 3);
+    for (size_t k = 0; k < sizeof f; ++k)
+        if (f[k] != again[k]) { fprintf(stderr, "hand .GAM byte %zu: %02x != %02x\n", k, again[k], f[k]); assert(0); }
+    save_remove("HAND.GAM");
+    assert(!rmdir(save_directory));
+    puts("save hand file: PASS");
 }
 /* Save load. */
 static void test_save_load(void)
@@ -23594,6 +23738,14 @@ int main(int argc, char **argv)
     }
     if (argc == 2 && !strcmp(argv[1], "--devil-effect")) {
         test_devil_effect();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--end-conditions")) {
+        test_end_conditions();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--save-hand-file")) {
+        test_save_hand_file();
         return 0;
     }
     if (argc == 2 && !strcmp(argv[1], "--good-pop")) {

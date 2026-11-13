@@ -1382,9 +1382,27 @@ What plays (all faithful to the 50 Hz vbi, asm:19620-19672):
 - `_PlaySound` keeps a busy channel's sound against a lower priority; a drumkit
   repeat word queues a second request.
 
-Deviations: the second `_PlaySound` request's cycle count lies past the pushed
-arguments in the original (an undefined stack word); the port uses the repeat
-word itself (5 for the quake rumble, 6..14 for music pads). `_PlayMeas` is
+Deviations: the second `_PlaySound` request pushes only 12 bytes to
+`_setsound` (asm:20371-20380), so `_setsound`'s cycles word `($14,A5)`
+(asm:20405) is the top of `_PlaySound`'s stack after `MOVEM.L A2-A3,-(A7)`:
+the high word of the caller's A2. Only gmusic1 entries have a repeat word
+(sounds 0-9, 15, 76, 80; every gwords +6 is 0, so the three `_won_conquest`
+calls never make a second request), and gmusic1 is only played from the
+vertical-blank server `_mouse` (asm:19511-19672, directly or via
+`_PlayMeas`), which saves only D0-D1/A0/A4 and never writes A2. A2 is
+therefore the interrupted main program's register, as left by the Kickstart
+VERTB dispatcher (ROM code, not in the listing): not deterministic. The port
+uses the repeat word itself (5 for the quake rumble, 6..14 for music pads).
+Flood (asm:7605/7629/7630/7647) and volcano (8088/8266) set `_effect` again
+inside the same power. No vblank wait lies between the writes: all their
+`___Setscreen` calls pass display -1 (so `_show_screen`'s VERTB wait,
+asm `_show_screen`, is skipped) and `_make_map`/`_draw_map` call only
+`___pixel`. A vbi there is purely asynchronous; for the flood the `_alt`
+loop alone needs at least 100 cycles x $1081 = 422500 68000 cycles (about
+three PAL frames), so on a stock 7 MHz 68000 the effect is restarted, but at
+times that depend on cycle timing (faster CPUs may not); the volcano's
+interval depends on terrain. The port runs a power in zero time and plays the
+effect once (`--end-conditions`/`--save-hand-file` are the related new checks). `_PlayMeas` is
 skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
 
 ## Controls
@@ -1502,6 +1520,14 @@ Right after that tick the main loop runs the `_end_game` statistics once
 the seven `_end_text` rows (A4 0x8e7e, 46 bytes each) receive `GAME WON/LOST`,
 battles won, knights (peeps with a heading and population), towns (flag 1,
 frame other than 0x2a) and castles (frame 0x2a), "you" padded to five characters.
+The end check is pinned by a hand-derived truth table over player side,
+pre-move populations, surrender and pause/paint (`--end-conditions`): a
+simultaneous wipe-out or both conditions at once is LOST. After `___end_game`
+returns (the next world already set up) `_move_peeps` still publishes the old
+pass's town/castle tallies (asm:4349-4370; setup never writes them, so the
+values are the same) and runs the every-8-turns `_cheat` check (asm:4375-4387);
+`_cheat` is only set by `_do_action` y=15 (asm:19000-19003), which no shipped
+code sends, so the port omits it. `_end_game` does not depend on `_game_mode`.
 
 The final `_score` (A4 0xae72) adds to the accumulated power/placement score:
 +5000 if you won more battles; per power bit 8..256 of the permission words
@@ -1730,6 +1756,9 @@ exists (asm:10931-10944), showing the "insert disk" message (see below) after
 each failure; only then does the setup close. The
 port's own tool state is reset to the terrain tool; a synthetic demo start
 keeps its restart target. The listing holds at most 256 names.
+`--save-hand-file` builds a `.GAM` byte by byte from `_load_game`'s `_Read`
+order (asm:17412-17585), independent of the port's encoder, loads it and
+checks the native fields; a real Amiga `.GAM` has not been available.
 
 ## Verification
 
