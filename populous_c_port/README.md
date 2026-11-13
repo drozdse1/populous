@@ -994,8 +994,12 @@ power masks and enemy parameters do not implement the missing powers or AI.
 World creation consumes the four initial random draws, three original raise/walk
 passes, conditional decoration draws, and original first-inhabitant scans. It
 runs against staged A4 storage; a failed reset preserves live state and assets.
-The map update preserves original block 47 until submerged. Host safety deliberately
-skips the original enemy-fallback probe at logical cell 4096. Preferred placement
+The map update preserves original block 47 until submerged and averages corners
+with the original 16-bit sum and floor shift (asm:1440-1452). The enemy fallback
+starts at logical cell 4096 like the original (asm:7823-7838): `_map_blk[4096]` is
+`_map_alt[0]` and `_map_who[4096]` is the high byte of `_build_count`, so with land
+on cell 0 and a count below 256 an enemy is placed off-map at 4096. No level.dat
+start and no fresh custom start reaches that (generation adds at least 299 raises). Preferred placement
 preserves co-located inhabitants and uses the original last-writer `map_who`
 representative; fallback scans still require an empty cell. The enemy fallback's
 original leader-order quirk is preserved.
@@ -1118,7 +1122,8 @@ clears it (asm:12769); it is part of saved games. There is no host key for it
 - `_paint_the_map` (asm:15123-15274) posts at `_cur_x`/`_cur_y`, the vertex
   under the pointer: F1/F2 place a friendly/enemy walker (Shift: leader,
   replacing the current one), F3 cycles a tree, F4 a rock (below height 7, from
-  `_last_tree`/`_last_rock`), F5 deletes rock, object and occupant, F6/F7 double
+  `_last_tree`/`_last_rock`), F5 deletes rock, object and occupant (all at
+  `y*64+x` without a range check, so the edge vertex 64 edits cell (0,y+1)), F6/F7 double
   plus 500 below 100000 (Shift halves) the good/evil mana, F8 mirrors the
   landscape (`_rotate_all_map`), Delete clears all land and people
   (`_clear_all_map`), 1..9 select landscape 0..8 (`_do_action` y=13). These are

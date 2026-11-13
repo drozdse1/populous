@@ -25,7 +25,9 @@ static void core_make_map_region(int left, int top, int right, int bottom)
         for (int column = left; column <= right; ++column) {
             int corners[] = {core_vertex(column,row), core_vertex(column+1,row),
                              core_vertex(column+1,row+1), core_vertex(column,row+1)};
-            int altitude = (corners[0]+corners[1]+corners[2]+corners[3]) / 4;
+            /* asm:1440-1452: ADD.W wraps at 16 bits, ASR.W #2 floors. */
+            int16_t sum = (int16_t)(corners[0]+corners[1]+corners[2]+corners[3]);
+            int altitude = sum >= 0 ? sum / 4 : -((3 - sum) / 4);
             int block = 0, cell = row * 64 + column;
             for (int corner = 0; corner < 4; ++corner)
                 if (corners[corner] > altitude) block |= 1 << corner;
@@ -1161,7 +1163,11 @@ static void core_do_lower_point(int owner, int column, int row)
  * coordinates past 63 would write outside _map_who; the port drops them. */
 static void core_place_people(int side, int x, int y, int leader)
 {
-    if (no_peeps >= 208 || side < 0 || side > 1 || x < 0 || x > 63 || y < 0 || y > 63) return;
+    /* asm:6980-7040 stores y*64+x unchecked; vertex x == 64 is (0,y+1).
+     * A cell past the map would put a walker off-map and write map_who
+     * beyond its array (no original pick reaches it): still ignored. */
+    if (no_peeps >= 208 || side < 0 || side > 1 || x < 0 || x > 64 || y < 0 || y > 63 ||
+        y*64+x > 4095) return;
     int person, magnet = core_leader(side);
     if (leader && magnet > 0 && magnet <= no_peeps) { person = magnet-1; core_remove(person); }
     else person = no_peeps++;
@@ -1229,9 +1235,14 @@ static int core_paint_the_map(int raw, int shifted)
 }
 /* _get_message opcodes 11/12 asm:18049-18122: cycle a tree (bk2 50..52) or
  * rock (blk 47..49) on a cell below height 7, starting from the last one. */
+/* No range check in asm: _cur_x/_cur_y are vertices 0..64 (asm:7406-7416),
+ * so vertex 64 indexes y*64+x into the next row or the following A4 array,
+ * all inside prg_a4_area. Larger mailbox bytes are no original pick and
+ * would push _make_map's _map_steps writes out of the area: still ignored. */
+#define CORE_PAINT_MAX 64
 static void core_paint_cycle(int x, int y, int rock)
 {
-    if (x < 0 || x > 63 || y < 0 || y > 63) return;
+    if (x < 0 || x > CORE_PAINT_MAX || y < 0 || y > CORE_PAINT_MAX) return;
     int cell = y*64+x, low = rock ? 47 : 50, high = low+2;
     if (map_alt[cell] >= 7) return;
     uint8_t *slot = rock ? &map_blk[cell] : &map_bk2[cell];
@@ -1246,11 +1257,11 @@ static void core_paint_cycle(int x, int y, int rock)
  * occupant go. */
 static void core_paint_delete(int x, int y)
 {
-    if (x < 0 || x > 63 || y < 0 || y > 63) return;
+    if (x < 0 || x > CORE_PAINT_MAX || y < 0 || y > CORE_PAINT_MAX) return;
     int cell = y*64+x;
     if (map_blk[cell] >= 47 && map_blk[cell] <= 49) {
         map_blk[cell] = 15;
-        core_make_map_region(x,y,x+1 > 63 ? 63 : x+1,y+1 > 63 ? 63 : y+1);
+        core_make_map_region(x,y,x+1,y+1);   /* asm:18139-18147, unclamped */
     }
     map_bk2[cell] = 0;
     if (map_who[cell]) {
@@ -1787,8 +1798,26 @@ static int original_place_people(int friendly_count, int enemy_count)
             /* Preferred scans do NOT filter occupancy in the original. */
             if (!original_place_person(owner, cell, remaining <= 0)) return 0;
         }
-        /* Original enemy fallback probes logical 4096 (outside the map).
-         * Safety exception: skip that probe; retain 4095..1, excluding zero. */
+        /* asm:7823-7838: the enemy fallback starts at logical 4096, one past
+         * the map. _map_blk[4096] is _map_alt[0] (same A4 bytes here);
+         * _map_who[4096] is the high byte of the big-endian _build_count
+         * word (A4 $2f88), so it is read and written as that byte, not as
+         * the host-endian first byte. A hit is _place_people(1,0,64): an
+         * enemy at off-map cell 4096 (custom starts reach this, e.g. seed
+         * 57385; no level.dat start does). Then 4095..1, excluding zero. */
+        if (owner && remaining && map_blk[4096] && !((uint16_t)build_count >> 8)) {
+            if (no_peeps >= 208) return 0;
+            int person = no_peeps++;
+            peep_flags(person) = 2;
+            peeps[person * 22 + 1] = 1;
+            peeps[person * 22 + 2] = peep_weapon(person) = 1;
+            set_peep_population(person, 45);
+            set_peep_position(person, 4096);
+            set_peep_frame(person, 0);
+            build_count = (int16_t)(((person + 1) & 0xff) << 8 | ((uint16_t)build_count & 0xff));
+            if (remaining <= 0) core_leader(1) = person + 1;
+            --remaining;
+        }
         for (int cell = owner ? 4095 : 0;
              remaining && cell >= (owner ? 1 : 0) && cell < 4096; cell += step) {
             if (!map_blk[cell] || map_who[cell]) continue;

@@ -1667,12 +1667,96 @@ static void test_magnet_dispatch_and_wait(void)
     assert(!core_battles && !core_settlements);
 }
 
+
+/* _move_magnet_peeps asm:5263-5383: a present heading rejects a primary swamp
+ * (asm:5241-5258), then the raise gate (+6 build mode == 1 or war; mode bit 2
+ * only outside war) and the swamp gate (mode bit 3 clear, no war) queue the
+ * swamp cell itself (x = &63, y = >>6) before the fallback scan. */
+static void test_magnet_swamp_fallback_raise(void)
+{
+    for (int owner = 0; owner < 2; ++owner)
+        for (int sample = 0; sample < 6; ++sample) {
+            setup_magnet_walker(owner);
+            no_peeps = 2;
+            memcpy(peeps + 22, peeps, 22);
+            peeps[23] = (uint8_t)(1 - owner);
+            set_peep_word(1, 8, 652);
+            assert(set_peep_reference(0, 1));
+            map_blk[651] = 53;
+            stats_build_mode(owner) = sample == 1 ? 0 : 1;
+            if (sample == 2) game_mode |= GAME_MODE_NO_BUILD;
+            if (sample == 3) game_mode |= GAME_MODE_BUILD_ONLY_UP;
+            if (sample == 4) war_flag = 1;
+            if (sample == 5) { stats_build_mode(owner) = 0; war_flag = 1; }
+            assert(core_magnet_direction(0) == -63); /* NE fallback. */
+            assert((int8_t)peeps[21] == 63);
+            int raised = sample == 0;
+            assert(stats_bytes(owner)[0] == raised);
+            assert(stats_bytes(owner)[1] == (raised ? 651 % 64 : 0));
+            assert(stats_bytes(owner)[2] == (raised ? 651 / 64 : 0));
+            assert(stats_build_latch(owner) == raised);
+            assert(!stats_bytes(1 - owner)[0] && !stats_build_latch(1 - owner));
+        }
+}
+
+
+/* _make_map asm:1440-1452: the four corners are summed with ADD.W (16-bit
+ * wrap) and averaged with ASR.W #2 (floor). Raw saved _alt words reach this. */
+static void test_make_map_word_average(void)
+{
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    int cell = 5 * 64 + 5;
+    map_vertex_word(5, 5) = -1;            /* sum -1 -> average -1 */
+    map_bk2[cell] = 50;
+    core_make_map_region(5, 5, 5, 5);
+    assert(map_alt[cell] == 0xff && map_blk[cell] == 14 && map_bk2[cell] == 50);
+    map_vertex_word(5, 5) = map_vertex_word(6, 5) = 0x4000;
+    map_vertex_word(6, 6) = map_vertex_word(5, 6) = 0x4000; /* sum wraps to 0 */
+    core_make_map_region(5, 5, 5, 5);
+    assert(map_alt[cell] == 0 && map_blk[cell] == 15 && map_bk2[cell] == 50);
+}
+
+
+/* _get_message opcodes 12/13 asm:18087-18183 index y*64+x without a range
+ * check, and _cur_x/_cur_y are vertices 0..64 (asm:7406-7416): vertex x=64
+ * edits cell (0,y+1); delete reprocesses _make_map(x,y,x+1,y+1) unclamped. */
+static void test_paint_edge_vertex(void)
+{
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    last_tree = 0x32; last_rock = 0x2f;
+    core_paint_cycle(64, 10, 1);
+    assert(map_blk[11*64] == 47 && last_rock == 47);
+    core_paint_cycle(64, 10, 0);
+    assert(map_bk2[11*64] == 50 && last_tree == 50);
+    map_blk[11*64+1] = map_blk[12*64] = map_blk[12*64+1] = 20;
+    map_blk[11*64+2] = 20;
+    core_paint_delete(64, 10);
+    assert(!map_blk[11*64] && !map_bk2[11*64]);
+    assert(!map_blk[11*64+1] && !map_blk[12*64] && !map_blk[12*64+1]);
+    assert(map_blk[11*64+2] == 20);
+    /* _place_people asm:6980-7040 stores y*64+x unchecked: vertex 64 of a
+     * row places the walker on cell (0,y+1). */
+    no_peeps = 0;
+    core_place_people(1, 64, 10, 0);
+    assert(no_peeps == 1 && peep_position(0) == 11*64 && map_who[11*64] == 1 && peeps[1] == 1);
+    core_place_people(0, 64, 63, 0);   /* cell 4096 is off the map: bound kept */
+    assert(no_peeps == 1);
+    /* Mailbox bytes above 64 are no original pick; they stay ignored. */
+    map_blk[0] = 47;
+    core_paint_delete(65, 0);
+    core_paint_cycle(0, 65, 1);
+    assert(map_blk[0] == 47 && last_rock == 47);
+}
+
 /* Magnet. */
 static void test_magnet(void)
 {
     test_magnet_signs_and_center();
     test_magnet_leaders();
     test_magnet_fallback();
+    test_magnet_swamp_fallback_raise();
+    test_make_map_word_average();
+    test_paint_edge_vertex();
     test_magnet_war_water_and_bounds();
     test_magnet_dispatch_and_wait();
 }
@@ -9059,6 +9143,27 @@ static void test_original_placement(void)
     assert(map_who[128] == 3 && map_who[0] == 2 && map_who[4095] == 4);
     assert(core_leader(0) == 2 && core_leader(1) == 0);
     assert(!original_place_person(0, -1, 0) && !original_place_person(0, 4096, 0));
+    /* asm:7823-7838: the enemy fallback starts at logical 4096. _map_blk[4096]
+     * is _map_alt[0]; _map_who[4096] is the high (big-endian) byte of
+     * _build_count (A4 $2f88). Land at cell 0 and a count below 256 admit
+     * _place_people(1,0,64): an off-map enemy whose slot+1 lands in that byte. */
+    for (int sample = 0; sample < 3; ++sample) {
+        memset(prg_a4_area, 0, sizeof prg_a4_area);
+        map_blk[128] = 15;
+        map_blk[4095] = 1;
+        map_alt[0] = sample == 1 ? 0 : 4;
+        build_count = sample == 2 ? 0x0123 : 0x0045;
+        assert(original_place_people(1, 2));
+        assert(no_peeps == 3 && peep_word(1, 8) == 128);
+        if (!sample) {
+            assert(peep_word(2, 8) == 4096 && peep_owner(2) == 1 && peep_word(2, 4) == 45);
+            assert(peeps[2*22] == 2 && (uint16_t)build_count == 0x0345 && !map_who[4095]);
+        } else {
+            assert(peep_word(2, 8) == 4095 && map_who[4095] == 3);
+            assert((uint16_t)build_count == (sample == 2 ? 0x0123 : 0x0045));
+        }
+        assert(core_leader(0) == 1 && !core_leader(1) && map_who[128] == 2);
+    }
     memset(prg_a4_area, 0, sizeof prg_a4_area);
     memset(map_blk, 15, 4096);
     assert(!original_place_people(209, 1));
@@ -22650,6 +22755,22 @@ int main(int argc, char **argv)
     setenv("POPULOUS_SAVE_DIR", "/nonexistent-populous-saves", 1);
     /* Shake frames are checked in test_quake_shake; elsewhere skip the 20 ms vblanks. */
     core_quake_delay = no_quake_delay;
+    if (argc == 2 && !strcmp(argv[1], "--make-map-word-average")) {
+        test_make_map_word_average();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--original-placement")) {
+        test_original_placement();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--paint-edge-vertex")) {
+        test_paint_edge_vertex();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--magnet-swamp-raise")) {
+        test_magnet_swamp_fallback_raise();
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--pause-icon-mailbox")) {
         test_pause_icon_mailbox();
         return 0;
