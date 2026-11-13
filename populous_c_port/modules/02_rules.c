@@ -9,6 +9,55 @@
  * animate / reset. Prefer a4_state.h names over raw A4_WORD(0x…).
  */
 
+/* ---- Cell 4096 ---------------------------------------------------------- */
+/* The _place_people enemy fallback (asm:7823-7838) can put a walker on cell
+ * 4096, one past the map; the original indexes its cell arrays without a
+ * bound, so that cell aliases the next A4 object. _map_blk[4096] is
+ * _map_alt[0] and _map_alt[4096] is _map_bk2[0] (byte arrays: direct).
+ * _map_who[4096] is the high byte of the big-endian _build_count word
+ * (A4 $2f88), _map_bk2[4096] the high byte of _map_steps[0] (A4 $ff88),
+ * _map_steps[4096] the word over _map_who[0..1] (A4 $ff88+$2000 wraps to
+ * $1f88), and vertex row 65 (_one_block_flat asm:9148-9310) the words over _map_blk[0..].
+ * A4 words are host-endian here, so those views are composed explicitly.
+ * Cells below 0 or above 4096 are unreachable and stay host-guarded. */
+#define CORE_CELL_OFF 4096
+static uint8_t core_who(int cell)
+{
+    return cell == CORE_CELL_OFF ? (uint8_t)((uint16_t)build_count >> 8) : map_who[cell];
+}
+static void core_set_who(int cell, int value)
+{
+    if (cell == CORE_CELL_OFF)
+        build_count = (int16_t)((uint16_t)((value & 0xff) << 8) | ((uint16_t)build_count & 0xff));
+    else map_who[cell] = (uint8_t)value;
+}
+static uint8_t core_bk2(int cell)
+{
+    return cell == CORE_CELL_OFF ? (uint8_t)((uint16_t)map_step_word(0) >> 8) : map_bk2[cell];
+}
+static void core_set_bk2(int cell, int value)
+{
+    if (cell == CORE_CELL_OFF)
+        map_step_word(0) = (int16_t)((uint16_t)((value & 0xff) << 8) | ((uint16_t)map_step_word(0) & 0xff));
+    else map_bk2[cell] = (uint8_t)value;
+}
+static uint16_t core_steps(int cell)
+{
+    return cell == CORE_CELL_OFF ? (uint16_t)(map_who[0] << 8 | map_who[1]) : (uint16_t)map_step_word(cell);
+}
+static void core_set_steps(int cell, uint16_t value)
+{
+    if (cell == CORE_CELL_OFF) { map_who[0] = (uint8_t)(value >> 8); map_who[1] = (uint8_t)value; }
+    else map_step_word(cell) = (int16_t)value;
+}
+/* Vertex word by index row*65+column; row 65 reads _map_blk bytes. */
+static int16_t core_vertex_index(int index)
+{
+    if (index < 65*65) return ((A4Word *)map_vertices)[index].value;
+    int byte = 2*(index - 65*65);
+    return (int16_t)(map_blk[byte] << 8 | map_blk[byte+1]);
+}
+
 /* ---- Map vertices / make_map ------------------------------------------- */
 
 static int core_vertex(int column, int row)
@@ -80,10 +129,12 @@ static void core_add_mana(int owner, int amount)
     if (value > 1999999) value = 1999999;
     core_mana_long(owner) = (uint32_t)(int32_t)value;
 }
-/* _valid_move asm:20912-20954. */
+/* _valid_move asm:20912-20954: no source bound, a zero delta is 0 first;
+ * from cell 4096 (column 0, row 64) -64 and -63 reach the map. Host guard:
+ * other off-map sources (unreachable) stay blocked. */
 static int core_valid_move(int position, int delta)
 {
-    if (position < 0 || position >= 4096) return 1;
+    if (position < 0 || position > CORE_CELL_OFF) return 1;
     if (!delta) return 0;
     int destination = position + delta, horizontal = delta & 63;
     if (horizontal > 3) horizontal -= 64;
@@ -106,8 +157,8 @@ static int core_check_life(int owner, int position)
             if (!life) life = 50;
             life += 15;
         } else if (!index) return 0;
-        int building = map_bk2[cell];
-        if (index < 9 && map_bk2[position] == 42 && building >= 41 && building <= 44) ++life_swamp_count;
+        int building = core_bk2(cell);
+        if (index < 9 && core_bk2(position) == 42 && building >= 41 && building <= 44) ++life_swamp_count;
         else if (index && building > 32 && building <= 44) return 0;
     }
     if (life < 35) return 0;
@@ -117,24 +168,24 @@ static int core_check_life(int owner, int position)
 static void core_set_town(int person, int remove)
 {
     int position = peep_position(person), owner = peep_owner(person);
-    int old_city = map_bk2[position] == 42, city = !remove && peep_frame(person) == 42;
+    int old_city = core_bk2(position) == 42, city = !remove && peep_frame(person) == 42;
     if (remove || (old_city && !city)) {
         for (int index = 0; index < (old_city ? 25 : 17); ++index) {
             if (core_valid_move(position,core_offsets[index]) == 1) continue;
             int cell = position+core_offsets[index];
-            if (old_city || index < 9) map_bk2[cell] = 0;
+            if (old_city || index < 9) core_set_bk2(cell,0);
             if (map_blk[cell] == 31+owner) map_blk[cell] = 15;
         }
-        map_bk2[position] = 0;
+        core_set_bk2(position,0);
         if (remove) return;
     }
     for (int index = 0; index < (city ? 25 : 17); ++index) {
         if (core_valid_move(position,core_offsets[index]) == 1) continue;
         int cell = position+core_offsets[index];
-        if (index < 9) map_bk2[cell] = city ? core_city[index] : 0;
+        if (index < 9) core_set_bk2(cell,city ? core_city[index] : 0);
         if (map_blk[cell] == 15) map_blk[cell] = 31+owner;
     }
-    if (!city && map_blk[position] == 31+owner) map_bk2[position] = peep_frame(person);
+    if (!city && map_blk[position] == 31+owner) core_set_bk2(position,peep_frame(person));
 }
 static void core_set_magnet_to(int owner, int16_t cell);
 /* _zero_population asm:5645-5723, in source order. The dead record keeps its
@@ -152,11 +203,11 @@ static void core_remove(int person)
         if (partner < 208) peep_flags(partner) &= 0xf7;
     }
     if (peep_flags(person)&1) core_set_town(person,1);
-    /* asm:5665-5684: own cell, then the previous departure's claim. Legal
-     * positions are always on the map; the guard only bounds host storage. */
-    if (position >= 0 && position < 4096 && map_who[position] == person+1) map_who[position] = 0;
+    /* asm:5665-5684: own cell, then the previous departure's claim. Cell
+     * 4096 clears its alias; the guard only bounds host storage. */
+    if (position >= 0 && position <= CORE_CELL_OFF && core_who(position) == person+1) core_set_who(position,0);
     int previous = (int16_t)(position-peep_heading(person));
-    if (previous >= 0 && previous < 4096 && map_who[previous] == person+1) map_who[previous] = 0;
+    if (previous >= 0 && previous <= CORE_CELL_OFF && core_who(previous) == person+1) core_set_who(previous,0);
     /* asm:5685-5703 */
     if (core_leader(owner) == person+1) {
         core_leader(owner) = 0;
@@ -290,7 +341,7 @@ static int core_explore(int person)
  * Only the old-water caller gates fatal mode, not the blocked walker. */
 static void core_queue_terrain_raise(int owner, int position)
 {
-    if (owner < 0 || owner > 1 || position < 0 || position >= 4096) return;
+    if (owner < 0 || owner > 1 || position < 0 || position > CORE_CELL_OFF) return;
     int displacement = owner * 46;
     if (!war_flag &&
         (stats_build_mode(displacement / 46) != 1 || (game_mode&GAME_MODE_NO_BUILD))) return;
@@ -305,21 +356,21 @@ static int core_magnet_direction(int person)
 {
     if (no_peeps < 0 || no_peeps > 208 || person < 0 || person >= no_peeps) return 999;
     int owner = peep_owner(person), position = peep_position(person);
-    if (owner > 1 || position < 0 || position >= 4096) return 999;
+    if (owner > 1 || position < 0 || position > CORE_CELL_OFF) return 999;
     int reference = peep_reference(person), present = reference != -1;
     int target;
     if (reference >= 0) {
         target = peep_position(reference);
         if (target == position || peep_population(reference) <= 0 ||
             peep_owner(reference) == owner || (peep_flags(reference)&0x80) ||
-            target < 0 || target >= 4096) {
+            target < 0 || target > CORE_CELL_OFF) {
             core_get_heading(person);
             reference = peep_reference(person);
             target = peep_position(reference);
         }
         /* The exact selector intentionally admits all signed word positions.
          * Validate once here, without retrying or changing selector semantics. */
-        if (target < 0 || target >= 4096) return 999;
+        if (target < 0 || target > CORE_CELL_OFF) return 999;
     } else {
         target = core_target(owner);
         if (!present) {
@@ -331,9 +382,9 @@ static int core_magnet_direction(int person)
             /* Invalid/dead/foreign leaders use the magnet without repair. */
             if (leader >= 0 && leader < no_peeps && leader < 208 && leader != person &&
                 peep_population(leader) > 0 && peep_owner(leader) == owner &&
-                peep_position(leader) >= 0 && peep_position(leader) < 4096)
+                peep_position(leader) >= 0 && peep_position(leader) <= CORE_CELL_OFF)
                 target = peep_position(leader);
-        } else if (target < 0 || target >= 4096) return 999;
+        } else if (target < 0 || target > CORE_CELL_OFF) return 999;
     }
     int dx = (target%64 > position%64)-(target%64 < position%64);
     int dy = (target/64 > position/64)-(target/64 < position/64);
@@ -378,8 +429,8 @@ static int core_battle_over(int winner, int loser)
         peep_population(winner) <= 0 || peep_population(loser) > 0) return 0;
     int owner=peep_owner(winner), enemy=peep_owner(loser);
     int position=peep_position(winner), loser_position=peep_position(loser);
-    if (owner > 1 || enemy > 1 || owner == enemy || position < 0 || position >= 4096 ||
-        loser_position < 0 || loser_position >= 4096) return 0;
+    if (owner > 1 || enemy > 1 || owner == enemy || position < 0 || position > CORE_CELL_OFF ||
+        loser_position < 0 || loser_position > CORE_CELL_OFF) return 0;
     uint32_t winner_heading, loser_heading;
     memcpy(&winner_heading,peeps+winner*22+14,sizeof winner_heading);
     memcpy(&loser_heading,peeps+loser*22+14,sizeof loser_heading);
@@ -396,7 +447,7 @@ static int core_battle_over(int winner, int loser)
         if (winner_heading) {
             peep_flags(loser)=0x80; set_peep_population(loser,1); set_peep_word(loser,6,40);
             peep_flags(winner)=2;
-            int city=map_bk2[loser_position]==42;
+            int city=core_bk2(loser_position)==42;
             for (int index=0; index<(city ? 25 : 17); ++index) {
                 int cell=loser_position+core_offsets[index];
                 /* Source city loop has no valid_move gate: retain row wrap,
@@ -406,8 +457,9 @@ static int core_battle_over(int winner, int loser)
                     map_bk2[cell]+=21;
                 if (map_blk[cell]==31+enemy) map_blk[cell]=66;
             }
-            if (map_bk2[loser_position]>=32 && map_bk2[loser_position]<=42) map_bk2[loser_position]+=21;
-            if (map_who[loser_position]==loser+1) map_who[loser_position]=0;
+            if (core_bk2(loser_position)>=32 && core_bk2(loser_position)<=42)
+                core_set_bk2(loser_position,core_bk2(loser_position)+21);
+            if (core_who(loser_position)==loser+1) core_set_who(loser_position,0);
         } else {
             core_set_town(loser,1);
             int capacity=core_check_life(owner,position);
@@ -422,7 +474,7 @@ static int core_battle_over(int winner, int loser)
     /* Normalize before core_remove so reciprocal host cleanup cannot undo it. */
     peep_flags(winner)=((peep_flags(winner)&1) ? 1 : 2)|4;
     set_peep_heading(winner,0); set_peep_frame(winner,85);
-    if (!map_who[position] || map_who[position]==loser+1) map_who[position]=winner+1;
+    if (!core_who(position) || core_who(position)==loser+1) core_set_who(position,winner+1);
     if (peeps[winner*22+20]) {
         stats_go_to_pos(owner)=position;
         stats_go_to_mode(owner)=2;
@@ -570,7 +622,7 @@ static void core_move(int person)
     peep_flags(person) &= 0xbf;
     /* asm:4438-4449: release the cell claimed by the previous departure. */
     int previous = (int16_t)(position-peep_heading(person));
-    if (previous >= 0 && previous < 4096 && map_who[previous] == person+1) map_who[previous] = 0;
+    if (previous >= 0 && previous <= CORE_CELL_OFF && core_who(previous) == person+1) core_set_who(previous,0);
     /* asm:4450-4509: a computer-controlled walker on block 0x42 asks for its
      * own cell to be lowered: command byte, x, ASR.W #6 row; no latch write. */
     int request = 0x82b6 + owner*46;
@@ -583,7 +635,7 @@ static void core_move(int person)
     }
     /* asm:4510-4559: the encounter is with the peep named at the walker's
      * own cell. Only -1, self, slot >= 208 and bit 7 are excluded. */
-    int occupant = map_who[position]-1;
+    int occupant = core_who(position)-1;
     if (occupant != -1 && occupant != person && occupant < 208 && !(peep_flags(occupant)&0x80)) {
         if (peep_flags(occupant)&8) core_join_battle(person,occupant);
         else if (peep_owner(occupant) == owner) core_join_forces(person,occupant);
@@ -598,13 +650,13 @@ static void core_move(int person)
              * while a walker is pulled back onto the attacker's cell. */
             int cell = peep_position(occupant);
             int left = (int16_t)(cell-peep_heading(occupant));
-            if (left >= 0 && left < 4096 && map_who[left] == occupant+1) map_who[left] = 0;
-            if (cell >= 0 && cell < 4096 && map_who[cell] == occupant+1) map_who[cell] = 0;
+            if (left >= 0 && left <= CORE_CELL_OFF && core_who(left) == occupant+1) core_set_who(left,0);
+            if (cell >= 0 && cell <= CORE_CELL_OFF && core_who(cell) == occupant+1) core_set_who(cell,0);
             if (peep_flags(occupant)&1) {
-                if (cell >= 0 && cell < 4096) map_who[cell] = person+1;
+                if (cell >= 0 && cell <= CORE_CELL_OFF) core_set_who(cell,person+1);
             } else {
                 set_peep_position(occupant,position);
-                map_who[position] = person+1;
+                core_set_who(position,person+1);
             }
             ++core_battles;
             return;
@@ -613,15 +665,15 @@ static void core_move(int person)
     if (peep_population(person) <= 0) return;
     /* asm:4564-4589: settle on a zero heading without metadata. */
     if (!delta && !present) {
-        if (!map_who[position]) map_who[position] = person+1;
+        if (!core_who(position)) core_set_who(position,person+1);
         peep_flags(person) = 1; set_peep_word(person,6,game_turn);
         core_frame_town(person,core_check_life(owner,position)); core_set_town(person,0); ++core_settlements;
         return;
     }
     /* asm:4590-4617: count and claim the departure cell, then advance. The
      * destination is claimed only by the next departure. */
-    map_step_word(position) = (uint16_t)map_step_word(position)+1;
-    if (!map_who[position]) map_who[position] = person+1;
+    core_set_steps(position,(uint16_t)(core_steps(position)+1));
+    if (!core_who(position)) core_set_who(position,person+1);
     set_peep_position(person,(int16_t)(position+delta)); set_peep_heading(person,delta);
 }
 /* _move_peeps frame local -28 (asm:3331-3335): per-owner oldest town age. */
@@ -638,13 +690,13 @@ static void core_one_block_flat(int position, int owner)
         (game_mode&GAME_MODE_NO_BUILD)) return;
     int column = position & 63, row = (int16_t)position >= 0 ? (int16_t)position/64 : -((-(int16_t)position+63)/64);
     int base = row*65 + column;
-    A4Word *verts = (A4Word *)map_vertices;
-    int16_t sum = (int16_t)(verts[base].value + verts[base+1].value +
-                            verts[base+66].value + verts[base+65].value);
+    /* Row 64 (cell 4096) reads vertex row 65: _map_blk bytes as words. */
+    int16_t sum = (int16_t)(core_vertex_index(base) + core_vertex_index(base+1) +
+                            core_vertex_index(base+66) + core_vertex_index(base+65));
     if (sum == 1) return;
     int remainder = sum % 4, level = sum / 4; /* DIVS: truncating quotient/remainder */
     for (int x = column; x <= column+1; ++x) for (int y = row; y <= row+1; ++y) {
-        int16_t height = map_vertex_word(x, y);
+        int16_t height = core_vertex_index(y*65 + x);
         int command = remainder == 3 ? (height == level ? 1 : 0) :
                       remainder == 1 && height > level && !(game_mode&GAME_MODE_BUILD_ONLY_UP) ? 2 : 0;
         if (command) {
@@ -739,7 +791,7 @@ static void core_do_computer_effect(int owner)
 {
     if (!core_leader(owner)) {
         int16_t target = core_target(owner);
-        int who = target >= 0 && target < 4096 ? map_who[target] : 0; /* host bound */
+        int who = target >= 0 && target <= CORE_CELL_OFF ? core_who(target) : 0; /* host bound */
         if (who && peep_owner(who-1) != owner) {
             core_ai_put(owner, stats_cmd_byte(owner), target);
             return;
@@ -919,7 +971,7 @@ static void core_settle_tick(int person)
     if (capacity < 3050) core_town_age(owner) = (uint16_t)core_town_age(owner)+1;
     else if (owner < 2) ++core_city_count[owner]; /* asm:3637-3645 */
     /* asm:3667-3677: reclaim a departed walker's slot, never another occupant. */
-    if (!map_who[position]) map_who[position] = person+1;
+    if (!core_who(position)) core_set_who(position,person+1);
     /* asm:3684-3705: a capacity strictly above the pass maximum (signed
      * word, BGE skips ties) becomes the enemy-indexed _stats+0x22 pointer. */
     if (owner < 2 && !(core_best_town_capacity[owner] >= (int16_t)capacity)) {
@@ -977,7 +1029,7 @@ static void core_settle_tick(int person)
                 if (view_who == person+1) view_who = child+1; /* asm:3931-3937 */
                 set_peep_position(child,position); set_peep_word(child,18,position);
                 /* asm:3964-3983: preserve a co-located walker or battle occupant. */
-                if (!map_who[position] || map_who[position] == person+1) map_who[position] = child+1;
+                if (!core_who(position) || core_who(position) == person+1) core_set_who(position,child+1);
                 if (peeps[person*22+2] < 4) ++peeps[person*22+2];
             } else if (!funny_done) {
                 /* asm:3996-4006: no free slot of 208, once per game. */
@@ -2440,30 +2492,30 @@ static void game_tick(void)
     if (prg_quit || core_result || core_req.kind) return;
     /* _animate asm:676-738: with _pause or _paint_map set neither _do_funny
      * nor _move_peeps runs (people stand still, _game_turn stays, no end-game
-     * check); the frame only plots the peeps. The view timer (asm:739-750)
+     * check); the frame only plots the peeps. The view timer (asm:739-750), the turn-4096 funny (asm:752-760)
      * and the mailboxes (asm:1010-1012) still run. */
-    if (pause || paint_map) {
-        if (view_timer && !--view_timer) view_who = old_view_who;
-        core_consume_terrain_mailboxes();
-        return;
+    if (!pause && !paint_map) {
+        game_turn = (int16_t)((uint16_t)game_turn + 1u);   /* asm:3250 */
+        core_do_funny();   /* asm:680, before _move_peeps */
+        _move_peeps();
+        /* _move_peeps asm:4323-4347, after the peep loop: the pass's pre-move
+         * good_pop or a surrender ends the game, _player first (___end_game(1)
+         * lost, else ___end_game(0) won). There is no draw. */
+        if (!core_good_pop(player) || player == surrender_side) core_result = 2;
+        else if (!core_good_pop(not_player) || not_player == surrender_side) core_result = 1;
     }
-    game_turn = (int16_t)((uint16_t)game_turn + 1u);
-    /* asm:740-750: a temporary view (_set_temp_view) lapses after 10 turns.
-     * The original also lapses it while a button is held; the port has no
-     * held-button state, so only the countdown applies. */
+    /* asm:739-750, after _move_peeps (which redirects view_who): a temporary
+     * view (_set_temp_view) lapses after 10 turns. The original also lapses
+     * it while a button is held; the port has no held-button state, so only
+     * the countdown applies. */
     if (view_timer && !--view_timer) view_who = old_view_who;
-    core_do_funny();   /* asm:680, before _move_peeps */
-    _move_peeps();
-    /* _move_peeps asm:4323-4347, after the peep loop: the pass's pre-move
-     * good_pop or a surrender ends the game, _player first (___end_game(1)
-     * lost, else ___end_game(0) won). There is no draw. */
-    if (!core_good_pop(player) || player == surrender_side) core_result = 2;
-    else if (!core_good_pop(not_player) || not_player == surrender_side) core_result = 1;
+    /* asm:752-760, outside the pause branch and before _get_message(0)
+     * (asm:1010): at game turn 4096 place type _start_seed&3 (3: none),
+     * every frame while the turn stays 4096 (paused) until both slots fill. */
+    if (game_turn == 0x1000) core_place_funny(start_seed & 3, 0);
     /* Preserve the C population/result timing; never modify terrain mid-movement. */
     if (core_result) core_clear_terrain_mailboxes();
     else core_consume_terrain_mailboxes();
-    /* asm:752-760: at game turn 4096 place type _start_seed&3 (3: none). */
-    if (game_turn == 0x1000) core_place_funny(start_seed & 3, 0);
 }
 
 static void game_render(void)

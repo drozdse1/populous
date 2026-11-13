@@ -586,7 +586,7 @@ asm:6695-6698 `_join_battle`) and the `occupant < 208` encounter test in
 | `modules/02_rules.c:508` `core_join_battle` raw `+6` partner `<0`, `>=no_peeps`, `>=208` | asm:6676-6683 `MOVE.W (6,A0)`, `MULS #22`: none | A corrupt `+6` would write outside the record table | None in play: `_set_battle` always stores a real slot |
 | `modules/02_rules.c:532-534` `core_join_forces` slot/owner bounds | `_join_forces` asm:5540-5560: none | Same as above | None in play |
 | `modules/02_rules.c:150` `core_remove` exact-8 partner `<208` | `_zero_population` asm:5652-5658: none | Raw `+6` index | None in play |
-| `modules/02_rules.c:155,157,571,599-602` and `180-181,221` cell `0..4095` | asm:5665-5684, 4438-4449, 6604-6656: none | `map_who` has 4096 bytes; positions/departures stay on the map | None in play |
+| `core_remove`, `core_move`, `core_battle_over`, `core_valid_move`, `core_magnet_direction`, `core_queue_terrain_raise` cell `0..4096`; funny cells `0..4095` | asm:5665-5684, 4438-4617, 6207ff, 20912-20954, 4912-5060, 3491-3543: none | Cell 4096 (the `_place_people` fallback) is legal and goes through the A4 alias helpers (`core_who`, `core_bk2`, `core_steps`, `core_vertex_index`); other cells would leave the A4 area | None in play: from 4096 every destination is below 4096 |
 | `modules/02_rules.c:374-380` `core_battle_over` slot/owner/position/population guards, and fallback `:493` | `_battle_over` asm:6207ff: none | Indices; the fallback zeroes the negative word as the source always does | None in play: `core_battle` only calls it with one positive winner and a nonpositive enemy-owned loser |
 | `modules/02_rules.c:186,222` funny type `0..2` | `_funny` table asm:24161-24171 | Table index | None in play |
 | `modules/02_rules.c:720` `core_ai_slot` | AI leader reads: none | Index | None in play |
@@ -999,7 +999,24 @@ with the original 16-bit sum and floor shift (asm:1440-1452). The enemy fallback
 starts at logical cell 4096 like the original (asm:7823-7838): `_map_blk[4096]` is
 `_map_alt[0]` and `_map_who[4096]` is the high byte of `_build_count`, so with land
 on cell 0 and a count below 256 an enemy is placed off-map at 4096. No level.dat
-start and no fresh custom start reaches that (generation adds at least 299 raises). Preferred placement
+start reaches it; a custom start only when the 16-bit `_build_count` wraps
+(generation adds at least 299 raises, `_clear_map` never resets it, only
+`_do_raise_point`/`_do_lower_point` clear it, asm:7110/7201).
+
+In play such a walker (column 0, row 64) behaves as in the original:
+`_valid_move` has no source bound (asm:20912-20954), so from 4096 the deltas
+-64/-63 lead back onto the map and a zero delta is valid; the magnet uses
+`pos&63`/`pos ASR 6` (asm:4912-5060); a water raise request queues vertex
+(0,64) (asm:3491-3543); the explorer may settle a town on 4096 (`_check_life`
+sees the offsets 0,-64,-63,-128,-126). The byte/word views of cell 4096 are
+composed big-endian: `_map_who[4096]` is the high byte of `_build_count`,
+`_map_bk2[4096]` the high byte of `_map_steps[0]`, `_map_steps[4096]` the
+word over `_map_who[0..1]`, and `_one_block_flat`'s vertex row 65 the words
+over `_map_blk[0..]` (`modules/02_rules.c` "Cell 4096", test `--offmap-cell`).
+Not ported: a city at 4096 is impossible (at most 125 life), but a ruined
+"city" whose `_map_bk2[4096]` alias reads 42 would let `_battle_over`'s
+unguarded city loop write cells 4097..4226 (aliases into `_map_alt`/`_map_steps`);
+the port skips those cells. The paused overview does not plot the 4096 peep. Preferred placement
 preserves co-located inhabitants and uses the original last-writer `map_who`
 representative; fallback scans still require an empty cell. The enemy fallback's
 original leader-order quirk is preserved.
@@ -1098,8 +1115,9 @@ saved D4 high word; `_move_peeps`: an unused local), so the port passes 0
 writes outside `_map_who`, are not written. Frame `$44` lies beyond the
 13-frame sheet (the original would read past `_sprite_data_32`) and is not
 drawn. Without a loaded sheet the objects still act and are queued, but nothing
-is drawn. The asm checks turn 4096 every frame, also while paused; the port
-checks once per simulation tick.
+is drawn. The turn-4096 check runs every pass, also while paused, after the
+view-timer lapse and before `_get_message` (asm:739-760, 1010), as in the
+asm; a paused pass at turn 4096 therefore fills both slots on two frames.
 
 ## Editor mode (`_paint_map`)
 
@@ -1658,6 +1676,22 @@ with its result codes, all against a scripted other side; `tcp-full` and
 scripted terrain commands, a text message and an options change, compare
 state hashes of both processes and then check the "gone off line" fallback
 after the other process exits.
+
+Frame order and RNG (static check against the asm, no Amiga trace exists):
+every runtime `___newrand` call site (asm: `_where_do_i_go` 4644, `_do_battle`
+6084/6094, `_do_quake` 7941, `_do_volcano` 8097/8177, `_do_swamp` 8335/8342,
+`_do_place_funny` 8905-8965, `_set_devil_magnet` 9637) matches its C
+counterpart in count, order and conditions. A pass runs as in `_animate`
+(asm:676-1012): `_do_funny`, `_move_peeps` (game turn +1, AI prologue owner
+0 then 1, peeps, end check), view-timer lapse, turn-4096 funny (also while
+paused), then `_get_message` owner 0 then 1. The AI itself draws only in
+`_set_devil_magnet` (passive path with tendency 0); powers draw in the
+consumer: quake one per nonzero `_alt` probe over 2x81, volcano 165 plus one
+per in-map lava cell, swamp 60; `_paint_map` bypasses mana/`_war`/`_pause`/
+permission, a refused power draws nothing, `game_mode` gates none. Tests:
+`--tick-order` (composed asm order vs `game_tick`, byte-exact A4),
+`--ai-rng-order` (draw counts over game modes, gates, owners, targets),
+`test_net protocol` (serial pass at turn 4096 sends the post-funny seed).
 
 `test-level` checks the standalone decoder, numbering, seed wrap and secure file
 loading. Synthetic `test-game` also covers generator RNG checkpoints, placement,

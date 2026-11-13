@@ -224,7 +224,7 @@ static void core_draw_requester(void);
  * the _get_message loop at core_consume_next; core_consume_abort ends it
  * as a nonzero _do_action return does (asm:18189-18197). */
 static SerialLink *core_link;
-static int core_consume_next = -1, core_consume_abort, core_turn_moved;
+static int core_consume_next = -1, core_consume_abort;
 static int core_turn_pending;   /* this turn's _move_peeps ran; the exchange is outstanding */
 /* _serial_off 0 with a cable: fixtures with a zeroed A4 stay single play. */
 static int core_serial_live(void) { return !serial_off && core_link; }

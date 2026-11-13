@@ -395,23 +395,24 @@ static void core_serial_tick(void)
     if (core_consume_next >= 0) {
         /* A blocking _do_action has finished: the rest of the loop. */
         if (core_consume_abort) { core_clear_terrain_mailboxes(); core_consume_next = -1; core_consume_abort = 0; return; }
-        if (!core_consume_from(core_consume_next) && core_turn_moved && game_turn == 0x1000) core_place_funny(start_seed & 3, 0);
+        core_consume_from(core_consume_next);
         return;
     }
     if (!core_turn_pending) {
         if (core_result) return;
-        core_turn_moved = 0;
         if (!pause && !paint_map) {
             game_turn = (int16_t)((uint16_t)game_turn + 1u);
-            if (view_timer && !--view_timer) view_who = old_view_who;
             core_do_funny();
             _move_peeps();
-            core_turn_moved = 1;
             if (!core_good_pop(player) || player == surrender_side) core_result = 2;
             else if (!core_good_pop(not_player) || not_player == surrender_side) core_result = 1;
-            /* Both sides end on the same turn; neither sends its last mailbox. */
-            if (core_result) { core_clear_terrain_mailboxes(); return; }
-        } else if (view_timer && !--view_timer) view_who = old_view_who;
+        }
+        /* asm:739-760, as in game_tick: view-timer lapse after _move_peeps,
+         * then the turn-4096 funny (paused too), both before _get_message. */
+        if (view_timer && !--view_timer) view_who = old_view_who;
+        if (game_turn == 0x1000) core_place_funny(start_seed & 3, 0);
+        /* Both sides end on the same turn; neither sends its last mailbox. */
+        if (core_result) { core_clear_terrain_mailboxes(); return; }
         core_turn_pending = 1; core_turn.pc = 0;
         core_serial_wait_since = SDL_GetTicks();
         core_serial_cancel = 0;
@@ -419,7 +420,7 @@ static void core_serial_tick(void)
     if (core_turn_exchange() == CORE_SERIAL_PENDING) return;
     core_turn_pending = 0;
     if (core_req.kind) { core_consume_next = 0; return; }   /* _serial_message first */
-    if (!core_consume_from(0) && core_turn_moved && game_turn == 0x1000) core_place_funny(start_seed & 3, 0);
+    core_consume_from(0);
 }
 
 /* ---- The other side's packets for y=7/y=8 (no requester in the original) */

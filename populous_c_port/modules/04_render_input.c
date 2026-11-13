@@ -66,7 +66,7 @@ static int core_frame_walker(int person)
 static void core_collision_wait(int person)
 {
     if (peep_population(person) <= 0) return;
-    int other = map_who[peep_position(person)]-1;
+    int other = core_who(peep_position(person))-1;
     if (other == person || other == -1 || peep_frame(other) || other >= 208 ||
         (peep_flags(other)&0x10)) return;
     peep_flags(other) |= 0x20;
@@ -97,7 +97,7 @@ static void _move_peeps(void)
         if (leader < 0 || leader >= no_peeps || leader >= 208) continue;
         if (peep_reference(leader) == -1) continue;
         int position = peep_position(leader);
-        if (!pause && position >= 0 && position < 4096) {
+        if (!pause && position >= 0 && position <= CORE_CELL_OFF) {
             core_target(owner) = position;
             owner_magnet(owner) = position;
         }
@@ -218,7 +218,7 @@ static void _move_peeps(void)
             } else if (peep_population(person)<=0) core_remove(person);
         } else if (flags&0x80) {
             /* asm:4283-4315: any bit-7 value (ordinary remnant 0x80). */
-            if (!map_who[position]) map_who[position] = person+1;
+            if (!core_who(position)) core_set_who(position,person+1);
             unsigned previous = (uint16_t)peep_word(person,6);
             set_peep_word(person,6,(uint16_t)(previous-1u));
             if (!previous || peep_population(person)<=0) core_remove(person);

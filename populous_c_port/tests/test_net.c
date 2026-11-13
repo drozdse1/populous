@@ -269,6 +269,34 @@ static void test_turn_exchange(void)
     pause = 0;
 }
 
+/* _animate asm:752-760 before _get_message (asm:1010-1012): a paused pass at
+ * game turn 4096 places the funny, drawing once, before the 16th-turn
+ * quick exchange sends _seed. */
+static void test_serial_funny_order(void)
+{
+    boot_custom();
+    attach_pair();
+    quick_io = 1; serial_off = 0; player = 0; not_player = 1;
+    for (int slot = 0xd1; slot < 0xd3; ++slot) set_peep_population(slot, 0);
+    start_seed = 0; pause = 1; game_turn = 0x1000; view_timer = 0;
+    uint8_t *own = stats_bytes(0);
+    own[0] = own[1] = own[2] = 0;
+    uint16_t before = seed;
+    uint16_t drawn = (uint16_t)((uint16_t)(before * 0x24a1u) + 0x24dfu) & 0x7fff;
+    memset(&core_turn, 0, sizeof core_turn);
+    core_turn_pending = 0; core_consume_next = -1;
+    uint8_t seen[8];
+    game_tick();
+    assert(peep_population(0xd1) == 1 && peep_position(0xd1) == (drawn % 125) / 2 + 0xfc0);
+    assert(seed == drawn && game_turn == 0x1000);
+    for (int pass = 0; pass < 8 && core_turn_pending; ++pass) game_tick();
+    assert(peer_take(seen, 8) == 2 && core_get_be16(seen) == drawn);
+    serial_link_close(peer);
+    core_serial_attach(NULL);
+    core_turn_pending = 0;
+    serial_off = 1; pause = 0;
+}
+
 /* _try_serial against a scripted other side, and its result codes. */
 static void test_try_serial(void)
 {
@@ -453,7 +481,7 @@ int main(int argc, char **argv)
         test_memory_pair(); test_endpoints(); test_tcp_loopback();
     } else if (argc == 2 && !strcmp(argv[1], "protocol")) {
         assert(SDL_Init(SDL_INIT_VIDEO) == 0);
-        test_compress_and_ring(); test_full_checking(); test_turn_exchange(); test_try_serial();
+        test_compress_and_ring(); test_full_checking(); test_turn_exchange(); test_serial_funny_order(); test_try_serial();
         SDL_Quit();
     } else if (argc == 2 && !strcmp(argv[1], "tcp-full")) test_two_processes(0);
     else if (argc == 2 && !strcmp(argv[1], "tcp-quick")) test_two_processes(1);

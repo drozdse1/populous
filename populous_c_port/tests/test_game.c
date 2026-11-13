@@ -1500,7 +1500,7 @@ static void test_magnet_leaders(void)
             if (sample == 4) set_peep_word(1, 4, 0);
             if (sample == 5) peeps[23] = 1 - owner;
             if (sample == 6) set_peep_word(1, 8, -1);
-            if (sample == 7) set_peep_word(1, 8, 4096);
+            if (sample == 7) set_peep_word(1, 8, 4097);   /* 4096: aliased cell */
             core_leader(owner) = refs[sample];
             core_target(owner) = 650;
             view_who = 17;
@@ -11032,6 +11032,312 @@ static void expect_word(uint8_t *expected, int offset, int16_t value)
 { memcpy(expected + (A4_DISP(offset) - prg_a4_area), &value, 2); }
 static void expect_long(uint8_t *expected, int offset, uint32_t value)
 { memcpy(expected + (A4_DISP(offset) - prg_a4_area), &value, 4); }
+/* ___newrand (asm:19129) as a pure step, for counting draws by state. */
+static uint16_t lcg_step(uint16_t s) { return (uint16_t)((uint16_t)(s * 0x24a1u) + 0x24dfu) & 0x7fff; }
+static uint16_t lcg_steps(uint16_t s, int n) { while (n-- > 0) s = lcg_step(s); return s; }
+/* _animate frame order (asm:676-760, 1010-1012), composed from sub-steps:
+ * [!pause && !paint_map: _do_funny, _move_peeps (game_turn++ asm:3250,
+ * end check asm:4323-4347)], view-timer lapse (asm:739-750), turn-4096
+ * _do_place_funny (asm:752-760, outside the pause branch), _get_message(0)
+ * (asm:1010). Returns the seed right after _move_peeps (or entry seed). */
+static uint16_t asm_order_tick(void)
+{
+    if (!pause && !paint_map) {
+        game_turn = (int16_t)((uint16_t)game_turn + 1u);
+        core_do_funny();
+        _move_peeps();
+        if (!core_good_pop(player) || player == surrender_side) core_result = 2;
+        else if (!core_good_pop(not_player) || not_player == surrender_side) core_result = 1;
+    }
+    uint16_t after_move = seed;
+    if (view_timer && !--view_timer) view_who = old_view_who;
+    if (game_turn == 0x1000) core_place_funny(start_seed & 3, 0);
+    if (core_result) core_clear_terrain_mailboxes();
+    else core_consume_terrain_mailboxes();
+    return after_move;
+}
+static void tick_order_swamp_mail(int owner)
+{
+    stats_bytes(owner)[0] = 4; stats_bytes(owner)[1] = 20; stats_bytes(owner)[2] = 20;
+    core_mana_long(owner) = 100000; stats_power_mask(owner) |= 0x10;
+}
+/* RNG and tick order of one main-loop pass against the asm order. */
+static void test_tick_order(void)
+{
+    static uint8_t start[sizeof prg_a4_area], expect[sizeof prg_a4_area];
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    for (int tick = 0; tick < 4; ++tick) game_tick();
+    assert(!core_result);
+    for (int slot = CORE_FUNNY_FIRST; slot < CORE_FUNNY_END; ++slot) set_peep_population(slot, 0);
+    start_seed = 0;                 /* funny type 0: one draw, edge 0 */
+    game_turn = 0x0fff;
+    pause = paint_map = 0;
+    tick_order_swamp_mail(player);
+    memcpy(start, prg_a4_area, sizeof start);
+
+    /* Case 1: turn 4096 frame with a pending swamp. _do_place_funny's draw
+     * precedes the 60 swamp draws of _get_message. */
+    uint16_t moved = asm_order_tick();
+    assert(!core_result && game_turn == 0x1000);
+    assert(peep_population(CORE_FUNNY_FIRST) == 1);
+    assert(peep_position(CORE_FUNNY_FIRST) == (lcg_step(moved) % 125) / 2 + 0xfc0);
+    assert(seed == lcg_steps(moved, 61));
+    memcpy(expect, prg_a4_area, sizeof expect);
+    memcpy(prg_a4_area, start, sizeof start);
+    game_tick();
+    assert(!memcmp(expect, prg_a4_area, sizeof expect));
+
+    /* Case 2: paused at turn 4096. The pass still places funnies, one per
+     * frame into $D1, $D2, then none (no draw); the swamp is refused by
+     * _pause without a draw. */
+    memcpy(prg_a4_area, start, sizeof start);
+    game_turn = 0x1000; pause = 1;
+    uint8_t paused[sizeof prg_a4_area];
+    memcpy(paused, prg_a4_area, sizeof paused);
+    for (int frame = 0; frame < 3; ++frame) {
+        uint16_t before = seed;
+        asm_order_tick();
+        assert(seed == lcg_steps(before, frame < 2 ? 1 : 0));
+        assert(peep_population(CORE_FUNNY_FIRST + (frame < 2 ? frame : 1)) == 1);
+    }
+    assert(game_turn == 0x1000);
+    memcpy(expect, prg_a4_area, sizeof expect);
+    memcpy(prg_a4_area, paused, sizeof paused);
+    for (int frame = 0; frame < 3; ++frame) game_tick();
+    assert(!memcmp(expect, prg_a4_area, sizeof expect));
+
+    /* Case 3: the view timer lapses after _move_peeps. With no leader, a
+     * walker standing on the magnet becomes leader and claims an empty
+     * view_who (_move_magnet_peeps, tendency 0); the lapse then
+     * restores old_view_who. */
+    int walker = -1, side = not_player;
+    memcpy(prg_a4_area, start, sizeof start);
+    for (int person = 0; person < no_peeps; ++person)
+        if (peeps[person * 22 + 1] == side && peep_population(person) > 0 && (peep_flags(person) & 2)) { walker = person; break; }
+    assert(walker >= 0);
+    game_turn = 0x0100;
+    core_leader(side) = 0; core_tendency(side) = 0;
+    assert(set_peep_reference(walker, -1));
+    set_peep_frame(walker, 0x7ff0);   /* frame wraps: the walker moves this pass */
+    core_target(side) = peep_position(walker);
+    view_who = 0; old_view_who = 0; view_timer = 1;
+    memcpy(paused, prg_a4_area, sizeof paused);
+    game_turn = (int16_t)((uint16_t)game_turn + 1u);
+    core_do_funny();
+    _move_peeps();
+    assert(view_who != 0);          /* _move_peeps wrote view_who this pass */
+    memcpy(prg_a4_area, paused, sizeof paused);
+    asm_order_tick();
+    assert(view_timer == 0 && view_who == 0);
+    memcpy(expect, prg_a4_area, sizeof expect);
+    memcpy(prg_a4_area, paused, sizeof paused);
+    game_tick();
+    assert(!memcmp(expect, prg_a4_area, sizeof expect));
+}
+/* Draws between two _seed values (LCG period 2^15); -1 if not reached. */
+static int lcg_distance(uint16_t from, uint16_t to)
+{
+    for (int count = 0; count < 0x8000; ++count, from = lcg_step(from)) if (from == to) return count;
+    return -1;
+}
+static void ai_rng_fixture(int height)
+{
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    start_state();
+    for (int row = 0; row <= 64; ++row)
+        for (int column = 0; column <= 64; ++column) core_set_vertex(column, row, height);
+    memset(map_blk, 15, 4096);
+    mana_quake_cost = 2500; mana_swamp_cost = 1500; mana_volcano_cost = 4000;
+    for (int owner = 0; owner < 2; ++owner) {
+        core_mana_long(owner) = 100000;
+        stats_power_mask(owner) = 0x1ff;
+        stats_build_mode(owner) = 0;
+    }
+    seed = 0x1234; core_result = 0; player = 0; not_player = 1;
+}
+/* Draws one owner's mailbox command costs in _get_message (asm:17932-18216). */
+static int ai_rng_consume(int owner, int command, int x, int y)
+{
+    stats_bytes(owner)[0] = (uint8_t)command;
+    stats_bytes(owner)[1] = (uint8_t)x; stats_bytes(owner)[2] = (uint8_t)y;
+    uint16_t before = seed;
+    core_consume_terrain_mailboxes();
+    return lcg_distance(before, seed);
+}
+/* KI-RNG: _set_devil_magnet draws once on the passive path with tendency 0
+ * (asm:9612-9637); the powers draw only in the _get_message consumer:
+ * quake one per nonzero _alt probe over 2x81 (asm:7932-7941), volcano
+ * 165 raise draws plus one per in-map lava cell (asm:8085-8177), swamp
+ * 2x30 (asm:8320-8342). _paint_map bypasses the mana/_war/_pause/permission
+ * gates (asm:7865-7880, 8048-8062, 8297-8311); a refused power draws
+ * nothing; game_mode gates none of them. Owner 0 is consumed first. */
+static void test_ai_rng_order(void)
+{
+    GraphicsAssets *assets = game_assets;
+    game_assets = NULL;
+    static const int modes[] = {0, 1, 2, 4, 8, 0xc, 0x10, 0x1f};
+    for (unsigned m = 0; m < sizeof modes / sizeof *modes; ++m)
+        for (int gate = 0; gate < 6; ++gate)
+            for (int owner = 0; owner < 2; ++owner) {
+                /* gate: 0 open, 1 pause, 2 war, 3 mana below cost, 4 mask
+                 * cleared, 5 all closed but _paint_map. */
+                int open = gate == 0 || gate == 5;
+                static const int commands[3] = {3, 4, 6};
+                static const uint16_t masks[3] = {8, 0x10, 0x40};
+                for (int c = 0; c < 3; ++c) {
+                    ai_rng_fixture(200);
+                    game_mode = (int16_t)modes[m];
+                    int32_t cost = (int32_t)(c == 0 ? mana_quake_cost : c == 1 ? mana_swamp_cost : mana_volcano_cost);
+                    if (gate == 1 || gate == 5) pause = 1;
+                    if (gate == 2 || gate == 5) war_flag = 1;
+                    if (gate == 3 || gate == 5) core_mana_long(owner) = (uint32_t)(cost - 1);
+                    if (gate == 4 || gate == 5) stats_power_mask(owner) &= (uint16_t)~masks[c];
+                    if (gate == 5) paint_map = 1;
+                    int expected = !open ? 0 : c == 0 ? 162 : c == 1 ? 60 : 165 + 64;
+                    assert(ai_rng_consume(owner, commands[c], 20, 20) == expected);
+                    if (open && gate == 0) assert(core_mana_long(owner) == (uint32_t)(100000 - cost));
+                }
+            }
+    /* Quake on zero land probes nothing; volcano lava clips to the map. */
+    ai_rng_fixture(0);
+    assert(ai_rng_consume(1, 3, 20, 20) == 0);
+    ai_rng_fixture(200);
+    assert(ai_rng_consume(1, 6, 60, 60) == 165 + 16);
+    ai_rng_fixture(200);
+    assert(ai_rng_consume(1, 6, 70, 70) == 165);
+    /* Raise, lower, magnet and _do_action tendency/war/flood/knight draw nothing. */
+    static const int quiet[][3] = {{1, 20, 20}, {2, 20, 20}, {5, 20, 20},
+                                   {14, 2, 1}, {14, 0, 3}, {14, 0, 4}, {14, 0, 5}};
+    for (unsigned q = 0; q < sizeof quiet / sizeof *quiet; ++q) {
+        ai_rng_fixture(4);
+        assert(ai_rng_consume(1, quiet[q][0], quiet[q][1], quiet[q][2]) == 0);
+    }
+    /* Owner 0 before owner 1: a swamp and a volcano on the same frame equal
+     * the swamp applied first, then the volcano. */
+    static uint8_t expect[sizeof prg_a4_area];
+    ai_rng_fixture(200);
+    stats_bytes(1)[0] = 6; stats_bytes(1)[1] = 10; stats_bytes(1)[2] = 10;
+    stats_bytes(0)[0] = 4; stats_bytes(0)[1] = 12; stats_bytes(0)[2] = 12;
+    uint8_t both[sizeof prg_a4_area];
+    memcpy(both, prg_a4_area, sizeof both);
+    uint16_t entry = seed;
+    stats_bytes(1)[0] = 0;
+    core_consume_terrain_mailboxes();
+    assert(lcg_distance(entry, seed) == 60);
+    stats_bytes(1)[0] = 6; stats_bytes(1)[1] = 10; stats_bytes(1)[2] = 10;
+    stats_bytes(0)[0] = 0;
+    core_consume_terrain_mailboxes();
+    assert(lcg_distance(entry, seed) == 60 + 229);
+    stats_bytes(0)[0] = stats_bytes(1)[0] = 0;
+    memcpy(expect, prg_a4_area, sizeof expect);
+    memcpy(prg_a4_area, both, sizeof both);
+    core_consume_terrain_mailboxes();
+    stats_bytes(0)[0] = stats_bytes(1)[0] = 0;
+    assert(!memcmp(expect, prg_a4_area, sizeof expect));
+    /* _set_devil_magnet: one draw on the passive path only with tendency 0,
+     * none with a tendency, none on the active path (towns >= 2*rating+15
+     * and game_turn%90 >= rating+10). */
+    for (int owner = 0; owner < 2; ++owner)
+        for (int tendency = 0; tendency < 2; ++tendency)
+            for (int active = 0; active < 2; ++active) {
+                ai_rng_fixture(4);
+                stats_rating(owner) = 3;
+                core_tendency(owner) = (int16_t)tendency;
+                game_turn = active ? 89 : 0;
+                stats_town_tally(owner) = (int16_t)(active ? 21 : 0);
+                uint16_t before = seed;
+                core_set_devil_magnet(owner);
+                assert(lcg_distance(before, seed) == (!active && !tendency));
+            }
+    /* _move_peeps asm:3250-3275: the AI prologue draws before any peep, owner
+     * 0 then owner 1; each passive pick sets the latch, so _devil_effect
+     * (re-read latch) is skipped. */
+    game_assets = assets;
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    for (int owner = 0; owner < 2; ++owner) {
+        stats_build_latch(owner) = 0; core_tendency(owner) = 0;
+        stats_rating(owner) = 10; game_turn = 0;
+    }
+    uint16_t pass_entry = seed;
+    _move_peeps();
+    assert(stats_cmd_byte(0) == 14 && stats_cmd_byte(1) == 14);
+    assert(stats_cmd_x(0) == lcg_step(pass_entry) % 3 + 1);
+    assert(stats_cmd_x(1) == lcg_steps(pass_entry, 2) % 3 + 1);
+    assert(stats_build_latch(0) == 1 && stats_build_latch(1) == 1);
+}
+/* An enemy walker on the off-map cell 4096 (the _place_people fallback,
+ * asm:7823-7838) during play. Cell 4096 is column 0, row 64. */
+static void offmap_fixture(int tendency)
+{
+    memset(prg_a4_area, 0, sizeof prg_a4_area);
+    start_state();
+    memset(map_blk, 15, 4096);
+    map_alt[0] = 15;                 /* _map_blk[4096] */
+    no_peeps = 1;
+    peep_flags(0) = 2; peeps[1] = 1; peeps[2] = peep_weapon(0) = 1;
+    set_peep_population(0, 45);
+    set_peep_position(0, 4096);
+    core_tendency(1) = (int16_t)tendency;
+    core_target(1) = 650;
+    seed = 321;
+}
+static void test_offmap_cell(void)
+{
+    /* _valid_move asm:20912-20954: no source bound; zero delta first. */
+    offmap_fixture(0);
+    map_blk[3968] = 47;
+    assert(core_valid_move(4096, 0) == 0);
+    assert(core_valid_move(4096, -64) == 0 && core_valid_move(4096, -63) == 0);
+    assert(core_valid_move(4096, -128) == 2);
+    assert(core_valid_move(4096, -65) == 1 && core_valid_move(4096, -1) == 1);
+    assert(core_valid_move(4096, 1) == 1 && core_valid_move(4096, 64) == 1);
+    assert(core_valid_move(4097, 0) == 1);   /* host guard, unreachable */
+
+    /* Magnet (asm:4912-5060): toward 650 (column 10, row 10) dx +1, dy -1,
+     * primary -63 onto 4033. _move_explorer (asm:4438-4617): the old claim
+     * (heading 0: cell 4096 = _build_count high byte) is released, the
+     * departure word _map_steps[4096] is the big-endian word over
+     * _map_who[0..1], then cell 4096 is claimed again. */
+    offmap_fixture(0);
+    build_count = 0x0145;
+    assert(core_magnet_direction(0) == -63);
+    core_move(0);
+    assert(peep_position(0) == 4033 && peep_heading(0) == -63);
+    assert(map_who[0] == 0 && map_who[1] == 1);
+    assert((uint16_t)build_count == 0x0145);
+    /* The next departure releases its 4096 claim (previous = 4033+63). */
+    core_move(0);
+    assert((uint16_t)build_count == 0x0045);
+    assert(peep_position(0) < 4096);
+
+    /* Explorer (asm:4622-4901): ray 0 keeps cell 4096; _check_life over the
+     * five valid offsets 0,-64,-63,-128,-126 gives 50+5*15 = 125, so it
+     * settles there (asm:4564-4589): frame 32+125*10/305 = 36. _set_town
+     * (asm:5865-6062) turns the five cells to 32 (_map_alt[0] for 4096) and
+     * stores the frame in _map_bk2[4096], the high byte of _map_steps[0]. */
+    offmap_fixture(1);
+    map_step_word(0) = 0x0077;
+    core_move(0);
+    assert(peep_flags(0) == 1 && peep_position(0) == 4096 && peep_frame(0) == 36);
+    assert(core_settlements == 1 && (uint16_t)build_count == 0x0100);
+    assert(map_alt[0] == 32 && map_blk[4032] == 32 && map_blk[4033] == 32 &&
+           map_blk[3968] == 32 && map_blk[3970] == 32 && map_blk[4034] == 15);
+    assert((uint16_t)map_step_word(0) == 0x2477);
+    assert(core_check_life(1, 4096) == 125);
+
+    /* _one_block_flat (asm:9148-9310) at row 64 reads vertex row 65, the
+     * words over _map_blk[0..3]: 1+1+2+1 = 5, remainder 1, level 1, so the
+     * x-major scan lowers (0,65). */
+    offmap_fixture(0);
+    core_set_vertex(0, 64, 1); core_set_vertex(1, 64, 1);
+    map_blk[0] = 0; map_blk[1] = 2; map_blk[2] = 0; map_blk[3] = 1;
+    core_mana_long(1) = 100; stats_power_mask(1) = 1;
+    core_one_block_flat(4096, 1);
+    assert(stats_cmd_byte(1) == 2 && stats_cmd_x(1) == 0 && stats_cmd_y(1) == 65);
+    assert(stats_build_latch(1) == 1);
+}
 /* _do_quake asm:7863-8042 and _do_volcano asm:8046-8267 bound no target.
  * Quake probes _alt[y*65+x] (asm:7932-7940 words from A4 0xae86) for the
  * 9x9 square; rows past the vertex map read _map_blk (0xcf88, fixture
@@ -11918,8 +12224,9 @@ static void assert_war_command(int owner, int position)
  * ======================================================================== */
 static void test_war_terrain_bounds(void)
 {
-    /* Cell producer cannot accept vertex-only coordinate 64 or unsafe owners. */
-    const int invalid[][2] = {{-1, 650}, {2, 650}, {255, 650}, {0, -1}, {1, 4096}, {0, 32767}};
+    /* Cell producer rejects unsafe owners and unreachable cells; cell 4096
+     * (row 64, the _place_people fallback) is admitted as in asm:3491-3543. */
+    const int invalid[][2] = {{-1, 650}, {2, 650}, {255, 650}, {0, -1}, {1, 4097}, {0, 32767}};
     for (unsigned sample = 0; sample < sizeof invalid / sizeof invalid[0]; ++sample) {
         war_terrain_fixture();
         uint8_t before[sizeof prg_a4_area];
@@ -13264,7 +13571,7 @@ static void test_heading_navigation_targets(void)
 /* Heading navigation bounds. */
 static void test_heading_navigation_bounds(void)
 {
-    const int bad_cells[] = {INT16_MIN, -1, 4096, INT16_MAX};
+    const int bad_cells[] = {INT16_MIN, -1, 4097, INT16_MAX};   /* 4096: aliased fallback cell */
     for (unsigned sample = 0; sample < sizeof bad_cells / sizeof bad_cells[0]; ++sample) {
         heading_navigation_fixture(0);
         set_peep_word(1, 8, bad_cells[sample]);
@@ -13328,7 +13635,7 @@ static void test_heading_navigation_opaque(void)
                 memcpy(before, prg_a4_area, sizeof before);
                 assert(core_magnet_direction(0) == 999);
                 assert(a4_same(before));
-                core_target(owner) = 4096;
+                core_target(owner) = 4097;   /* 4096 is the aliased fallback cell */
                 memcpy(before, prg_a4_area, sizeof before);
                 assert(core_magnet_direction(0) == 999);
                 assert(a4_same(before));
@@ -14400,13 +14707,13 @@ static void test_heading_battle_guards(void)
             set_peep_word(1, 8, -1);
             break;
         case 10:
-            set_peep_word(1, 8, 4096);
+            set_peep_word(1, 8, 4097);   /* 4096 is the aliased fallback cell */
             break;
         case 11:
             set_peep_word(2, 8, -1);
             break;
         case 12:
-            set_peep_word(2, 8, 4096);
+            set_peep_word(2, 8, 4097);
             break;
         }
         uint8_t before[sizeof prg_a4_area];
@@ -16586,7 +16893,7 @@ static void test_water_rescue_admission(void)
 static void test_water_rescue_bounds(void)
 {
     const int invalid[][2] = {{-1, 650}, {2, 650},  {255, 650}, {INT_MAX, 650}, {INT_MIN, 650},
-                              {0, -1},   {1, 4096}, {0, 32767}, {1, INT_MIN},   {0, INT_MAX}};
+                              {0, -1},   {1, 4097}, {0, 32767}, {1, INT_MIN},   {0, INT_MAX}};
     for (int war = 0; war < 2; ++war)
         for (unsigned sample = 0; sample < sizeof invalid / sizeof invalid[0]; ++sample) {
             war_terrain_fixture();
@@ -16597,6 +16904,16 @@ static void test_water_rescue_bounds(void)
             core_queue_terrain_raise(invalid[sample][0], invalid[sample][1]);
             assert(!memcmp(expected, prg_a4_area, sizeof expected));
         }
+    /* asm:3491-3543 has no position bound: the off-map cell 4096 of the
+     * _place_people fallback queues x = 4096&63 = 0, y = 4096 ASR 6 = 64. */
+    for (int war = 0; war < 2; ++war) {
+        war_terrain_fixture();
+        A4_WORD(0xae80) = war;
+        A4_WORD(0x82bc) = A4_WORD(0x82bc + 46) = 1;
+        core_queue_terrain_raise(1, 4096);
+        assert(stats_bytes(1)[0] == 1 && stats_bytes(1)[1] == 0 && stats_bytes(1)[2] == 64);
+        assert(stats_build_latch(1) == 1);
+    }
     const int positions[] = {0, 63, 4032, 4095};
     for (int owner = 0; owner < 2; ++owner)
         for (unsigned sample = 0; sample < 4; ++sample) {
@@ -23209,6 +23526,18 @@ int main(int argc, char **argv)
         test_ai_null_town();
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--offmap-cell")) {
+        test_offmap_cell();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--ai-rng-order")) {
+        test_ai_rng_order();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--tick-order")) {
+        test_tick_order();
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--ai-toggle")) {
         test_ai_toggle();
         return 0;
@@ -23426,6 +23755,9 @@ int main(int argc, char **argv)
     test_volcano_cast();
     test_volcano_lava();
     test_ai_toggle();
+    test_tick_order();
+    test_ai_rng_order();
+    test_offmap_cell();
     test_ai_edge_targets();
     test_swamp_cast();
     test_swamp_hazard();
