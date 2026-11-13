@@ -590,6 +590,40 @@ static void test_encounter_high_slot_skipped(void)
     SDL_Quit();
 }
 
+/* _move_explorer asm:4450-4509: the own-cell lowering request on block 0x42
+ * is skipped when game_mode & $c (asm:4474-4476, AND.W #$c BNE LAB_4153A);
+ * everything else in the move is unchanged. */
+static void test_lowering_request_game_mode_lock(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    static uint8_t ref[sizeof prg_a4_area], before[sizeof prg_a4_area];
+    int position = 50 * 64 + 50;
+    for (int owner = 0; owner < 2; ++owner)
+        for (int lock = 0; lock <= 12; lock += 4) {
+            for (int run = 0; run < 2; ++run) {
+                setup_colocated_walkers(owner);
+                map_who[position] = 0;
+                map_blk[position] = 0x42;
+                A4_WORD(0x82bc + owner * 46) = 1;
+                A4_WORD(0x82be + owner * 46) = 0;
+                game_mode = run ? lock : 0;
+                memcpy(before, prg_a4_area, sizeof before);
+                core_move(0);
+                game_mode = 0;
+                uint8_t *mail = A4_DISP(0x82b6 + owner * 46);
+                if (!run) {
+                    assert(mail[0] == 2 && mail[1] == 50 && mail[2] == 50 &&
+                           !A4_WORD(0x82be + owner * 46));
+                    memcpy(ref, prg_a4_area, sizeof ref);
+                    memcpy(ref + (mail - prg_a4_area), before + (mail - prg_a4_area), 3);
+                } else if (lock)
+                    assert(!memcmp(ref, prg_a4_area, sizeof ref));
+            }
+        }
+    _closeall();
+    SDL_Quit();
+}
+
 /* _join_forces (asm:5540-5640) and _join_battle (asm:6663-6765) have no
  * population or partner-state guards. A nonpositive record is skipped by the
  * main loop (asm:3459-3462) without releasing its claim, so a walker can meet
@@ -8508,6 +8542,86 @@ static void funny_clear(void)
     for (int slot = 0xd1; slot < 0xd3; ++slot)
         memset(peeps + slot * 22, 0, 22);
     memset(map_who, 0, 4096);
+}
+/* _do_funny asm:8820-8841: a trail cell naming any slot calls
+ * _zero_population (asm:5645-5723) on it, also another funny object. With
+ * flags 2 it clears only +4, both claims and view_who; leaders are kept. */
+static void test_funny_kills_funny(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    funny_clear();
+    memset(map_blk, 15, 4096);
+    memset(map_bk2, 0, 4096);
+    int start = 40 * 64 + 20, cell = start - 64;
+    core_place_funny(0, 3);
+    map_who[0] = 0;
+    set_peep_word(0xd1, 8, start);
+    set_peep_word(0xd1, 12, 7);
+    map_who[start] = 0xd2;
+    uint8_t *victim = peeps + 0xd2 * 22;
+    victim[0] = 2; victim[1] = 0; victim[2] = 4; victim[3] = 0; victim[20] = 0; victim[21] = 1;
+    set_peep_word(0xd2, 4, 1);
+    set_peep_word(0xd2, 6, 3);
+    set_peep_word(0xd2, 8, cell);
+    set_peep_word(0xd2, 10, 65);
+    set_peep_word(0xd2, 12, 5);
+    map_who[cell] = 0xd3;
+    map_who[cell - 65] = 0xd3;
+    view_who = 0xd3;
+    core_leader(0) = 5; core_leader(1) = 6;
+    core_do_funny();
+    assert(peep_word(0xd1, 4) == 1 && peep_word(0xd1, 8) == cell && peep_word(0xd1, 12) == 0 &&
+           peep_word(0xd1, 6) == 1 && peep_word(0xd1, 10) == -64);
+    assert(map_who[cell] == 0xd2 && !map_who[start] && !map_who[cell - 65] && !view_who);
+    assert(map_bk2[cell] == 50 && map_bk2[cell - 1] == 51 && map_bk2[cell + 1] == 52);
+    /* Victim: only +4 cleared; the zeroed slot is skipped later in the pass. */
+    assert(peep_word(0xd2, 4) == 0 && victim[0] == 2 && peep_word(0xd2, 6) == 3 &&
+           peep_word(0xd2, 8) == cell && peep_word(0xd2, 10) == 65 && peep_word(0xd2, 12) == 5);
+    assert(core_leader(0) == 5 && core_leader(1) == 6);
+    /* Foreign claims stay: the mover's own cell (asm:8674-8686 CMP/BNE) and
+     * the victim's cell, departure and view_who (asm:5665-5703). */
+    funny_clear();
+    int away = 10 * 64 + 10;
+    core_place_funny(0, 3);
+    map_who[0] = 0;
+    set_peep_word(0xd1, 8, start);
+    set_peep_word(0xd1, 12, 7);
+    map_who[start] = 9;
+    victim[0] = 2; victim[2] = 4; victim[21] = 1;
+    set_peep_word(0xd2, 4, 1);
+    set_peep_word(0xd2, 8, away);
+    set_peep_word(0xd2, 10, 65);
+    map_who[cell] = 0xd3;
+    map_who[away] = 4;
+    map_who[away - 65] = 5;
+    view_who = 7;
+    core_do_funny();
+    assert(map_who[start] == 9 && map_who[cell] == 0xd2 && map_who[away] == 4 &&
+           map_who[away - 65] == 5 && view_who == 7 && peep_word(0xd2, 4) == 0);
+    /* Type 1 also turns 32 into 53 (asm:8770-8794); type 2 skips 16
+     * (asm:8796-8803) and writes 47+index elsewhere. */
+    for (int type = 1; type <= 2; ++type) {
+        funny_clear();
+        memset(map_blk, 15, 4096);
+        core_place_funny(type, 3);
+        map_who[0] = 0;
+        set_peep_word(0xd1, 8, start);
+        set_peep_word(0xd1, 12, 7);
+        map_who[start] = 0xd2;
+        int now = start + (type == 1 ? -65 : 65);
+        if (type == 1) map_blk[now] = 32;
+        else map_blk[now + 64] = 16;
+        core_do_funny();
+        assert(peep_word(0xd1, 8) == now && map_who[now] == 0xd2);
+        if (type == 1)
+            assert(map_blk[now] == 53 && map_blk[now - 64] == 53 && map_blk[now - 1] == 53);
+        else
+            assert(map_blk[now] == 47 && map_blk[now + 64] == 16 && map_blk[now + 1] == 49);
+    }
+    funny_clear();
+    _closeall();
+    SDL_Quit();
 }
 /* Funny objects. */
 static void test_funny_objects(void)
@@ -17892,6 +18006,115 @@ static void test_make_level(void)
     assert(core_make_level(0, 1) == 0 && !memcmp(expected, prg_a4_area, 65536));
     puts("make_level: PASS");
 }
+/* Direct calls for the game_mode locks the _move_peeps gate cases never
+ * reach (the AI latch comes first). _one_block_flat asm:9171-9173 (bit 2 ->
+ * return) and 9270-9275 (bit 3 skips only a lower, scan continues);
+ * the latch gate asm:9159-9163 directly as well;
+ * _make_level asm:9058-9061 (rock 0x2f under bit 3 falls to the height test)
+ * and 9045-9052 (x/y > 64 skipped, 64 itself read). */
+static void test_build_game_mode_locks(void)
+{
+    static uint8_t expected[65536];
+    /* Raise (corners 1,1,1,0) blocked by bit 2, still queued under bit 3. */
+    for (int lock = 4; lock <= 8; lock += 4) {
+        setup_phased(100, 0);
+        walker_extras_vertices(1);
+        core_set_vertex(11, 11, 0);
+        A4_LONG(0x9a02) = 20;
+        A4_WORD(0x82c4) = 1;
+        game_mode = lock;
+        memcpy(expected, prg_a4_area, sizeof expected);
+        if (lock == 8) {
+            AI_EXPECT(0x82b6)[0] = 1; AI_EXPECT(0x82b7)[0] = 11; AI_EXPECT(0x82b8)[0] = 11;
+            ai_expect_word(expected, 0x82be, 1);
+        }
+        core_one_block_flat(650, 0);
+        assert(!memcmp(expected, prg_a4_area, sizeof expected));
+        game_mode = 0;
+    }
+    /* _one_block_flat asm:9159-9163: a set latch returns before anything. */
+    setup_phased(100, 0);
+    walker_extras_vertices(1);
+    core_set_vertex(11, 11, 0);
+    A4_LONG(0x9a02) = 20;
+    A4_WORD(0x82c4) = 1;
+    A4_WORD(0x82be) = 1;
+    memcpy(expected, prg_a4_area, sizeof expected);
+    core_one_block_flat(650, 0);
+    assert(!memcmp(expected, prg_a4_area, sizeof expected));
+    /* Lower (corners 2,1,1,1: rem 1, level 1) under bit 3: nothing queued. */
+    setup_phased(100, 0);
+    walker_extras_vertices(1);
+    core_set_vertex(10, 10, 2);
+    A4_LONG(0x9a02) = 1000;
+    A4_WORD(0x82c4) = 1;
+    game_mode = 8;
+    memcpy(expected, prg_a4_area, sizeof expected);
+    core_one_block_flat(650, 0);
+    assert(!memcmp(expected, prg_a4_area, sizeof expected));
+    game_mode = 0;
+    /* _make_level rock under bit 3: no increment; level cell -> next entry. */
+    for (int low = 0; low < 2; ++low) {
+        ai_fixture();
+        A4_WORD(0x82f2) = 1;
+        for (int v = 0; v < 65 * 65; ++v)
+            A4_WORD(0xae86 + v * 2) = 2;
+        map_blk[6 * 64 + 6] = 0x2f;
+        if (low) A4_WORD(0xae86 + (6 * 65 + 6) * 2) = 1;
+        game_mode = 8;
+        memcpy(expected, prg_a4_area, 65536);
+        if (low) ai_expect_mail(expected, 1, 6, 6, 1);
+        assert(core_make_level(650, 1) == !low && !memcmp(expected, prg_a4_area, 65536));
+        game_mode = 0;
+    }
+    /* From (63,63): dx -4/-3 visit y 59..64 (row 64 reads past the map),
+     * skip y 65..67; dx 4/3 (x 67/66) are skipped; dx -2 reaches (61,59). */
+    ai_fixture();
+    A4_WORD(0x82f2) = 1;
+    for (int v = 0; v < 65 * 65; ++v)
+        A4_WORD(0xae86 + v * 2) = 2;
+    A4_WORD(0xae86 + (59 * 65 + 61) * 2) = 1;
+    for (int x = 59; x <= 61; ++x)
+        for (int y = 59; y <= (x == 61 ? 59 : 64); ++y) {
+            uint8_t block = map_blk[y * 64 + x];
+            assert(block != 0x2f && block != 0x42 && block != 0x35);
+        }
+    memcpy(expected, prg_a4_area, 65536);
+    ai_expect_mail(expected, 1, 61, 59, 1);
+    assert(core_make_level(63 * 64 + 63, 1) == 0 && !memcmp(expected, prg_a4_area, 65536));
+    puts("build_game_mode_locks: PASS");
+}
+/* _set_town asm:5865-6063 (add, town not city): ring 0..16 clears bk2 for
+ * 0..8 and colours 15 -> 31+owner; then asm:6041-6056 copies the frame into
+ * bk2 only when the town cell itself is 31+owner (CMP.W/BNE). A cell in the
+ * enemy colour keeps bk2 0. */
+static void test_set_town_foreign_cell(void)
+{
+    static uint8_t expected[65536];
+    static const int16_t ring[17] = {0,-64,1,64,-1,-63,65,63,-65,-128,2,128,-2,-126,130,126,-130};
+    int position = 30 * 64 + 30;
+    for (int owner = 0; owner < 2; ++owner)
+        for (int foreign = 0; foreign < 2; ++foreign) {
+            ai_fixture();
+            memset(map_blk, 15, 4096);
+            memset(map_bk2, 7, 4096);
+            peeps[0] = 1; peeps[1] = owner;
+            set_peep_word(0, 4, 50);
+            set_peep_word(0, 8, position);
+            set_peep_word(0, 12, 35);
+            map_blk[position] = foreign ? 32 - owner : 15;
+            memcpy(expected, prg_a4_area, sizeof expected);
+            for (int index = 0; index < 17; ++index) {
+                int cell = position + ring[index];
+                if (index < 9) AI_EXPECT(0xef88)[cell] = 0;
+                if (index || !foreign) AI_EXPECT(0xcf88)[cell] = 31 + owner;
+            }
+            if (!foreign) AI_EXPECT(0xef88)[position] = 35;
+            core_set_town(0, 0);
+            assert(!memcmp(expected, prg_a4_area, sizeof expected));
+        }
+    puts("set_town_foreign_cell: PASS");
+}
 /* _get_message asm:18200-18216 consumers for the AI's opcodes. */
 static void ai_consume_fixture(int opcode, int x, int y)
 {
@@ -18194,6 +18417,8 @@ static void test_computer_ai(void)
     test_computer_effect();
     test_ai_level_parameters();
     test_make_level();
+    test_build_game_mode_locks();
+    test_set_town_foreign_cell();
     test_ai_opcode_magnet();
     test_ai_opcode_action();
     test_ai_opcode_effects();
@@ -22937,6 +23162,14 @@ int main(int argc, char **argv)
             test_merge_into_nonpositive_record();
         else if (!strcmp(argv[2], "encounter-high-slot"))
             test_encounter_high_slot_skipped();
+        else if (!strcmp(argv[2], "lower-lock"))
+            test_lowering_request_game_mode_lock();
+        else if (!strcmp(argv[2], "funny-victim"))
+            test_funny_kills_funny();
+        else if (!strcmp(argv[2], "build-locks"))
+            test_build_game_mode_locks();
+        else if (!strcmp(argv[2], "town-foreign"))
+            test_set_town_foreign_cell();
         else if (!strcmp(argv[2], "friendly"))
             test_friendly_merge_state();
         else if (!strcmp(argv[2], "friendly-reject"))
@@ -23131,11 +23364,13 @@ int main(int argc, char **argv)
     test_battle_frame_render_and_entry();
     test_walker_interpolation();
     test_funny_objects();
+    test_funny_kills_funny();
     test_isometric_match();
     test_colocated_hostile_encounter();
     test_no_hidden_town();
     test_colocated_battle_death();
     test_encounter_high_slot_skipped();
+    test_lowering_request_game_mode_lock();
     test_merge_into_nonpositive_record();
     test_friendly_merge_state();
     test_friendly_merge_metadata_rejection();

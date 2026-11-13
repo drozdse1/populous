@@ -600,6 +600,22 @@ nonpositive record keeps its `map_who` claim because the main loop only skips
 it (asm:3459-3462); the original merges in both cases (selectors
 `--overlap merge-nonpositive`, `--overlap encounter-high-slot`).
 
+Remaining edge branches of the peep rules were checked against the asm with
+`gcov -b` on the real-data default run and pinned by focused tests (all
+matched the original; no code change): a funny object killing the other
+funny slot through `_zero_population` and keeping foreign claims (asm:8674-8686,
+8820-8841, 5645-5723; `--overlap funny-victim`), the own-cell lowering request
+skipped under `game_mode & $c` (asm:4474-4476; `--overlap lower-lock`),
+`_one_block_flat` latch/no-build/only-up gates and `_make_level` rock under
+only-up plus the x/y 64 edge (asm:9159-9175, 9270-9275, 9045-9061;
+`--overlap build-locks`), and `_set_town` on a town cell in the enemy colour
+(asm:6041-6056; `--overlap town-foreign`). Branches still untaken in
+`modules/02_rules.c` town/battle/merge/death/occupancy code are the host
+bounds above or unreachable in play: funny type outside 0..2 and a zero funny
+heading, `core_place_funny` edges 1/2 (no caller), a `map_who` victim
+>= 211, `core_battle_over`'s guard fallback, and a zero move with metadata
+(that path always uses `core_magnet_direction`, which never returns 0).
+
 ## Playable original graphics
 
 `graphics.c` loads `pixels/qaz.pic.indices.u8`, selected `landN` indices/keep masks,
