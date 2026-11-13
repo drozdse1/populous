@@ -569,6 +569,37 @@ copy of weapons into ascending `weapons_order` (lines 16540-16606); the parser
 performs both setup operations. It does not load sprites, decode graphics or
 claim that the presence of these tables makes the preview playable.
 
+### Host bounds the original lacks (peep rules)
+
+The original indexes `_peeps`/`_map_who` with raw words and has no entry
+guards in `_join_forces`, `_join_battle`, `_zero_population` or
+`_battle_over`. The C port keeps only bounds needed for host-memory safety;
+none of them is reached by legal play (all real-data and focused tests run
+unchanged). Not host bounds, because the original has them too: the 32000
+merge cap (`CMP.L #$7d00`/`MOVE.W #$7d00`, asm:5581-5584 `_join_forces`,
+asm:6695-6698 `_join_battle`) and the `occupant < 208` encounter test in
+`_move_explorer` (`CMPI.W #$00d0`, asm:4523).
+
+| C file:line | Original (asm line) | Why kept | Observable difference |
+| --- | --- | --- | --- |
+| `modules/02_rules.c:500-502` `core_join_battle` slot `<0`, `>=no_peeps`, `>=208`; owner `>1` | `_join_battle` asm:6663-6683: none | Index of `_peeps`, `_magnet`, `good_pop` | None in play: callers pass the walker and a `map_who` occupant `<208` with owners 0/1 |
+| `modules/02_rules.c:508` `core_join_battle` raw `+6` partner `<0`, `>=no_peeps`, `>=208` | asm:6676-6683 `MOVE.W (6,A0)`, `MULS #22`: none | A corrupt `+6` would write outside the record table | None in play: `_set_battle` always stores a real slot |
+| `modules/02_rules.c:532-534` `core_join_forces` slot/owner bounds | `_join_forces` asm:5540-5560: none | Same as above | None in play |
+| `modules/02_rules.c:150` `core_remove` exact-8 partner `<208` | `_zero_population` asm:5652-5658: none | Raw `+6` index | None in play |
+| `modules/02_rules.c:155,157,571,599-602` and `180-181,221` cell `0..4095` | asm:5665-5684, 4438-4449, 6604-6656: none | `map_who` has 4096 bytes; positions/departures stay on the map | None in play |
+| `modules/02_rules.c:374-380` `core_battle_over` slot/owner/position/population guards, and fallback `:493` | `_battle_over` asm:6207ff: none | Indices; the fallback zeroes the negative word as the source always does | None in play: `core_battle` only calls it with one positive winner and a nonpositive enemy-owned loser |
+| `modules/02_rules.c:186,222` funny type `0..2` | `_funny` table asm:24161-24171 | Table index | None in play |
+| `modules/02_rules.c:720` `core_ai_slot` | AI leader reads: none | Index | None in play |
+| `modules/02_rules.c:74-80` `core_add_mana` clamp `-250..1999999` | none | Unused helper (no caller); mana paths use original long arithmetic | None |
+
+Removed as unfaithful (they changed reachable play): the population, flag,
+owner-match and partner-state rejections in `core_join_forces` and
+`core_join_battle`. A dying `0x20/0x40` retry walker reaches
+`_move_explorer` without a population test (asm:4249-4260), and a
+nonpositive record keeps its `map_who` claim because the main loop only skips
+it (asm:3459-3462); the original merges in both cases (selectors
+`--overlap merge-nonpositive`, `--overlap encounter-high-slot`).
+
 ## Playable original graphics
 
 `graphics.c` loads `pixels/qaz.pic.indices.u8`, selected `landN` indices/keep masks,

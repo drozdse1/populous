@@ -562,6 +562,77 @@ static void test_no_hidden_town(void)
     SDL_Quit();
 }
 
+/* Walker cell naming slot >= 208 (asm:4510-4529, CMPI #$d0 BGE LAB_415DC):
+ * no encounter; the move proceeds exactly as with an unclaimed cell. */
+static void test_encounter_high_slot_skipped(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    int position = 50 * 64 + 50;
+    static uint8_t ref[sizeof prg_a4_area];
+    setup_colocated_walkers(0);
+    map_who[position] = 0;
+    core_move(0);
+    memcpy(ref, prg_a4_area, sizeof ref);
+    int ref_battles = core_battles, ref_settle = core_settlements;
+    setup_colocated_walkers(0);
+    map_who[position] = 209;
+    peeps[208 * 22] = 2;
+    core_move(0);
+    assert(!core_battles && core_battles == ref_battles && core_settlements == ref_settle);
+    assert(!(peeps[0] & 8) && peeps[22] == 2 && peep_word(1, 4) == 100);
+    assert(peeps[208 * 22] == 2);
+    peeps[208 * 22] = ref[(peeps - prg_a4_area) + 208 * 22];
+    uint8_t cell = map_who[position];
+    map_who[position] = ref[(map_who - prg_a4_area) + position];
+    assert(!memcmp(ref, prg_a4_area, sizeof ref));
+    assert(cell == 209);
+    _closeall();
+    SDL_Quit();
+}
+
+/* _join_forces (asm:5540-5640) and _join_battle (asm:6663-6765) have no
+ * population or partner-state guards. A nonpositive record is skipped by the
+ * main loop (asm:3459-3462) without releasing its claim, so a walker can meet
+ * it; a dead 0x0A defender stays the exact-8 attacker's +6 partner until the
+ * attacker's own visit. Both still receive the merge. */
+static void test_merge_into_nonpositive_record(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    int position = 50 * 64 + 50;
+    /* Friendly target holding -5 (e.g. dried 0x11 dissolution remnant). */
+    setup_colocated_walkers(0);
+    peeps[23] = 0;
+    set_peep_word(1, 4, (uint16_t)-5);
+    peeps[25] = 3;
+    set_peep_word(1, 12, 4);
+    view_who = 1;
+    uint32_t pop_before = core_good_pop(0);
+    core_move(0);
+    assert(peep_population(1) == 95 && peep_population(0) == 0);
+    assert(peeps[22] == 2 && peep_word(1, 12) == 0 && peeps[25] == 3);
+    assert(view_who == 2 && core_good_pop(0) == pop_before - 100u);
+    assert(map_who[position] == 2 && !core_battles && !core_settlements);
+    /* Newcomer for the dead defender's side joins the exact-8 attacker. */
+    setup_colocated_walkers(0);
+    core_move(0);
+    assert(peeps[0] == 8 && peep_word(0, 6) == 1 && map_who[position] == 1);
+    core_remove(1);
+    assert(peeps[0] == 8 && peep_word(0, 6) == 1 && !peep_population(1));
+    no_peeps = 3;
+    peeps[44] = 2; peeps[45] = 1; peeps[46] = peeps[47] = 1;
+    set_peep_word(2, 4, 50);
+    set_peep_word(2, 8, position);
+    core_leader(1) = 3;
+    pop_before = core_good_pop(1);
+    core_move(2);
+    assert(peep_population(1) == 50 && peep_population(2) == 0);
+    assert(peep_population(0) == 100 && peeps[0] == 8 && peeps[22] == 0x0a);
+    assert(core_leader(1) == 2 && core_good_pop(1) == pop_before);
+    assert(map_who[position] == 1 && core_battles == 1);
+    _closeall();
+    SDL_Quit();
+}
+
 /* Colocated battle death. */
 static void test_colocated_battle_death(void)
 {
@@ -772,46 +843,37 @@ static void test_battle_reinforcement(void)
 /* Invalid battle blocks reinforcement. */
 static void test_invalid_battle_blocks_reinforcement(void)
 {
+    /* _join_battle (asm:6663-6765) tests no partner state: the recipient is
+     * the encountered record for the same owner, else its raw +6 word. Only
+     * an out-of-range +6 (host-memory bound) rejects and falls through to the
+     * departure (asm:4536,4560-4617). */
     for (int owner = 0; owner < 2; ++owner)
         for (int colocated = 0; colocated < 2; ++colocated)
             for (int invalid = 0; invalid < 7; ++invalid) {
                 setup_reinforcement(2, owner, colocated, 0);
+                int recipient = owner ? 1 : 0;
                 switch (invalid) {
-                case 0:
-                    set_peep_word(0, 6, -1);
-                    break;
-                case 1:
-                    set_peep_word(0, 6, no_peeps);
-                    break;
-                case 2:
-                    set_peep_word(0, 6, 0);
-                    break;
-                case 3:
-                    set_peep_word(1, 6, 2);
-                    break;
-                case 4:
-                    set_peep_word(1, 4, 0);
-                    break;
-                case 5:
-                    /* Was partner flags 2. _join_battle reads +6 with no flag
-                     * test (asm:6676-6683) and water entry makes a partner
-                     * 0x12/2 (asm:3562-3580), so that is now a merge
-                     * (test_water_battle); keep the row as a second owner miss. */
-                    peeps[23] = 0;
-                    break;
-                case 6:
-                    peeps[23] = 0;
-                    break;
+                case 0: set_peep_word(0, 6, -1); if (owner) recipient = -1; break;
+                case 1: set_peep_word(0, 6, no_peeps); if (owner) recipient = -1; break;
+                case 2: set_peep_word(0, 6, 0); if (owner) recipient = 0; break;
+                case 3: set_peep_word(1, 6, 2); break;
+                case 4: set_peep_word(1, 4, 0); break;
+                case 5: case 6: peeps[23] = 0; break;
                 }
                 peeps[2 * 22 + 21] = 1; /* Navigation writes the already selected direction. */
                 uint8_t before[sizeof prg_a4_area], saved[sizeof prg_a4_area];
                 memcpy(before, prg_a4_area, sizeof before);
-                /* A rejected _join_battle falls through to the departure (asm:4536,
-         * 4560-4617): release 649, count 650 (represented by the battle), step. */
                 if (!colocated) map_who[649] = 0;
-                A4_WORD(0xff88 + 650 * 2) = 1;
-                set_peep_word(2, 8, 651);
-                set_peep_word(2, 10, 1);
+                if (recipient < 0) {
+                    A4_WORD(0xff88 + 650 * 2) = 1;
+                    set_peep_word(2, 8, 651);
+                    set_peep_word(2, 10, 1);
+                } else {
+                    set_peep_word(recipient, 4, peep_word(recipient, 4) + 45);
+                    set_peep_word(2, 4, 0);
+                    core_leader(owner) = recipient + 1;
+                    view_who = recipient + 1;
+                }
                 memcpy(saved, prg_a4_area, sizeof saved);
                 memcpy(prg_a4_area, before, sizeof before);
                 core_move(2);
@@ -833,48 +895,36 @@ static void test_reinforcement_helper_guards(void)
         core_join_battle(2, invalid_indices[index]);
         assert(!memcmp(saved, prg_a4_area, sizeof saved));
     }
-    for (int invalid = 0; invalid < 10; ++invalid) {
-        setup_reinforcement(2, 0, 1, 0);
-        switch (invalid) {
-        case 0:
-            set_peep_word(2, 4, -1);
-            break;
-        case 1:
-            set_peep_word(2, 4, 0);
-            break;
-        case 2:
-            peeps[44] = 8;
-            set_peep_word(2, 6, 0);
-            set_peep_word(0, 6, 2);
-            break;
-        case 3:
-            peeps[44] = 1;
-            break;
-        case 4:
-            peeps[44] = 0x42;
-            break;
-        case 5:
-            peeps[45] = 2;
-            break;
-        case 6:
-            set_peep_word(0, 4, 0);
-            break;
-        case 7:
-            peeps[0] = 2;
-            break;
-        case 8:
-            peeps[1] = 2;
-            break;
-        case 9:
-            peeps[23] = 2;
-            break;
-        }
+    /* Host bound: an owner index beyond the two-entry tables. */
+    setup_reinforcement(2, 0, 1, 0);
+    peeps[45] = 2;
+    {
         uint8_t saved[sizeof prg_a4_area];
         memcpy(saved, prg_a4_area, sizeof saved);
         core_join_battle(2, 0);
-        core_join_battle(0, 0);
         assert(!memcmp(saved, prg_a4_area, sizeof saved));
-        assert(core_battles == 17 && !core_settlements);
+    }
+    /* No state guards in the source: each case merges into the same-owner
+     * encountered record, or its +6 partner when the owners differ. */
+    for (int state = 0; state < 9; ++state) {
+        setup_reinforcement(2, 0, 1, 0);
+        int newcomer_pop = 45, recipient = 0, recipient_pop = 100;
+        switch (state) {
+        case 0: set_peep_word(2, 4, -1); newcomer_pop = -1; break;
+        case 1: set_peep_word(2, 4, 0); newcomer_pop = 0; break;
+        case 2: peeps[44] = 8; set_peep_word(2, 6, 0); set_peep_word(0, 6, 2); break;
+        case 3: peeps[44] = 1; break;
+        case 4: peeps[44] = 0x42; break;
+        case 5: set_peep_word(0, 4, 0); recipient_pop = 0; break;
+        case 6: peeps[0] = 2; break;
+        case 7: peeps[1] = 2; recipient = 1; break;
+        case 8: peeps[23] = 2; break;
+        }
+        core_join_battle(2, 0);
+        assert(peep_population(recipient) == recipient_pop + newcomer_pop && !peep_word(2, 4));
+        assert(peep_word(1 - recipient, 4) == 100);
+        assert(core_leader(0) == recipient + 1 && view_who == recipient + 1);
+        assert(!A4_LONG(0x99fe) && core_battles == 17 && !core_settlements);
     }
     /* A retained leader reference need not point at the source, even colocated. */
     setup_reinforcement(2, 0, 1, 0);
@@ -941,13 +991,15 @@ static void test_reinforcement_tick_and_death(void)
             A4_WORD(0x2fb0) = 2;
             _move_peeps();
             /* Only the exact-8 attacker (slot 0) runs _do_battle (asm:4269-
-             * 4282): one 10/10 round before the expired waiter's visit; it then
-             * joins with 1 or dies, keeping its retried flags 2 (asm:5645-5723). */
-            assert(peep_word(0, 4) == (population == 3 ? 91 : 90) && peep_word(1, 4) == 90);
+             * 4282): one 10/10 round before the expired waiter's visit. The
+             * retry calls _move_explorer with no population test (asm:4249-
+             * 4260), so it joins with population-2 even when that is 0 or -1
+             * (ADD.W), then dies keeping its retried flags 2 (asm:5645-5723). */
+            assert(peep_word(0, 4) == 88 + population && peep_word(1, 4) == 90);
             assert(peeps[44] == 2 && !peep_word(2, 4));
             assert(peeps[0] == 8 && peeps[22] == 0x0a && peep_word(0, 6) == 1 && peep_word(1, 6) == 0);
             assert(map_who[650] == 1 && !map_who[649] && core_battles == 17);
-            assert(core_leader(0) == (population == 3 ? 1 : 0));
+            assert(core_leader(0) == 1);
         }
 }
 
@@ -1135,7 +1187,9 @@ static void test_friendly_merge_metadata_rejection(void)
             }
 }
 
-/* Friendly merge dead target. */
+/* Friendly merge dead target. _join_forces (asm:5540-5640) has no
+ * population test: a nonpositive target (skipped by the main loop with its
+ * claim kept, asm:3459-3462) still absorbs the walker, ADD.W included. */
 static void test_friendly_merge_dead_target(void)
 {
     const int populations[] = {0, -1};
@@ -1144,17 +1198,31 @@ static void test_friendly_merge_dead_target(void)
             for (unsigned index = 0; index < sizeof populations / sizeof populations[0]; ++index) {
                 setup_friendly_merge(source, owner);
                 friendly_merge_arrived(source, owner);
-                set_peep_word(1 - source, 4, populations[index]);
-                uint8_t saved[sizeof prg_a4_area];
-                friendly_merge_rejected(saved, source);
+                int target = 1 - source;
+                set_peep_word(target, 4, populations[index]);
+                uint8_t expected[sizeof prg_a4_area];
+                memcpy(expected, prg_a4_area, sizeof expected);
+                set_peep_word(target, 4, 100 + populations[index]);
+                set_peep_word(target, 12, 0);
+                core_leader(owner) = target + 1;
+                view_who = target + 1;
+                set_peep_word(source, 4, 0);
+                map_who[649] = 0;
+                if (target > source)
+                    A4_LONG(0x99fe + owner * 16) -= 100u;
+                uint8_t wanted[sizeof prg_a4_area];
+                memcpy(wanted, prg_a4_area, sizeof wanted);
+                memcpy(prg_a4_area, expected, sizeof expected);
                 core_move(source);
-                assert(!memcmp(saved, prg_a4_area, sizeof saved));
+                assert(!memcmp(wanted, prg_a4_area, sizeof wanted));
+                assert(!core_battles && !core_settlements);
             }
 }
 
 /* Friendly merge helper guards. */
 static void test_friendly_merge_helper_guards(void)
 {
+    /* Host-memory bounds only: slot indices and the owner index. */
     const int invalid_indices[] = {-1, 3, 208, 32767};
     for (unsigned index = 0; index < sizeof invalid_indices / sizeof invalid_indices[0]; ++index) {
         setup_friendly_merge(0, 0);
@@ -1162,50 +1230,44 @@ static void test_friendly_merge_helper_guards(void)
         memcpy(saved, prg_a4_area, sizeof saved);
         core_join_forces(invalid_indices[index], 1);
         core_join_forces(0, invalid_indices[index]);
-        core_join_forces(0, 0);
         assert(!memcmp(saved, prg_a4_area, sizeof saved));
     }
-    for (int invalid = 0; invalid < 11; ++invalid) {
-        setup_friendly_merge(0, 0);
-        switch (invalid) {
-        case 0:
-            set_peep_word(0, 4, 0);
-            break;
-        case 1:
-            set_peep_word(0, 4, -1);
-            break;
-        case 2:
-            peeps[0] = 1;
-            break;
-        case 3:
-            peeps[0] = 8;
-            break;
-        case 4:
-            peeps[0] = 0x22;
-            break;
-        case 5:
-            peeps[0] = 0x42;
-            break;
-        case 6:
-            peeps[1] = peeps[23] = 2;
-            break;
-        case 7:
-            set_peep_word(1, 4, 0);
-            break;
-        case 8:
-            set_peep_word(1, 4, -1);
-            break;
-        case 9:
-            peeps[23] = 1;
-            break;
-        case 10:
-            peeps[22] = 10;
-            break;
-        }
+    setup_friendly_merge(0, 0);
+    peeps[1] = peeps[23] = 2;
+    {
         uint8_t saved[sizeof prg_a4_area];
         memcpy(saved, prg_a4_area, sizeof saved);
         core_join_forces(0, 1);
         assert(!memcmp(saved, prg_a4_area, sizeof saved));
+    }
+    /* Self merge (asm:5540-5640, no identity test): ADD.W 100+100, then
+     * flags &0x9f, +12 cleared and finally CLR.W +4 of the same record. */
+    setup_friendly_merge(0, 0);
+    peeps[0] = 0x62;
+    core_join_forces(0, 0);
+    assert(!peep_word(0, 4) && peeps[0] == 2 && !peep_word(0, 12));
+    assert(core_leader(0) == 1 && view_who == 1 && A4_LONG(0x99fe) == 12345);
+    /* _join_forces has no source/target state tests: every case merges. */
+    for (int state = 0; state < 10; ++state) {
+        setup_friendly_merge(0, 0);
+        int source_pop = 100, target_pop = 200, target_flags = 2;
+        switch (state) {
+        case 0: set_peep_word(0, 4, 0); source_pop = 0; break;
+        case 1: set_peep_word(0, 4, -1); source_pop = -1; break;
+        case 2: peeps[0] = 1; break;
+        case 3: peeps[0] = 8; break;
+        case 4: peeps[0] = 0x22; break;
+        case 5: peeps[0] = 0x42; break;
+        case 6: set_peep_word(1, 4, 0); target_pop = 0; break;
+        case 7: set_peep_word(1, 4, -1); target_pop = -1; break;
+        case 8: peeps[23] = 1; break;
+        case 9: peeps[22] = 10; target_flags = 10; break;
+        }
+        core_join_forces(0, 1);
+        assert(peep_population(1) == source_pop + target_pop && !peep_word(0, 4));
+        assert(peeps[22] == (target_flags & 0x9f) && !peep_word(1, 12));
+        assert(core_leader(0) == 2 && view_who == 2);
+        assert(A4_LONG(0x99fe) == 12345u - (uint32_t)source_pop);
     }
     /* The helper does not navigate or replace unrelated leader/view references. */
     setup_friendly_merge(0, 0);
@@ -22871,6 +22933,10 @@ int main(int argc, char **argv)
             test_no_hidden_town();
         else if (!strcmp(argv[2], "death"))
             test_colocated_battle_death();
+        else if (!strcmp(argv[2], "merge-nonpositive"))
+            test_merge_into_nonpositive_record();
+        else if (!strcmp(argv[2], "encounter-high-slot"))
+            test_encounter_high_slot_skipped();
         else if (!strcmp(argv[2], "friendly"))
             test_friendly_merge_state();
         else if (!strcmp(argv[2], "friendly-reject"))
@@ -23069,6 +23135,8 @@ int main(int argc, char **argv)
     test_colocated_hostile_encounter();
     test_no_hidden_town();
     test_colocated_battle_death();
+    test_encounter_high_slot_skipped();
+    test_merge_into_nonpositive_record();
     test_friendly_merge_state();
     test_friendly_merge_metadata_rejection();
     test_friendly_merge_dead_target();

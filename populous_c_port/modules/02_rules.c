@@ -495,22 +495,18 @@ static void core_battle(int first, int second)
 /* _join_battle asm:6663-6765. Keep the pair's combat state intact. */
 static void core_join_battle(int newcomer, int encountered)
 {
+    /* The source has no entry guards: only slot indices (a raw +6 word for
+     * the partner) and the owner index are bounded for host memory. */
     if (newcomer < 0 || newcomer >= no_peeps || newcomer >= 208 ||
         encountered < 0 || encountered >= no_peeps || encountered >= 208 ||
-        newcomer == encountered || peep_population(newcomer) <= 0 ||
-        peep_flags(newcomer) != 2 || peep_owner(newcomer) > 1 ||
-        peep_population(encountered) <= 0 || !(peep_flags(encountered)&8) ||
-        peep_owner(encountered) > 1) return;
-    int partner = peep_word(encountered,6);
-    if (partner < 0 || partner >= no_peeps || partner >= 208 ||
-        partner == encountered || partner == newcomer ||
-        /* asm:6676-6683 reads +6 with no flag test: the partner may have
-         * become 0x12 (or 2) by water entry, asm:3562-3580. */
-        peep_population(partner) <= 0 ||
-        peep_word(partner,6) != encountered ||
-        peep_owner(partner) != 1-peep_owner(encountered)) return;
-    int owner = peep_owner(newcomer);
-    int recipient = peep_owner(encountered) == owner ? encountered : partner;
+        peep_owner(newcomer) > 1) return;
+    int owner = peep_owner(newcomer), recipient = encountered;
+    /* asm:6676-6683 reads +6 with no flag test: the partner may have
+     * become 0x12 (or 2) by water entry, asm:3562-3580, or be dead. */
+    if (peep_owner(encountered) != owner) {
+        recipient = (int16_t)peep_word(encountered,6);
+        if (recipient < 0 || recipient >= no_peeps || recipient >= 208) return;
+    }
     int population = peep_population(recipient)+peep_population(newcomer);
     set_peep_population(recipient,population > 32000 ? 32000 : population);
     if (core_leader(owner) == newcomer+1) core_leader(owner) = recipient+1;
@@ -531,11 +527,11 @@ static void core_join_battle(int newcomer, int encountered)
 /* _join_forces asm:5540-5640: ordinary friendly merge, not battle joining. */
 static void core_join_forces(int source, int target)
 {
+    /* No entry guards in the source (a nonpositive target still merges);
+     * only slot and owner indices are bounded for host memory. */
     if (source < 0 || source >= no_peeps || source >= 208 ||
-        target < 0 || target >= no_peeps || target >= 208 || source == target ||
-        peep_population(source) <= 0 || peep_flags(source) != 2 ||
-        peep_owner(source) > 1 || peep_population(target) <= 0 ||
-        peep_owner(target) != peep_owner(source) || (peep_flags(target)&8)) return;
+        target < 0 || target >= no_peeps || target >= 208 ||
+        peep_owner(source) > 1) return;
     /* Opaque Amiga metadata: copy four bytes, never dereference as a pointer. */
     uint32_t metadata;
     memcpy(&metadata,peeps+source*22+14,sizeof metadata);
