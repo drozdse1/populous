@@ -369,7 +369,8 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else if (icon == 2 && line == 1) { mailbox[0] = 14; mailbox[2] = 5; }
         else if (icon == 2 && line == 2) {
             if ((core_mana(player) > (int32_t)mana_swamp_cost && (stats_power_mask(player)&0x10)) || paint_map)
-                { core_swamp_selected = 1; core_set_pointer(); }
+                /* asm:2036-2039: _mode = (_mode & 3) | 8 drops the magnet bit. */
+                { if (core_tool == 1) core_tool = core_magnet_return; core_swamp_selected = 1; core_set_pointer(); }
         }
     } else if (icon <= 5) {
         /* Tendency icons asm:2043-2089: _do_action y=1 with x = tendency. */
@@ -518,7 +519,10 @@ static void game_handle_event(const SDL_Event *event)
             /* Host S mapping for source selection asm:2021-2042 (> cost). */
             if (key == SDLK_s && player >= 0 && player <= 1 &&
                 ((core_mana(player) > (int32_t)mana_swamp_cost &&
-                  (stats_power_mask(player)&0x10)) || paint_map)) { core_swamp_selected = 1; core_set_pointer(); }
+                  (stats_power_mask(player)&0x10)) || paint_map)) {
+                if (core_tool == 1) core_tool = core_magnet_return;   /* as the icon, asm:2036-2039 */
+                core_swamp_selected = 1; core_set_pointer();
+            }
         }
         if ((key == SDLK_LEFT || key == SDLK_KP_4 || key == SDLK_KP_7 || key == SDLK_KP_1) && xoff > 0) --xoff;
         if ((key == SDLK_RIGHT || key == SDLK_KP_6 || key == SDLK_KP_9 || key == SDLK_KP_3) && xoff < 56) ++xoff;

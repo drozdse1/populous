@@ -1502,14 +1502,16 @@ static void core_show_the_shield(GraphicsSheet small)
         if (weapon < 11) core_draw_icon(0x12,4,weapon+1);
         if (flags & 8) {
             /* Battle: sprite +0xC and strength bars, blue left (asm:2840-2895). */
-            int other = peep_word(person,6);
+            /* The sprite comes first (asm:2826-2831); the sum is ADD.W, the
+             * quotients words (asm:2850-2869). Host guard: no partner read
+             * outside the pool. */
+            int other = peep_word(person,6), frame = peep_frame(person);
+            if (frame >= 0 && frame < 143) graphics_blit(game_pixels,64000,320,200,small,frame,0x110,0x16);
             if (other >= 0 && other < no_peeps) {
                 int blue = owner ? other : person, red = owner ? person : other;
-                int32_t sum = peep_population(blue) + peep_population(red);
-                int frame = peep_frame(person);
-                if (frame >= 0 && frame < 143) graphics_blit(game_pixels,64000,320,200,small,frame,0x110,0x16);
-                core_draw_bar(0x24,0x25,16,(int)___divs(16*peep_population(blue),sum),15);
-                core_draw_bar(0x25,0x25,16,(int)___divs(16*peep_population(red),sum),8);
+                int16_t sum = (int16_t)(peep_population(blue) + peep_population(red));
+                core_draw_bar(0x24,0x25,16,(int16_t)___divs(16*(int32_t)peep_population(blue),sum),15);
+                core_draw_bar(0x25,0x25,16,(int16_t)___divs(16*(int32_t)peep_population(red),sum),8);
             }
         } else if (flags == 1) {
             /* Town: capacity and fill bars (asm:2896-2953). */
@@ -1517,8 +1519,9 @@ static void core_show_the_shield(GraphicsSheet small)
             int capacity = core_check_life(owner,peep_position(person));
             if (!capacity) capacity = 1;
             core_draw_bar(0x24,0x25,16,capacity == 0xbea ? 16 : (uint16_t)(capacity*16)/0x131,10);
-            int fill = (uint16_t)(pop*16)/(uint16_t)capacity;
-            core_draw_bar(0x25,0x25,16,fill > 16 ? 16 : fill,12);
+            /* DIVU word quotient, then signed CMP.W/BLE and TST.W/BGE (asm:2940-2953). */
+            int16_t fill = (int16_t)((uint16_t)(pop*16)/(uint16_t)capacity);
+            core_draw_bar(0x25,0x25,16,fill > 16 ? 16 : fill < 0 ? 0 : fill,12);
         } else {
             /* Walker sprite (asm:2954-3020) and population bars (asm:3021-3061). */
             int frame;
@@ -1598,7 +1601,7 @@ static void core_draw_funny(int u, int v, int cell)
  * four host reference bytes (the original TST.W/TST.L a pointer); dead,
  * foreign-owner or out-of-pool slots and a map_who cell that is neither the
  * peep's +8 nor (walking) its departure cell are skipped; frames outside the
- * 143-frame sheet and invalid battle frames keep the render-only bounds. */
+ * 143-frame sheet are queued but not drawn (the original reads past it). */
 static void core_emit_sprite(GraphicsSheet small, int x, int y, int frame, int who)
 {
     int queued = no_sprites < 64;
@@ -1639,16 +1642,43 @@ static void core_draw_peep(GraphicsSheet small, int u, int v, int cell)
     } else if (flags==1) frame=0x40+(toggle&1)+2*owner;
     else if (flags&0x60) frame=stored+0x18*headed+2*owner;
     else if (flags&8) {
+        /* LAB_49CF8 asm:16045-16052: the stored +$C as it is, no check. */
         sound_effect |= 8;
-        /* Preserve a render-only fallback for malformed or legacy frames. */
-        frame=((stored>=70 && stored<=72) || (stored>=130 && stored<=132) ||
-               (stored>=134 && stored<=136) || (stored>=138 && stored<=140)) ? stored : 138+(toggle&1);
+        frame=stored;
     } else if (flags&0x80) {
         sound_effect |= 0x80;
         frame=0x69+((uint16_t)game_turn&3); sx=left+8;
     } else frame=stored+0x20*headed+4*owner;
     core_emit_sprite(small,sx,sy,frame,person+1);
     if (view_who==person+1) core_emit_sprite(small,sx+8,sy,0x44,person+1);
+}
+
+/* The terrain half of _draw_it (asm:15794-15949) at _screen_origin shifted
+ * by dy lines: tiles, raised overlays, magnets and front faces. */
+static void core_draw_land(uint8_t *dest, int view_x, int view_y, int dy)
+{
+    GraphicsSheet land=graphics_land(game_assets), small=graphics_sprites(game_assets);
+    int phase=toggle!=0;   /* asm:15831-15835: sea frame 16 while _toggle is 0 */
+    /* _draw_it, asm:15794-15949: row-major tiles, raised overlays, front faces. */
+    for (int v=0; v<8; ++v) for (int u=0; u<8; ++u) {
+        int cell=(view_y+v)*64+view_x+u, left,top;
+        if (!graphics_tile(u,v,map_alt[cell],&left,&top)) continue;
+        top+=dy;
+        int frame=map_blk[cell];
+        if (!frame && !phase) frame=16;
+        graphics_blit(dest,64000,320,200,land,frame,left,top);
+        if (map_bk2[cell]) graphics_blit(dest,64000,320,200,land,map_bk2[cell],left,top-8);
+        /* asm:15851-15869: ankh 0x2e at a nonzero _devil_magnet, then 0x2d
+         * at a nonzero _god_magnet; no tendency test. */
+        if (devil_magnet && devil_magnet==cell) graphics_blit(dest,64000,320,200,land,46,left,top-8);
+        if (god_magnet && god_magnet==cell) graphics_blit(dest,64000,320,200,land,45,left,top-8);
+    }
+    for (int v=0; v<8; ++v)
+        for (int level=0; level<map_alt[(view_y+v)*64+view_x+7]; ++level)
+            graphics_blit(dest,64000,320,200,small,77,304-16*v,128+8*v-8*level+dy);
+    for (int u=7; u>=0; --u)
+        for (int level=0; level<map_alt[(view_y+7)*64+view_x+u]; ++level)
+            graphics_blit(dest,64000,320,200,small,76,64+16*u,128+8*u-8*level+dy);
 }
 
 static void draw_original(int view_x, int view_y)
@@ -1665,28 +1695,8 @@ static void draw_original(int view_x, int view_y)
     if (!core_tool && !core_swamp_selected) core_set_pointer();
     _move_mana();
     int dy = core_shake_dy;
-    GraphicsSheet land=graphics_land(game_assets), small=graphics_sprites(game_assets);
-    int phase=toggle!=0;   /* asm:15831-15835: sea frame 16 while _toggle is 0 */
-    /* _draw_it, asm:15794-15949: row-major tiles, raised overlays, front faces. */
-    for (int v=0; v<8; ++v) for (int u=0; u<8; ++u) {
-        int cell=(view_y+v)*64+view_x+u, left,top;
-        if (!graphics_tile(u,v,map_alt[cell],&left,&top)) continue;
-        top+=dy;
-        int frame=map_blk[cell];
-        if (!frame && !phase) frame=16;
-        graphics_blit(game_pixels,64000,320,200,land,frame,left,top);
-        if (map_bk2[cell]) graphics_blit(game_pixels,64000,320,200,land,map_bk2[cell],left,top-8);
-        /* asm:15851-15869: ankh 0x2e at a nonzero _devil_magnet, then 0x2d
-         * at a nonzero _god_magnet; no tendency test. */
-        if (devil_magnet && devil_magnet==cell) graphics_blit(game_pixels,64000,320,200,land,46,left,top-8);
-        if (god_magnet && god_magnet==cell) graphics_blit(game_pixels,64000,320,200,land,45,left,top-8);
-    }
-    for (int v=0; v<8; ++v)
-        for (int level=0; level<map_alt[(view_y+v)*64+view_x+7]; ++level)
-            graphics_blit(game_pixels,64000,320,200,small,77,304-16*v,128+8*v-8*level+dy);
-    for (int u=7; u>=0; --u)
-        for (int level=0; level<map_alt[(view_y+7)*64+view_x+u]; ++level)
-            graphics_blit(game_pixels,64000,320,200,small,76,64+16*u,128+8*u-8*level+dy);
+    GraphicsSheet small=graphics_sprites(game_assets);
+    core_draw_land(game_pixels,view_x,view_y,dy);
     /* Original queues occupants then draws them after terrain (asm:623-657).
      * A shaken screen_origin skips _move_sprite entirely (asm:15842-15849). */
     if (!dy) { no_sprites = 0; ok_to_build = 0; }   /* asm:612-613 */
@@ -1722,6 +1732,15 @@ static void draw_original(int view_x, int view_y)
     }
     if (core_end_shown && core_result) core_draw_end_screen();
     core_draw_requester();
+    /* The two Amiga screens: the one just drawn and the one before it. */
+    memcpy(core_prev_pixels,core_shown_pixels,sizeof core_prev_pixels);
+    memcpy(core_shown_pixels,game_pixels,sizeof core_shown_pixels);
+    core_present_pixels();
+}
+
+/* d_screen's 200 lines onto the chunky buffer, then the port HUD and pointer. */
+static void core_present_pixels(void)
+{
     for (size_t pixel=0; pixel<sizeof game_pixels; ++pixel)
         prg_screen->chunky_buffer[pixel]=prg_screen->palette[game_pixels[pixel]];
     /* Port HUD (not in the original, whose screen ends at y 200): 7 lines of

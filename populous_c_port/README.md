@@ -1240,9 +1240,15 @@ No direct population damage is invented; later simulation handles changed terrai
 
 After admission, charge, effect code 76 and score, and before any terrain change,
 the original 20-frame shake runs (`_do_quake` asm:7895-7925) for every caster:
-frames alternate -4/-1 scanlines, only terrain tiles, overlays and front faces
-move (panel, HUD and shield stay), peeps are not drawn (asm:15842-15849) and the
-frames show the pre-quake terrain. Ticks are frozen during the synchronous loop;
+frames alternate -4/-1 scanlines. `_screen_origin` is read only by `_draw_it`
+(asm:15749, 15842, 15885), so the shake is not a whole-screen shift: the loop
+(asm:7909-7923) is only `___draw_it` + `___swap_screens`, without `_clr_wsc`,
+icons, mana or sprites (asm:15842-15849). The port keeps both Amiga screens
+(`core_shown_pixels`/`core_prev_pixels`) and ORs the pre-quake terrain
+(`core_draw_land`) into them: even frames into the frame before the last at -4,
+odd ones into the last shown frame at -1; panel, overview, shield and old
+sprite pixels stay where the land does not cover them (`--quake-screens`).
+Ticks are frozen during the synchronous loop;
 each frame is presented and waits about one vblank (20 ms). Without a screen or
 assets (headless rule tests) the shake is skipped; rules are identical either way.
 Effect 76 rumbles during the shake and is cut afterwards (`_kill_effect(2,4)`,
@@ -1977,3 +1983,20 @@ Original disassembly and analysis: tetracorp
 (<https://tetracorp.github.io/populous>). This port is for study, preservation
 and reverse-engineering education. Use lawfully obtained original data; do not
 distribute commercial assets or original game files.
+
+## Shield, swamp mode and battle frames (P2)
+
+- `_show_the_shield` bars (asm:2826-3061, `_draw_bar` asm:19213-19282): the town
+  fill quotient is a `DIVU` word compared signed (asm:2940-2953, a quotient
+  >= $8000 draws 0); the battle bars divide by the `ADD.W` word sum and the
+  battle sprite is drawn before the partner is read (asm:2824-2869). Tests
+  `--shield-bars` (default suite), `--funny-rock-dot` (asm:8796-8818, default suite).
+- Arming swamp keeps only `_mode & 3` (asm:2036-2039): a swamp armed from the
+  papal magnet returns to query/terrain after the target (asm:7477-7485), never
+  to the magnet (`--swamp-mode`).
+- `_move_sprite` bit 3 (asm:16045-16052) draws the stored `+$C` frame raw; the
+  former 138/139 substitute for non-cycle frames is gone. Frames past the
+  143-frame sheet are queued but not drawn (host bound) (`--battle-frame-raw`).
+- `_zoom_map` latches every pressed button to 2 at its tail (asm:2442-2448) and
+  the VBI keeps 2 while held (asm:19583-19589): toolbar icons act once per
+  press, as in the port.

@@ -1778,15 +1778,28 @@ static int core_quake_shake_dy(int c) { return c&1 ? -1 : -4; }
 static void core_quake_delay_sdl(int ms) { core_vbi_audio(); SDL_Delay((Uint32)ms); }
 static void (*core_quake_delay)(int ms) = core_quake_delay_sdl;
 /* 20 synchronous frames of pre-quake terrain (no ticks), unconditional on
- * owner; each frame is presented and waits about one vblank. */
+ * owner; each frame is presented and waits about one vblank. The loop
+ * (asm:7909-7923) is only ___draw_it + ___swap_screens: no _clr_wsc, no
+ * icons, mana or sprites (screen_origin != $a16, asm:15842). Even c draws
+ * into _w_screen (the frame before the last, origin -4 lines), odd c into
+ * the last shown frame (-1 line); everything else stays as it was. The
+ * diagnostic view has no such screens and redraws. */
 static void core_quake_shake(void)
 {
     if (!prg_screen || !game_assets) return;
     for (int c = 0; c < 20; ++c) {
         core_shake_dy = core_quake_shake_dy(c);
-        game_render();
+        if (diagnostic_view) game_render();
+        else {
+            uint8_t *screen = c&1 ? core_shown_pixels : core_prev_pixels;
+            core_draw_land(screen,xoff,yoff,core_shake_dy);
+            memcpy(game_pixels,screen,sizeof core_shown_pixels);   /* d_screen: 200 lines */
+            core_present_pixels();
+            amiga_present(prg_screen);
+        }
         core_quake_delay(20);
     }
+    /* Twenty swaps leave _d_screen on the odd buffer: core_shown_pixels. */
     core_shake_dy = 0;
 }
 /* _do_quake asm:7863-8042: _paint_map (asm:7865) skips the mana, _war,

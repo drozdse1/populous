@@ -8352,6 +8352,7 @@ static void test_original_graphics_output(void)
             toggle = phase;
             game_assets->sprite_indices[(64 + phase + owner * 2) * 256] = 8;
             game_assets->sprite_indices[(138 + phase) * 256] = 2 + phase * 2;
+            set_peep_word(0, 12, 138 + phase);   /* bit 3 draws +$C raw (asm:16045-16052) */
             memcpy(before, prg_a4_area, sizeof before);
             game_render();
             assert(game_pixels[88 * 320 + 192] == (phase ? 5 : 3));
@@ -8458,6 +8459,103 @@ static void sprite_case(int flags, int owner, int stored, uint32_t heading, int 
 /* ========================================================================
  * Special effects
  * ======================================================================== */
+/* _show_the_shield bars (asm:2826-3061) through _draw_bar (asm:19213-19282):
+ * byte column x, pixels 2..5, from line y upwards value rows in the colour,
+ * then height-value rows in colour 2. */
+static void shield_bar_expect(int x, int y, int height, int value, int colour)
+{
+    for (int k = 0; k < height; ++k)
+        for (int px = 8 * x + 2; px < 8 * x + 6; ++px)
+            assert(game_pixels[(y - k) * 320 + px] == (k < value ? colour : 2));
+}
+static int shield_block = 15;
+static void shield_case(int flags, int owner, int pop, int position, int partner_pop)
+{
+    sprite_scene();
+    memset(map_blk, shield_block, 4096);
+    no_peeps = 2;
+    peeps[0] = (uint8_t)flags; peeps[1] = (uint8_t)owner;
+    set_peep_word(0, 4, pop);
+    set_peep_word(0, 6, 1);        /* battle partner: peep 1 */
+    set_peep_word(0, 8, position);
+    set_peep_word(0, 12, 200);     /* +$C past the sheet: no sprite pixels */
+    peeps[22] = 8; peeps[23] = (uint8_t)!owner;
+    set_peep_word(1, 4, partner_pop);
+    view_who = 1;
+    memset(game_pixels, 0, sizeof game_pixels);
+    core_show_the_shield(graphics_sprites(game_assets));
+    assert(view_who == 1);
+}
+static void test_shield_bars(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    int position = 20 * 64 + 20;
+    /* Town (asm:2896-2953): _check_life 0 (block 1 under the town) counts
+     * as 1; capacity bar (1*16)/$131 = 0; fill DIVU word, then signed
+     * CMP.W #$10/BLE and TST.W/BGE: 5*16/1 = 80 -> 16, but $800*16 = $8000
+     * is negative as a word -> 0. */
+    static const int16_t town[][2] = {{5, 16}, {0x0800, 0}, {0x0fff, 0}, {0x07ff, 16}, {0x7fff, 0}, {1, 16}};
+    for (int owner = 0; owner < 2; ++owner)
+        for (unsigned sample = 0; sample < sizeof town / sizeof town[0]; ++sample) {
+            shield_block = 1;
+            shield_case(1, owner, town[sample][0], position, 0);
+            shield_block = 15;
+            shield_bar_expect(0x24, 0x25, 16, 0, 10);
+            shield_bar_expect(0x25, 0x25, 16, town[sample][1], 12);
+        }
+    /* Walker (asm:3021-3061): above $1000 pop/$400 and the raw remainder,
+     * else pop/$100 and (pop%$100)/16. */
+    shield_case(2, 0, 0x1234, position, 0);
+    shield_bar_expect(0x24, 0x25, 16, 4, 10);
+    shield_bar_expect(0x25, 0x25, 16, 16, 9);
+    shield_case(2, 1, 0x0345, position, 0);
+    shield_bar_expect(0x24, 0x25, 16, 3, 9);
+    shield_bar_expect(0x25, 0x25, 16, 4, 9);
+    /* Battle (asm:2824-2895): blue (owner byte 0) first in colour 15, red in
+     * 8; 16*pop / the word sum. 300 vs 100: 12 and 4. 0x5000 each wraps the
+     * ADD.W sum to -$6000: -13 -> both 0. */
+    shield_case(8, 0, 300, position, 100);
+    shield_bar_expect(0x24, 0x25, 16, 12, 15);
+    shield_bar_expect(0x25, 0x25, 16, 4, 8);
+    shield_case(8, 1, 300, position, 100);
+    shield_bar_expect(0x24, 0x25, 16, 4, 15);
+    shield_bar_expect(0x25, 0x25, 16, 12, 8);
+    shield_case(8, 0, 0x5000, position, 0x5000);
+    shield_bar_expect(0x24, 0x25, 16, 0, 15);
+    shield_bar_expect(0x25, 0x25, 16, 0, 8);
+    /* The +$C sprite is drawn before the partner is read (asm:2826-2831). */
+    for (int pixel = 0; pixel < 256; ++pixel) game_assets->sprite_indices[70 * 256 + pixel] = 6;
+    shield_case(8, 0, 300, position, 100);
+    set_peep_word(0, 12, 70);
+    set_peep_word(0, 6, 999);   /* partner outside the pool: host guard, no bars */
+    memset(game_pixels, 0, sizeof game_pixels);
+    core_show_the_shield(graphics_sprites(game_assets));
+    assert(game_pixels[0x16 * 320 + 0x110] == 6);
+    sprite_scene();
+    view_who = 0;
+    _closeall();
+    SDL_Quit();
+}
+/* _move_sprite bit 3 (LAB_49CF8 asm:16045-16052): the stored +$C frame is
+ * drawn as it is, whatever value it holds; frames past the 143-frame sheet
+ * are queued but not drawn by the port. */
+static void test_battle_frame_raw(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    for (int frame = 0; frame < 143; ++frame)
+        game_assets->sprite_indices[frame * 256 + 17] = (uint8_t)(1 + frame % 15);
+    const int stored[] = {0, 5, 64, 100, 129, 133, 137, 141, 142, 143, 300, -1};
+    for (int owner = 0; owner < 2; ++owner)
+        for (int flags = 8; flags <= 9; ++flags)
+            for (int index = 0; index < (int)(sizeof stored / sizeof stored[0]); ++index)
+                for (int turn = 0; turn < 8; turn += 4)
+                    sprite_case(flags, owner, stored[index], 1, turn, 1, 15, 0, 0, 0,
+                                stored[index] < 143 ? stored[index] : -1, 192, 56);
+    _closeall();
+    SDL_Quit();
+}
 static void test_special_sprite_frames(void)
 {
     /* Each physical byte, valid target (2), self (1), and opaque values all
@@ -8494,8 +8592,9 @@ static void test_special_sprite_frames(void)
                                     56);
                 sprite_case(1, owner, 32767, headings[raw], phase * 4, 1, 15, 0, 0, 0,
                             town[owner][phase], 192, 56);
+                /* +$C -1 is drawn raw as frame $ffff, past the sheet: not drawn. */
                 sprite_case(9, owner, -1, headings[raw], phase * 4, 1, 15, 0, 0, 0,
-                            phase ? 139 : 138, 192, 56);
+                            -1, 192, 56);
                 for (int turn = 0; turn < 4; ++turn) {
                     sprite_case(0x80, owner, 32767, headings[raw], phase * 4 + turn, 1, 15, 0, 0, 0,
                                 remnant[turn], 184, 56);
@@ -8534,9 +8633,9 @@ static void test_special_sprite_frames(void)
      * heading present, turn 7 (toggle 1), block 0 (+4 only when walking). */
     const int mixed[][4] = {{0, 3 + 32 + 4, 192, 56},
                             {4, 3 + 32 + 4, 192, 56},
-                            {0x0c, 139, 192, 56},
+                            {0x0c, 3, 192, 56},
                             {0x86, 105 + 3, 184, 56},
-                            {0x88, 139, 192, 56},
+                            {0x88, 3, 192, 56},
                             {0x16, 93 + 3 + 16 + 4, 190, 63},
                             {0x18, 93 + 3 + 16 + 4, 190, 63},
                             {0x28, 3 + 24 + 2, 192, 56},
@@ -8546,7 +8645,7 @@ static void test_special_sprite_frames(void)
                             {0xc4, 3 + 24 + 2, 192, 56},
                             {0x84, 105 + 3, 184, 56},
                             {0x03, 3 + 32 + 4, 192, 56},
-                            {0x0b, 139, 192, 56}};
+                            {0x0b, 3, 192, 56}};
     for (unsigned sample = 0; sample < sizeof mixed / sizeof mixed[0]; ++sample)
         sprite_case(mixed[sample][0], 1, 3, UINT32_MAX, 7, 1, 0, 0, 0, 0, mixed[sample][1],
                     mixed[sample][2], mixed[sample][3]);
@@ -8704,6 +8803,49 @@ static void test_funny_kills_funny(void)
             assert(map_blk[now] == 47 && map_blk[now + 64] == 16 && map_blk[now + 1] == 49);
     }
     funny_clear();
+    _closeall();
+    SDL_Quit();
+}
+/* _do_funny asm:8796-8818: the rock trail (type 2) writes 47+index into
+ * _map_blk and plots _map_colour[47+index] (static data 2, asm:24255-24260)
+ * with _a_putpixel on the work screen at x = col+64-row, y = (row+col)>>1. */
+static void test_funny_rock_dot(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    funny_clear();
+    memset(map_blk, 15, 4096);
+    int start = 40 * 64 + 20;
+    core_place_funny(2, 3);
+    map_who[0] = 0;
+    set_peep_word(0xd1, 8, start);
+    set_peep_word(0xd1, 12, 7);
+    map_who[start] = 0xd2;
+    core_wsc_dots = 0;
+    core_do_funny();
+    /* now = start+65 = (col 21,row 41); trail offsets 0, +64, +1. */
+    static const int16_t expect[3][2] = {{44, 31}, {43, 31}, {45, 31}};
+    assert(core_wsc_dots == 3);
+    for (int dot = 0; dot < 3; ++dot)
+        assert(core_wsc_dot[dot].x == expect[dot][0] && core_wsc_dot[dot].y == expect[dot][1] &&
+               core_wsc_dot[dot].colour == 2);
+    assert(map_blk[41 * 64 + 21] == 47 && map_blk[42 * 64 + 21] == 48 && map_blk[41 * 64 + 22] == 49);
+    /* A block 16 or 0 trail cell gets neither rock nor dot (asm:8796-8803). */
+    funny_clear();
+    memset(map_blk, 15, 4096);
+    map_blk[41 * 64 + 21] = 16;
+    map_blk[42 * 64 + 21] = 0;
+    core_place_funny(2, 3);
+    map_who[0] = 0;
+    set_peep_word(0xd1, 8, start);
+    set_peep_word(0xd1, 12, 7);
+    map_who[start] = 0xd2;
+    core_wsc_dots = 0;
+    core_do_funny();
+    assert(core_wsc_dots == 1 && core_wsc_dot[0].x == 45 && core_wsc_dot[0].y == 31 &&
+           core_wsc_dot[0].colour == 2);
+    funny_clear();
+    core_wsc_dots = 0;
     _closeall();
     SDL_Quit();
 }
@@ -9628,6 +9770,7 @@ static void test_swamp_input(void)
             for (int mana = 4999; mana <= 5001; ++mana) {
                 assert(game_reset(0));
                 core_tool = tool;
+                core_magnet_return = 0;   /* the magnet taken from terrain */
                 diagnostic_view = diagnostic;
                 SDL_SetWindowSize(prg_screen->window, 960, 768);
                 A4_LONG(0x9a02) = mana;
@@ -9682,7 +9825,8 @@ static void test_swamp_input(void)
                     memset(stats_bytes(0), 0, 3);
                     if (tool) core_tool = 1;   /* the post cleared the one-shot magnet bit */
                 }
-                assert(core_tool == tool);
+                /* Arming kept only _mode & 3 (asm:2036-2039): back to terrain. */
+                assert(core_tool == (mana > 5000 ? 0 : tool));
                 if (mana > 5000) {
                     assert(A4_LONG(0xae72) == 50);
                     for (int cell = 0; cell < 4096; ++cell)
@@ -9696,7 +9840,7 @@ static void test_swamp_input(void)
                     game_render(); /* the frame _sculpt reads (asm:7307) */
                     game_handle_event(&click);
                     core_consume_terrain_mailboxes();
-                    assert(core_mana(0) == (tool ? 9800 : 9986));
+                    assert(core_mana(0) == 9986);   /* terrain raise, not the magnet */
                 }
             }
     /* Selection at 5001, execution after mana drops to exactly 5000. */
@@ -10027,6 +10171,37 @@ static void toolbar_fixture(void)
     view_who = old_view_who = view_timer = 0;
 }
 
+/* Swamp and the mode bits: arming keeps only _mode & 3 (asm:2036-2039, the
+ * magnet bit 2 is dropped); the target clears bit 3 and sets _pointer to
+ * _mode-1, 4 for player 1's terrain (asm:7477-7485). So a swamp armed from
+ * the magnet returns to query/terrain, never to the magnet. */
+static void test_swamp_mode(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    for (int owner = 0; owner < 2; ++owner)
+        for (int base = 0; base < 2; ++base) {   /* 0 terrain (_mode 2), 1 query (_mode 1) */
+            assert(game_reset(0));
+            SDL_SetWindowSize(prg_screen->window, 960, 768);
+            player = owner;
+            A4_LONG(0x9a02 + owner * 16) = (int32_t)A4_LONG(0x8496) + 1;
+            A4_WORD(0x82c4 + owner * 46) = 0x10;
+            power_icon_click(6, base ? 0 : 1, SDL_BUTTON_LEFT);
+            power_icon_click(6, 2, SDL_BUTTON_LEFT);   /* magnet: _mode |= 4 */
+            assert(core_tool == 1 && pointer == owner + 2);
+            power_icon_click(2, 2, SDL_BUTTON_LEFT);   /* swamp: (_mode & 3) | 8 */
+            assert(core_swamp_selected && pointer == 5);
+            assert(core_tool == (base ? 2 : 0));
+            memset(stats_bytes(owner), 0, 3);
+            SDL_SetWindowSize(prg_screen->window, 640, 512);
+            xoff = yoff = 6;
+            ok_to_build_click(10, 10, SDL_BUTTON_LEFT);
+            assert(stats_bytes(owner)[0] == 4 && !core_swamp_selected);
+            assert(core_tool == (base ? 2 : 0));
+            assert(pointer == (base ? 0 : owner ? 4 : 1));
+        }
+    _closeall();
+    SDL_Quit();
+}
 /* Toolbar icons. */
 static void test_toolbar_icons(void)
 {
@@ -10347,10 +10522,12 @@ static int shake_frames;
 static int16_t shake_heights[65 * 65];
 static void shake_delay(int ms)
 {
-    /* Each frame: pre-quake terrain shifted by the offset, no sprites. */
+    /* Each frame: pre-quake terrain shifted by the offset ORed over the kept
+     * screen (asm:7909-7923, no _clr_wsc): the unshifted tile pixel and the
+     * sprite of the pre-quake frame stay; no sprite is drawn anew. */
     assert(ms == 20 && core_shake_dy == core_quake_shake_dy(shake_frames));
     assert(game_pixels[(72 + core_shake_dy) * 320 + 192] == 3);
-    assert(game_pixels[72 * 320 + 192] != 3 && game_pixels[88 * 320 + 184] != 9);
+    assert(game_pixels[72 * 320 + 192] == 3 && game_pixels[88 * 320 + 184] == 9);
     for (int v = 0; v < 65 * 65; ++v)
         assert(core_vertex(v % 65, v / 65) == shake_heights[v]);
     ++shake_frames;
@@ -10382,6 +10559,7 @@ static void test_quake_shake(void)
         toggle = 0;
         set_peep_word(0, 12, 0);
         game_render();
+        game_render();   /* both kept screens hold this frame */
         assert(game_pixels[72 * 320 + 192] == 3 && game_pixels[88 * 320 + 184] == 9);
         set_peep_word(0, 12, 255);
         int sprites = no_sprites;
@@ -10412,6 +10590,76 @@ static void test_quake_shake(void)
             assert(!memcmp(heights[0], heights[1], sizeof heights[0]) && mana[0] == mana[1] &&
                    score[0] == score[1] && seeds[0] == seeds[1]);
     }
+}
+
+/* _do_quake's shake (asm:7909-7923) only runs ___draw_it and ___swap_screens:
+ * the land is ORed over the two uncleared screens, the frame before the last
+ * at -4 lines (even c, _w_screen first) and the last one at -1 line. */
+static uint8_t qscreen_prev[320*200], qscreen_last[320*200];
+static int qscreen_frames;
+static void qscreen_expect(uint8_t *out, const uint8_t *base, int dy)
+{
+    memcpy(out, base, 320*200);
+    /* The only opaque land pixel: frame pixel (16,8) has index 2, keep 1. */
+    for (int v = 0; v < 8; ++v)
+        for (int u = 0; u < 8; ++u) {
+            int alt = map_alt[(yoff+v)*64+xoff+u];
+            int x = 176+16*(u-v)+16, y = 64+8*(u+v)-8*alt+8+dy;
+            if (y >= 0 && y < 200) out[y*320+x] |= 2;
+        }
+}
+static void qscreen_delay(int ms)
+{
+    static uint8_t expect[320*200];
+    assert(ms == 20);
+    int odd = qscreen_frames & 1;
+    qscreen_expect(expect, odd ? qscreen_last : qscreen_prev, odd ? -1 : -4);
+    assert(!memcmp(game_pixels, expect, sizeof expect));
+    /* Both Amiga screens keep their old contents: toolbar, sprite, marks. */
+    assert(game_pixels[10*320+10] == (odd ? 7 : 4));
+    assert(game_pixels[88*320+184] == (odd ? qscreen_last[88*320+184] : 4));
+    ++qscreen_frames;
+}
+static void test_quake_screens(void)
+{
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(game_reset(0));
+    memset(game_assets->background, 7, sizeof game_assets->background);
+    memset(game_assets->land_keep, 1, sizeof game_assets->land_keep);
+    memset(game_assets->land_indices, 0, sizeof game_assets->land_indices);
+    memset(game_assets->sprite_keep, 1, sizeof game_assets->sprite_keep);
+    memset(game_assets->sprite_indices, 0, sizeof game_assets->sprite_indices);
+    for (int frame = 0; frame < GFX_LAND_PIXELS / 768; ++frame)
+        game_assets->land_indices[frame * 768 + 8 * 32 + 16] = 2;
+    game_assets->sprite_indices[8 * 256] = 8;
+    toggle = 0;   /* sea cells draw frame 16; every land frame has the pixel */
+    devil_magnet = god_magnet = 0;
+    memset(map_bk2, 0, 4096);
+    set_peep_word(0, 12, 0);
+    memset(game_pixels, 4, sizeof game_pixels);
+    game_render();   /* the frame before the last: background 7 */
+    memset(core_shown_pixels, 4, sizeof core_shown_pixels);   /* make it distinct */
+    game_render();   /* last shown frame; previous screen is now all 4 */
+    memcpy(qscreen_prev, core_prev_pixels, sizeof qscreen_prev);
+    memcpy(qscreen_last, game_pixels, sizeof qscreen_last);
+    for (int pixel = 0; pixel < 320*200; ++pixel) assert(qscreen_prev[pixel] == 4);
+    assert(qscreen_last[10*320+10] == 7 && qscreen_last[88*320+184] == 15);
+    A4_LONG(0x9a02) = 10000;
+    A4_WORD(0x82c4) |= 8;
+    pause = 0; core_result = 0; A4_WORD(0xae80) = 0;
+    qscreen_frames = 0;
+    void (*delay)(int) = core_quake_delay;
+    core_quake_delay = qscreen_delay;
+    assert(core_quake(0, 0, 0, ___newrand));
+    core_quake_delay = delay;
+    assert(qscreen_frames == 20);
+    /* _d_screen ends on the odd buffer; the next frame's previous screen is it. */
+    static uint8_t odd[320*200];
+    memcpy(odd, core_shown_pixels, sizeof odd);
+    game_render();
+    assert(!memcmp(core_prev_pixels, odd, sizeof odd));
+    _closeall();
+    SDL_Quit();
 }
 /* Quake cast. */
 static void test_quake_cast(void)
@@ -16348,9 +16596,11 @@ static void test_battle_frame_render_and_entry(void)
                     sprite_case(frame % 2 ? 0xff : 0x18, owner, frames[frame], headings[raw], turn,
                                 1, 15, 0, 0, 0, -1, 192, 56);
                 }
+                /* Non-cycle frames are drawn raw too (asm:16045-16052); past
+                 * the 143-frame sheet nothing is drawn. */
                 for (unsigned frame = 0; frame < sizeof invalid / sizeof invalid[0]; ++frame)
                     sprite_case(8, owner, invalid[frame], headings[raw], turn, 1, 15, 0, 0, 0,
-                                turn < 4 ? 138 : 139, 192, 56);
+                                invalid[frame] >= 0 && invalid[frame] < 143 ? invalid[frame] : -1, 192, 56);
             }
     /* Canonical new battles render their initialized base, not the legacy
      * phase fallback, before any casualty/RNG pass in either encounter path. */
@@ -23302,6 +23552,26 @@ int main(int argc, char **argv)
         test_pause_icon_mailbox();
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--funny-rock-dot")) {
+        test_funny_rock_dot();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--swamp-mode")) {
+        test_swamp_mode();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--battle-frame-raw")) {
+        test_battle_frame_raw();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--shield-bars")) {
+        test_shield_bars();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--quake-screens")) {
+        test_quake_screens();
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--zoom-map-icons")) {
         test_zoom_map_icons();
         return 0;
@@ -23978,6 +24248,7 @@ int main(int argc, char **argv)
     test_original_lower();
     test_quake_cast();
     test_quake_shake();
+    test_funny_rock_dot();
     test_volcano_input_smoke();
     test_volcano_cast();
     test_volcano_lava();
@@ -24036,6 +24307,7 @@ int main(int argc, char **argv)
     test_original_graphics_output();
     test_toolbar_icon_highlight();
     test_query_and_shield();
+    test_shield_bars();
     test_query_buttons();
     test_zoom_map_icons();
     test_pause_icon_mailbox();

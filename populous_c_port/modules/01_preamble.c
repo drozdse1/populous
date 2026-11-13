@@ -313,6 +313,10 @@ static void core_place_funny(int type, int edge);
 static void core_do_funny(void);
 static void core_zero_funny(int slot);
 static void core_flash_icon(int base, int a, int b);
+/* _d_screen and _w_screen of the original game screen (draw_original). */
+static uint8_t core_shown_pixels[320*200], core_prev_pixels[320*200];
+static void core_draw_land(uint8_t *dest, int view_x, int view_y, int dy);
+static void core_present_pixels(void);
 static void _make_woods_rocks(void);
 static void _devil_effect(void);
 static void _do_computer_effect(void);
