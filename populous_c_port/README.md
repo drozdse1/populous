@@ -1292,8 +1292,10 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
     right picks ordinary walkers, left walkers with a heading. The original
     battle search never ends when no battle exists after the last viewed slot;
     the port bounds that scan. Viewing marks a 10-turn temporary view.
-- Lower-right system icons: `zzZ` toggles pause (also while paused or after the
-  end); the music and FX icons toggle `_music_off`/`_effect_off` (nonzero = on;
+- Lower-right system icons: `zzZ` posts `_do_action` y=6 like the original
+  (asm:1799-1805) and the next mailbox read toggles pause (asm:18591-18608),
+  also while paused; after the end it does nothing, since the original reads
+  no mailbox there (`--pause-icon-mailbox`); the music and FX icons toggle `_music_off`/`_effect_off` (nonzero = on;
   switching on stops all channels, asm:1744-1781). Options, game
   options and the message icon post their original `_do_action` codes 7/8/2;
   the consumer opens `_options` (7) and `_game_options` (8) at the next tick,

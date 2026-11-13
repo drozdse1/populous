@@ -325,14 +325,9 @@ static int core_toolbar(int sx, int sy, int left, int post)
         else if (icon == 0 && line == 3) { if ((music_off = !music_off)) core_kill_effect(0,4); }
         else if (icon == 0 && line == 4) { if ((effect_off = !effect_off)) core_kill_effect(0,4); }
         else if (icon == 1 && line == 1) { if (post) { mailbox[0] = 14; mailbox[2] = 8; } }
-        /* _do_action y=6 asm:18591-18608. Single play toggles at once instead
-         * of posting for the next mailbox read, so the icon also works after
-         * the end (port convenience; the toggle itself is the original's). */
-        else if (icon == 1 && line == 3) {
-            /* With the link up the original y=6 post toggles on both sides. */
-            if (core_serial_live()) { if (post) { mailbox[0] = 14; mailbox[2] = 6; } }
-            else { pause = !pause; toggle = 0; }
-        }
+        /* asm:1799-1805: post {14,-,6} (byte 1 untouched); the next mailbox
+         * read toggles via _do_action y=6 (asm:18591-18608), also paused. */
+        else if (icon == 1 && line == 3) { if (post) { mailbox[0] = 14; mailbox[2] = 6; } }
         else if (icon == 2 && line == 2) { if (post) { mailbox[0] = 14; mailbox[2] = 2; } }
         else return 0;
         return 1;

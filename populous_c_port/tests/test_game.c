@@ -9870,7 +9870,7 @@ static void test_toolbar_icons(void)
     xoff = yoff = 20;
     grid_click(8, 0, SDL_BUTTON_RIGHT);
     assert(xoff == 20);
-    /* System icons: sound flags and pause toggle at any time. */
+    /* System icons: sound flags act at once; pause posts _do_action y=6. */
     toolbar_fixture();
     A4_WORD(0x8250) = A4_WORD(0x8252) = 0;
     system_click(0, 3, SDL_BUTTON_LEFT);
@@ -9881,11 +9881,14 @@ static void test_toolbar_icons(void)
     assert(!A4_WORD(0x8250));
     A4_WORD(0x9a1a) = 1;
     system_click(1, 3, SDL_BUTTON_LEFT);
+    assert(pause == 0 && A4_WORD(0x9a1a) == 1 && A4_DISP(0x82b6)[0] == 14 && A4_DISP(0x82b6)[2] == 6);
+    core_consume_terrain_mailboxes();
     assert(pause == 1 && !A4_WORD(0x9a1a));
     core_result = 1;
     system_click(1, 3, SDL_BUTTON_LEFT);
-    assert(pause == 0);
+    assert(pause == 1 && !A4_DISP(0x82b6)[0]);
     core_result = 0;
+    pause = 0;
     /* Options, game options and message post their _do_action codes. The
      * consumer now opens _options (y=7) and _game_options (y=8), see
      * test_requesters; the message requester (y=2) stays inert. */
@@ -21602,6 +21605,33 @@ static void test_battle_rounds(void)
     }
 }
 
+
+/* _zoom_map pause icon (1,3), asm:1799-1805: single play posts {14,-,6}
+ * (byte 1 untouched) and does not toggle; _get_message -> _do_action y=6
+ * (asm:18591-18608) toggles _pause and clears _toggle. A finished game
+ * never reads mailboxes again, so the post is dropped there. */
+static void test_pause_icon_mailbox(void)
+{
+    toolbar_fixture();
+    uint8_t *mailbox = A4_DISP(0x82b6);
+    mailbox[1] = 0x5a;
+    pause = 0; A4_WORD(0x9a1a) = 1;
+    system_click(1, 3, SDL_BUTTON_LEFT);
+    assert(pause == 0 && A4_WORD(0x9a1a) == 1);
+    assert(mailbox[0] == 14 && mailbox[1] == 0x5a && mailbox[2] == 6);
+    core_consume_terrain_mailboxes();
+    assert(pause == 1 && !A4_WORD(0x9a1a) && !mailbox[0]);
+    /* Paused: the post stands until the paused frame reads it. */
+    system_click(1, 3, SDL_BUTTON_RIGHT);
+    assert(pause == 1 && mailbox[0] == 14 && mailbox[2] == 6);
+    game_tick();
+    assert(pause == 0 && !mailbox[0]);
+    /* After the end: no post, no toggle. */
+    core_result = 1;
+    system_click(1, 3, SDL_BUTTON_LEFT);
+    assert(pause == 0 && !mailbox[0]);
+    core_result = 0;
+}
 /* ========================================================================
  * Test runner (focused --flags first, then the full suite)
  * ======================================================================== */
@@ -21611,6 +21641,10 @@ int main(int argc, char **argv)
     setenv("POPULOUS_SAVE_DIR", "/nonexistent-populous-saves", 1);
     /* Shake frames are checked in test_quake_shake; elsewhere skip the 20 ms vblanks. */
     core_quake_delay = no_quake_delay;
+    if (argc == 2 && !strcmp(argv[1], "--pause-icon-mailbox")) {
+        test_pause_icon_mailbox();
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--zoom-map-icons")) {
         test_zoom_map_icons();
         return 0;
@@ -22296,6 +22330,7 @@ int main(int argc, char **argv)
     test_query_and_shield();
     test_query_buttons();
     test_zoom_map_icons();
+    test_pause_icon_mailbox();
     test_shield_icons();
     test_icon_flashes();
     test_special_sprites();

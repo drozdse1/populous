@@ -1333,6 +1333,7 @@ static int core_consume_from(int first)
             else if (y == 3) core_war(owner);
             else if (y == 4) core_flood(owner);
             else if (y == 5) core_knight(owner);
+            else if (y == 6) { pause = !pause; toggle = 0; }   /* asm:18591-18608 */
             else if (y == 9) core_paint_mana(0, x);
             else if (y == 10) core_paint_mana(1, x);
             else if (y == 11) core_rotate_all_map();
