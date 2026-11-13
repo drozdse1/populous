@@ -245,7 +245,9 @@ static void test_choices(void)
         int before = prg_calls;
         assert(launcher_main(1, arguments) == 0);
         assert(prg_calls == before + 1 && prg_start == clicks[index][2]);
-        assert(hook_calls == 4 && !music_seen); /* frames 0..3: the click is latched on frame 3 */
+        /* frames 0..3: the click is latched on frame 3; LAB_426 then fades the
+         * load.pic palette (max nibble $f: 15 frames) before populous.prg. */
+        assert(hook_calls == 4 + 15 + 1 && !music_seen);
         assert(SDL_WasInit(0) == 0 && live_allocations == 0 && live_windows == 0);
     }
     int before = prg_calls;
@@ -268,6 +270,7 @@ static void test_intro_frames(void)
     GraphicsAssets *assets = launch_assets;
     launch_assets = NULL;
     memset(launch_demo_pixels, 5, sizeof launch_demo_pixels);
+    memset(launch_frame_bg, 5, sizeof launch_frame_bg); /* SUB_714's SUB_58CA copy */
     memset(&launch, 0, sizeof launch);
     /* LAB_5A0C row 8 of glyph 0 ($5a5c): mask $800f, planes $2000 $7ff0 $2010 $5fe0. */
     assert(intro_title_glyphs[0][8][0] == 0x800f && intro_title_glyphs[0][8][1] == 0x2000 &&
@@ -361,6 +364,10 @@ static void test_intro(void)
     assert(!launch.button && launch.x == 251 && launch.y == 191);
     launch_mouse(0, 10, 10);
     assert(!launch.button && launch.x == 251);
+    assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_FADE && launch.choice == 1 &&
+           launch.button == 2);
+    for (int pass = 1; pass <= launch.fade_steps; ++pass)
+        assert(launch_step() == LAUNCH_RUN && launch.fade_step == pass);
     assert(launch_step() == LAUNCH_START && launch.choice == 1 && launch.button == 2);
 
     memset(&launch, 0, sizeof launch);
@@ -438,6 +445,12 @@ static void test_intro(void)
         assert(launch_step() == LAUNCH_RUN && launch.state != LAUNCH_LOAD);
         launch_mouse(0, 250, 190);
         launch_mouse(1, 250, 190);
+        /* LAB_1236: the demo palette fades out (12 frames) before load.pic;
+         * SUB_714 tests before drawing, so its first pass is this frame. */
+        assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_FADE && launch.choice == 0 &&
+               launch.fade_steps == 12 && launch.fade_step == (phase == LAUNCH_CREDITS));
+        for (int pass = launch.fade_step + 1; pass <= 12; ++pass)
+            assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_FADE && launch.fade_step == pass);
         assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_LOAD && launch.choice == 0);
     }
     /* SUB_536's loop has no latch test: the click ends the first SUB_714 frame. */
@@ -453,7 +466,11 @@ static void test_intro(void)
     while (!launch.script_done) {
         assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_SCRIPT);
     }
-    assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_LOAD);
+    /* That first SUB_714 frame aborts before drawing and fades (pass 1). */
+    assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_FADE && launch.fade_step == 1);
+    while (launch.state == LAUNCH_FADE)
+        launch_step();
+    assert(launch.state == LAUNCH_LOAD && launch.fade_step == 12);
     test_intro_frames();
     /* The full SDL loop: no click, the timeout runs the intro with music. */
     char *arguments[] = {"populous", NULL};
@@ -462,6 +479,332 @@ static void test_intro(void)
     script(-1, 0, 0, LAUNCH_LOAD_FRAMES + 30);
     assert(launcher_main(1, arguments) == 0);
     assert(music_seen && prg_calls == 0 && SDL_WasInit(0) == 0 && live_allocations == 0);
+}
+
+/* SUB_714 block script (asm:586-1233), SUB_536 (asm:449-585), SUB_50B2,
+ * SUB_3F92, SUB_1CBC, SUB_5792 and SUB_58FA. Oracles are derived by hand
+ * from the listing; the milestone iterations come from an independent
+ * Python model of the same opcodes over the contiguous $1272 block. */
+static int script_index(int actor, uint8_t opcode)
+{
+    for (int pc = 0; intro_script_start[actor] + pc < INTRO_SCRIPT_BYTES; ++pc)
+        if (intro_script_memory[intro_script_start[actor] + pc] == opcode) return pc;
+    assert(!"opcode not in script");
+    return -1;
+}
+static void script_reset(void)
+{
+    memset(&launch, 0, sizeof launch);
+    launch.seed = 1;
+    launch_actors_reset();
+    launch_sub536_begin();
+    memset(launch_bg, 5, sizeof launch_bg);
+    memset(launch_clean, 5, sizeof launch_clean);
+    launch.ops = 0;
+    memset(launch.drop, 0, sizeof launch.drop); /* SUB_10A2 seeded them; landed */
+    memset(launch.speed, 0, sizeof launch.speed);
+}
+static void test_intro_script(void)
+{
+    /* SUB_456's $55731 passes of 90 cycles in frames of 141876 - ~900 VBI cycles. */
+    assert(LAUNCH_LOAD_FRAMES == (0x55731 * 90 + 140976 - 1) / 140976);
+    script_reset();
+    /* Data: actor 0 at cell 38, pc 0; SUB_536 sets step 8, the $6e08 cells. */
+    assert(launch.actor[0][A_CELL] == 38 && launch.actor[0][A_STEP] == 8 &&
+           launch.actor[7][A_BASE] == 16 && launch.actor[14][A_ANIM] == -1 &&
+           launch.actor[15][A_EXTRA] == 1 && launch.actor[6][A_ANIM] == 1);
+    /* GO 38 then 26: arrival reads the next byte; step sgn(-1)*10+sgn(-2) = -11,
+     * dir 0. x = (8-3)*16+$98 = 232, y = 11*8+$1c-h[38]=8 -> 108. */
+    launch.toggle = 0;
+    launch_actor_step(0);
+    assert(launch.actor[0][A_PC] == 1 && launch.actor[0][A_STEP] == -11 &&
+           launch.actor[0][A_SUB] == 1 && launch.actor[0][A_CELL] == 38);
+    assert(launch.ops == 1 && launch.op[0].kind == 0 && launch.op[0].frame == 0 &&
+           launch.op[0].x == 232 && launch.op[0].y == 108);
+    for (int i = 0; i < 7; ++i) launch_actor_step(0); /* sub 1..7 -> wraps on the 7th */
+    assert(launch.actor[0][A_SUB] == 0 && launch.actor[0][A_CELL] == 27);
+    /* SUB_50E6 with step 1 at cell 99, phase 3: h[100] is SUB_6538's $4e = 78,
+     * (0-78)*3 = -234 >> 3 = -30; x = 152+2*3, y = 172-30+3; frame +6 +toggle. */
+    launch.toggle = 1;
+    launch.ops = 0;
+    launch_draw(99, 1, 0, 3, 0, 0);
+    assert(launch.op[0].x == 158 && launch.op[0].y == 145 && launch.op[0].frame == 7);
+    launch_draw(99, 1, 0x65, 3, 4, 0); /* >= $40, extra 0: frame as is; drop lifts */
+    assert(launch.op[1].frame == 0x65 && launch.op[1].y == 141);
+    launch_draw(99, 1, 0x65, 3, 0, 1); /* extra: toggle only */
+    assert(launch.op[2].frame == 0x66);
+    launch_draw(38, 0, 16, 0, 0, 0); /* step 0: default dir 8 */
+    assert(launch.op[3].frame == 16 + 8 + 1 && launch.op[3].x == 232);
+
+    /* PUT: cell-sorted (type, cell) list, replace on the same cell. */
+    script_reset();
+    launch.actor[0][A_CELL] = 26;
+    launch.actor[0][A_PC] = 2; /* put12 -> type $38 */
+    launch_actor_step(0);
+    assert(launch.list_cell[0] == 26 && launch.list_type[0] == 0x38 && launch.dirty &&
+           launch.actor[0][A_PC] == 3 && launch.ops == 1 && launch.op[0].frame == 8);
+    launch.actor[0][A_CELL] = 4;
+    launch.actor[0][A_PC] = 2;
+    launch_actor_step(0);
+    launch.actor[0][A_CELL] = 30;
+    launch_actor_step(0); /* pc 3 = frm157 -> no list change */
+    launch.actor[0][A_PC] = 5; /* put0 -> $23 */
+    launch.actor[0][A_CELL] = 26;
+    launch_actor_step(0);
+    assert(launch.list_cell[0] == 4 && launch.list_cell[1] == 26 && launch.list_type[1] == 0x23 &&
+           launch.list_cell[2] == 0);
+    /* The dirty rebuild of the next SUB_714 frame: the copied bg is the old
+     * one; the new bg has land0 type $38 at cell 4 (SUB_1CBC asm:2258-2284):
+     * x = 4*16+$90, y = 4*8-h[4](8)+$18. */
+    launch.list_type[0] = 0x38;
+    launch.list_cell[1] = 0;
+    launch.state = LAUNCH_CREDITS;
+    launch.button = 2;
+    assert(launch_step() == LAUNCH_RUN && launch.vblanks == 2);
+    assert(memcmp(launch_frame_bg, launch_clean, sizeof launch_clean) == 0);
+    if (launch_assets) {
+        GraphicsSheet land = graphics_land(launch_assets);
+        static uint8_t tile[320 * 200];
+        memset(tile, 5, sizeof tile);
+        assert(graphics_blit(tile, sizeof tile, 320, 200, land, 0x38, 4 * 16 + 0x90, 4 * 8 - 8 + 0x18));
+        assert(memcmp(tile, launch_bg, sizeof tile) == 0 && memcmp(tile, launch_clean, sizeof tile) != 0);
+    }
+
+    /* FADE_R: 19 screen-only steps, the 20th also into the bg, then pc+1. */
+    script_reset();
+    int fade = script_index(0, 0xfd);
+    launch.actor[0][A_PC] = (int16_t)fade;
+    for (int step = 0; step < 19; ++step) {
+        launch.ops = 0;
+        launch_actor_step(0);
+        assert(launch.actor[0][A_PC] == fade && launch.fade_a == step + 1 && launch.ops == 1 &&
+               launch.op[0].kind == 1 && launch.op[0].right && launch.op[0].frame == step);
+    }
+    static uint8_t before[320 * 200];
+    memcpy(before, launch_bg, sizeof before);
+    launch.ops = 0;
+    launch_actor_step(0);
+    assert(launch.actor[0][A_PC] == fade + 1 && launch.fade_a == 20 && launch.ops == 1);
+    assert(memcmp(before, launch_bg, sizeof before) != 0);
+    /* WAIT_R (A2 pc 0) holds below 20. */
+    launch.fade_a = 19;
+    launch_actor_step(2);
+    assert(launch.actor[2][A_PC] == 0);
+    launch.fade_a = 20;
+    launch_actor_step(2);
+    assert(launch.actor[2][A_PC] == 1);
+
+    /* SUB_3F92 on a flat 5: word 0 keeps where LAB_1F62[step+1] is set,
+     * word 1 uses step+2, word 2 step+0 (D0 2,4,0 across rows). */
+    static uint8_t px[320 * 200];
+    memset(px, 5, sizeof px);
+    launch_corner(px, 1, 10);
+    const uint16_t *right = intro_corner_words + 0x400;
+    for (int word = 0; word < 3; ++word) {
+        uint16_t mask = intro_fade_mask[10 + (word == 2 ? 0 : word + 1)];
+        for (int bit = 0; bit < 16; ++bit) {
+            int s = 15 - bit, c = 0;
+            for (int p = 0; p < 4; ++p) c |= ((right[word * 4 + p] >> s) & 1) << p;
+            assert(px[256 + word * 16 + bit] == ((mask >> s) & 1 ? 5 : c));
+        }
+    }
+    /* Row 1 word 0 continues the cycle: global word 4 -> step + 2. */
+    uint16_t mask1 = intro_fade_mask[12];
+    for (int bit = 0; bit < 16; ++bit) {
+        int s = 15 - bit, c = 0;
+        for (int p = 0; p < 4; ++p) c |= ((right[16 + p] >> s) & 1) << p;
+        assert(px[320 + 256 + bit] == ((mask1 >> s) & 1 ? 5 : c));
+    }
+    assert(px[64 * 320 + 256] == 5 && px[0 * 320 + 255] == 5);
+
+    /* ADV_ALL ($f7, A13): pc+1 unless resting on $ff. */
+    script_reset();
+    int end0 = script_index(0, 0xff), adv = script_index(13, 0xf7);
+    launch.actor[0][A_PC] = (int16_t)end0;
+    launch.actor[13][A_PC] = (int16_t)adv;
+    launch_actor_step(13);
+    assert(launch.actor[0][A_PC] == end0 && launch.actor[13][A_PC] == adv + 1 &&
+           launch.actor[2][A_PC] == 1 && launch.ops == 0);
+    /* BOB ($f9, A6 base $20): counter $ef -> $f0 releases every pc, $ff too. */
+    script_reset();
+    int bob = script_index(6, 0xf9);
+    launch.actor[6][A_PC] = (int16_t)bob;
+    launch.actor[0][A_PC] = (int16_t)end0;
+    launch.counter = 0xef;
+    launch.toggle = 0;
+    launch_actor_step(6);
+    assert(launch.counter == 0xf0 && launch.actor[6][A_PC] == bob + 1 &&
+           launch.actor[0][A_PC] == end0 + 1 && launch.actor[6][A_SUB] == 1 &&
+           launch.op[0].frame == 0x8a);
+    /* ANIM4 ($fa): -1 keeps the base (extra: +toggle), else 0..3 wrap. */
+    script_reset();
+    launch.actor[15][A_PC] = 2;
+    launch.toggle = 1;
+    launch_actor_step(15);
+    assert(launch.actor[15][A_ANIM] == -1 && launch.op[0].frame == 67);
+    launch.actor[15][A_ANIM] = 3;
+    launch_actor_step(15);
+    assert(launch.actor[15][A_ANIM] == 0 && launch.op[1].frame == 66);
+
+    /* SUB_536: four actors (0, 1, 7, 8) at step 8 (dir 8), one vblank. */
+    script_reset();
+    launch.state = LAUNCH_SCRIPT;
+    for (int i = 0; i < 16; ++i) launch.drop[i] = 0, launch.speed[i] = 0;
+    launch.speed[0] = 3;
+    assert(launch_step() == LAUNCH_RUN && launch.vblanks == 1 && launch.ops == 4 &&
+           launch.toggle == 1);
+    assert(launch.op[0].x == 232 && launch.op[0].frame == 0 + 8 + 1 && launch.op[2].frame == 16 + 9);
+    /* SUB_1910 (asm:1951-1957): y < 0 skips the whole sprite. */
+    if (launch_assets) {
+        memset(px, 5, sizeof px);
+        launch_sprite(px, 0, 100, -1);
+        for (size_t i = 0; i < sizeof px; ++i) assert(px[i] == 5);
+        /* The composed SUB_536 frame: bg copy, then each op's sprites0 frame,
+         * keep bit -> background OR colour (SUB_1910 asm:1994-2002). */
+        memset(launch_frame_bg, 5, sizeof launch_frame_bg);
+        launch.ops = 1;
+        launch.op[0] = (LaunchOp){0, 9, 100, 50, 0};
+        launch_compose(px);
+        GraphicsSheet sheet = graphics_sprites(launch_assets);
+        int opaque = 0;
+        for (int r = 0; r < 16; ++r)
+            for (int c = 0; c < 16; ++c) {
+                size_t src = 9 * 256 + (size_t)r * 16 + (size_t)c;
+                opaque += !sheet.keep[src];
+                assert(px[(50 + r) * 320 + 100 + c] == ((sheet.keep[src] ? 5 : 0) | sheet.indices[src]));
+            }
+        assert(opaque > 0 && px[49 * 320 + 100] == 5 && px[50 * 320 + 116] == 5);
+    }
+
+    /* The whole script from SUB_714's first iteration (Python cross-check). */
+    script_reset();
+    launch.state = LAUNCH_CREDITS;
+    launch.button = 2;
+    int fade_l = script_index(7, 0xfe), fade_r = script_index(0, 0xfd);
+    for (int iteration = 0; iteration < 1100; ++iteration) {
+        if (iteration == 559) assert(launch.actor[7][A_PC] == fade_l && launch.fade_b == 19);
+        if (iteration == 560) assert(launch.actor[7][A_PC] == fade_l + 1 && launch.fade_b == 20);
+        if (iteration == 607) assert(launch.actor[0][A_PC] == fade_r);
+        if (iteration == 608) assert(launch.actor[0][A_PC] == fade_r + 1);
+        if (iteration == 888) assert(launch.counter == 0xef);
+        if (iteration == 889) assert(launch.counter == 0xf0 && launch.actor[6][A_PC] == bob + 1);
+        if (iteration == 1021) assert(launch.actor[13][A_PC] == adv);
+        if (iteration == 1022) assert(launch.actor[13][A_PC] == adv + 1);
+        assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_CREDITS && launch.vblanks == 2);
+        for (int i = 0; i < 20; ++i) assert(i < 15 || launch.list_cell[i] == 0);
+    }
+
+    /* SUB_5792: a new key-down aborts at the next call; held keys latch;
+     * a press released before the call is lost (CIA SDR keeps the last byte). */
+    script_reset();
+    launch.state = LAUNCH_CREDITS;
+    launch.button = 2;
+    launch_key(1, 0);
+    assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_FADE && launch.ops == 0 &&
+           launch.fade_step == 1 && launch.vblanks == 1);
+    /* LAB_1236: SUB_58FA on the demo palette, one nibble per frame, 12 frames. */
+    for (int k = 1; k <= 12; ++k) {
+        for (int c = 0; c < 16; ++c) {
+            int r = (graphics_palette[c] >> 8) & 15, g = (graphics_palette[c] >> 4) & 15,
+                b = graphics_palette[c] & 15;
+            r = r > k ? r - k : 0, g = g > k ? g - k : 0, b = b > k ? b - k : 0;
+            assert(launch.fade_pal[c] == (r << 8 | g << 4 | b));
+        }
+        assert(launch.state == LAUNCH_FADE && launch.fade_steps == 12);
+        launch_step();
+    }
+    assert(launch.state == LAUNCH_LOAD && launch.frame == 0);
+    launch.state = LAUNCH_BLOCKS; /* key still held: latched, no abort */
+    for (int i = 0; i < LAUNCH_DROPS; ++i) launch.drop[i] = 200, launch.speed[i] = 0;
+    launch_step();
+    assert(launch.state != LAUNCH_FADE);
+    launch_key(0, 0);
+    launch_step();
+    launch_key(1, 0);
+    launch_key(0, 0); /* tap inside one frame: lost */
+    launch_step();
+    assert(launch.state != LAUNCH_FADE);
+    launch_key(1, 0);
+    launch_step(); /* end-of-loop test: fade starts the next frame */
+    assert(launch.state == LAUNCH_FADE && launch.fade_step == 0);
+    launch_key(0, 0);
+    /* A modifier ($60..$67) never sets the latch: it aborts again. */
+    script_reset();
+    launch.state = LAUNCH_BLOCKS;
+    launch.button = 2;
+    launch_key(1, 1);
+    launch_step();
+    assert(launch.state == LAUNCH_FADE);
+    launch.state = LAUNCH_BLOCKS;
+    launch_step();
+    assert(launch.state == LAUNCH_FADE);
+    launch_key(0, 1);
+    /* LAB_426: the load.pic palette fades (32 colours) before the game. */
+    script_reset();
+    for (int c = 0; c < 32; ++c) launch_load_palette[c] = (uint16_t)(c == 3 ? 0x0f20 : 0x0111);
+    launch_load_begin();
+    launch.button = 0;
+    launch.x = 250;
+    launch.y = 190;
+    assert(launch_step() == LAUNCH_RUN && launch.state == LAUNCH_FADE && launch.fade_steps == 15 &&
+           launch.fade_colours == 32);
+    for (int k = 1; k <= 15; ++k) {
+        assert(launch_step() == LAUNCH_RUN && launch.fade_step == k);
+        assert(launch.fade_pal[3] == (k < 15 ? (15 - k) << 8 | (k < 2 ? 2 - k : 0) << 4 : 0) &&
+               launch.fade_pal[0] == 0);
+    }
+    assert(launch_step() == LAUNCH_START && launch.choice == 1);
+}
+
+/* The three load.pic buttons as rendered by the launcher: the whole frame
+ * against an independent decode of raw/load.pic (5 planes, palette at
+ * 40000), and the label ink (colours 21..25) against rows transcribed from
+ * that bitmap: TUTORIAL ($9c.., choice 3), CONQUEST ($aa.., 2), CUSTOM ($b8.., 1). */
+static void test_buttons(void)
+{
+    static const struct { int y; const char *ink; } labels[] = {
+        {158, "            #######   ##    #   #######   #####   ########   #######     ###    ######"},
+        {163, "              ###      ###  #   # ###     ####    # ##    #  #  ####   ##    ## # ######"},
+        {172, "              #####    #####   ###   ###   #####    ##    # #########   ######    #######"},
+        {177, "             #######   ####      #     #   #### #    ###  # # ##### #  ####  ##   # ###"},
+        {186, "                        #####   ##    #   ######    #######   #####   ##     ##"},
+        {191, "                       #######   ###  #  ####  ##   # ###     ####     ##    ##"},
+    };
+    const char *root = getenv("POPULOUS_ASSET_DIR");
+    if (!root) root = POPULOUS_DEFAULT_ASSET_DIR;
+    char path[4160];
+    snprintf(path, sizeof path, "%s/raw/load.pic", root);
+    FILE *file = fopen(path, "rb");
+    assert(file);
+    static uint8_t raw[40064];
+    assert(fread(raw, 1, sizeof raw, file) == sizeof raw);
+    fclose(file);
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    screen = amiga_create_screen(320, 256, 4);
+    assert(screen && launch_load_assets());
+    memset(&launch, 0, sizeof launch);
+    launch_load_begin();
+    launch_render();
+    for (int y = 0; y < 200; ++y)
+        for (int x = 0; x < 320; ++x) {
+            int index = 0;
+            for (int plane = 0; plane < 5; ++plane)
+                index |= ((raw[plane * 8000 + y * 40 + x / 8] >> (7 - x % 8)) & 1) << plane;
+            uint16_t c = (uint16_t)(raw[40000 + 2 * index] << 8 | raw[40001 + 2 * index]);
+            uint32_t argb = 0xff000000u | (uint32_t)((c >> 8) & 15) * 17 << 16 |
+                            (uint32_t)((c >> 4) & 15) * 17 << 8 | (uint32_t)(c & 15) * 17;
+            assert(screen->chunky_buffer[y * 320 + x] == argb);
+            for (size_t l = 0; l < sizeof labels / sizeof labels[0]; ++l)
+                if (labels[l].y == y && x >= 0xe0) {
+                    size_t at = (size_t)(x - 0xe0);
+                    int ink = at < strlen(labels[l].ink) && labels[l].ink[at] == '#';
+                    assert(ink == (index >= 21 && index <= 25));
+                }
+        }
+    launch_free_assets();
+    amiga_destroy_screen(screen);
+    screen = NULL;
+    SDL_Quit();
 }
 
 /* Any argument bypasses the launcher screens (SUB_4 asm:83-86). */
@@ -502,6 +845,13 @@ int main(int argc, char **argv)
         test_choices();
     } else if (strcmp(argv[1], "intro") == 0)
         test_intro();
+    else if (strcmp(argv[1], "buttons") == 0)
+        test_buttons();
+    else if (strcmp(argv[1], "intro-script") == 0) {
+        if (!launch_load_assets()) assert(!"intro assets missing");
+        test_intro_script();
+        launch_free_assets();
+    }
     else if (strcmp(argv[1], "cli") == 0)
         test_cli();
     else if (strcmp(argv[1], "invalid-driver") == 0) {

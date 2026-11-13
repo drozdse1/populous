@@ -926,12 +926,21 @@ picks the choice that `SUB_16E` stores at `$42` and `populous.prg` reads as
 | X >= 231, 156 <= Y < 170 | 3 tutorial | `_start_game` asm:13975-13999: `_tutorial`/`LAB_5172E` stats, seed `0x69bc`, `_tutorial_game_mode` 1, `_pause`, 10000 mana (asm:1134), 15 vs 3 people, ground 0, custom game (`in_conquest` -1) |
 | X >= 231, 170 <= Y < 184 | 2 conquest | world selection first, as `--conquest` |
 | X >= 241, Y >= 184 | 1 game | the default start: custom landscape 0 (see "Custom games") |
-| elsewhere, or no click for ~5 s | 0 | the intro, then `load.pic` again |
+| elsewhere, or no click for ~4.5 s | 0 | the intro, then `load.pic` again |
 
-The labels of the three bottom-right buttons were not read from the picture; the
-mapping follows the code. The original's timeout is a busy loop of 0x55730
-passes (asm:404-407); the port uses 250 frames (5 s, about 94 cycles per pass on
-a 7.09 MHz 68000). Escape or closing the window quits (port addition).
+The button labels, decoded from the raw planar `load.pic` (ink colours
+21..25), read TUTORIAL (rows 158..164), CONQUEST (172..178) and CUSTOM
+(186..192), matching the regions; `test_runtime buttons` renders the screen and
+compares it pixel by pixel with an independent decode and transcribed label
+rows. Before `populous.prg` starts, `LAB_426` fades the 32 `load.pic` colours
+with `SUB_58FA` (15 frames for this palette, see below).
+
+The original's timeout is a busy loop of $55731 passes (asm:400-423) of 90
+cycles each (MOVE.L 16, ADDQ.L 20, CMP.L 14, BGT.S 8, TST.W 12, BNE.S 10,
+BRA.S 10): 31500090 cycles. A PAL frame has 141876 cycles of which about 900
+go to the VBI (`LAB_5242`, estimate), so the port waits 224 frames. DMA
+contention by the five planes is not modelled. Escape or closing the window
+quits at once (port addition, no fade).
 
 The intro `SUB_1186` (asm:1517-1566) shows `demo.pic` (gameplay palette), starts
 the title music and runs, one step per 50 Hz frame:
@@ -947,29 +956,60 @@ the title music and runs, one step per 50 Hz frame:
    (drops 0..9) and the letters `$6e98` = P O P U L O U S at x = $60 + 16i
    (drops 0..7). Top is $a8 - drop while falling and drop + 8 while rising
    (drops start at $a0 and use speed 0..7).
-3. `SUB_714` (asm:586-1233): `SUB_536` first runs a 16-drop `SUB_110A` loop
-   (one frame per step, including the final one, and no click test). After
-   that the endless script loop starts. Two text strips (`LAB_1FA2`/`LAB_25E2`,
-   counters 75 and 50) take the next `LAB_1DCE` line through `SUB_1D1A` when
-   their counter is 50. Each line is centred with `(40 - length) >> 1`, plane 0
-   is preset to $ff, and font.dat bytes 0..4 go to planes 0..4. `SUB_5026`
-   (asm:3548-3590) draws the strip at row = counter. The fade step is the
-   counter, or 50 minus the counter above 25. The keep mask is plane 0 ORed
-   with the `LAB_1F62` words fade+1, fade+2, fade, cycled per word. Strip
-   planes 1..4 become screen planes 0..3. Counters fall to 0 and then reset to
-   50. Each slot shows a new line every 51 frames, the two slots are 25 frames
-   apart, and the 23 lines wrap at the $ff marker.
+3. `SUB_536` (asm:449-585): 16 drops (`SUB_10A2`), one frame per
+   `SUB_110A` including the last, no click or key test; each frame toggles
+   `LAB_708E` and draws actors 0, 1, 7 and 8 at their `$6e08` cells (step 8).
+4. `SUB_714` (asm:586-1233), endless; per pass: toggle, `SUB_5792` and latch
+   test (before drawing), copy of `-31904`, the two credit strips
+   (`LAB_1FA2`/`LAB_25E2`, counters 75 and 50, `SUB_1D1A` text, `SUB_5026`
+   fade masks `LAB_1F62`; a new line per slot every 51 passes, 25 apart, 23
+   lines wrapping), the background rebuild if a block was put, `SUB_55E0`,
+   then the 16 actors' byte code. A pass waits two vertical blanks
+   (`SUB_55E0` and the `SUB_358` flip).
 
-The intro only ends on a fresh left click (asm:1553-1555 and the other loops),
-which returns to `load.pic` (`SUB_41C` loops). With the default timer the
-phases take 59, 58+48 and 58 frames before the script.
+Block script (`LAB_1272`..`LAB_15A7`, pointers `LAB_15B6`, one contiguous
+block in `intro_data.c`). Actor words at `$6d28`: base frame, pc, phase 0..7,
+step, cell, anim, extra. Opcodes:
 
-Deviations: `SUB_714`'s block script is not ported. That covers the byte code
-`LAB_1272`..`LAB_15F6`, the upper block layer drawn by `SUB_50B2`/`SUB_1CBC`/
-`SUB_3F92`, and the falling blocks in `SUB_536`. The port shows the settled
-landscape under the credit strips instead. Palette fades are not reproduced.
-`SUB_5792`'s keyboard flag (`LAB_7158`), which also ends the original's loops,
-is not modelled.
+| byte | effect |
+| --- | --- |
+| 0..99 | walk to cell b (on arrival the next byte is read and used as the target, whatever it is); step = 10*sgn(drow)+sgn(dcol); phase +1, cell += step on wrap |
+| 100..129 | put land0 type `$6e73[b-100]` on the actor's cell into the cell-sorted list (replace on the same cell); next pass rebuilds `-31904` from `-31900` with `SUB_1CBC` blocks one level up |
+| 130..220 | one sprite frame `$6e28[b-130]` |
+| $fd / $fe | dissolve the right / left 64x64 `LAB_4026` picture in (`SUB_3F92`, `LAB_1F62` step 0..19; step 19 also into the background) |
+| $fc | wait until the right picture is done |
+| $fb | idle frame `$6e28[$1b+toggle(+2)]`, ~8% `$6e28[$e/$12]` (consumes `SUB_6538`) |
+| $fa | four-frame animation (anim -1: base frame) |
+| $f9 | bob; actor 6 counts `-31994` to $f0, then every pc advances |
+| $f7 | every actor not on $ff advances |
+| $f6 | counter frames $79.. |
+| $ff | end |
+
+`SUB_50B2`/`SUB_50E6` place the 16x16 `sprites0.dat` frame at
+x = (col-row)*16+$98+dx*phase, y = (col+row)*8+$1c-drop-h+((h-h')*phase>>3)+dy*phase
+with the direction add-on to frames below $40 and the `LAB_708E` toggle. Heights
+of cells 100..107 come from `SUB_6538`'s first code bytes, as in the original.
+Milestones from the first `SUB_714` pass: left picture done at pass 559, right
+at 607, the $f9 release at 888, $f7 at 1021. The rebuild redraws only the left
+picture (asm:684-722), so the right one disappears with the next block put after it is complete,
+as in the original.
+
+The intro ends on a fresh left click or a new key-down (`SUB_5792` latch
+`LAB_57FE`; Shift/Ctrl/Alt/Amiga/Caps never latch; a press released within one
+frame is lost, as with the CIA serial register). `LAB_1236` then fades the demo
+palette with `SUB_58FA` (each nonzero nibble -1 per pass; the VHPOSR wait,
+lines 251..255, allows one pass per frame: 12 frames) before the music stops
+and `load.pic` returns. A `SUB_714` abort fades from that frame, the other
+loops from the next one. With the default timer the phases take 59, 58+48 and
+58 frames before the script.
+
+Timing notes and assumptions: the port waits one vblank per `SUB_358` and per
+`SUB_55E0`. The $7d00-byte background copy alone costs ~240000 cycles (more
+than a frame), and the VBI handler clears VERTB before the polls in
+`SUB_55E0`/`SUB_55BA` can see it, so the real cadence is not derivable from
+the listing; this is left open. `$fb` passes a 7th argument that is not
+pushed (the high word of the caller's saved D4); the port takes 0. Sprite rows
+below line 199 (the original writes into the next plane) are clipped.
 
 Title music: `SUB_2C36` (asm:2418-2471) reads `popsam` (one 0x1c01e-byte Read; the file has that size),
 `SUB_2F9C` (asm:2645-2698) starts song 0 and `LAB_3060` (asm:2706-2896) runs per
@@ -1739,9 +1779,11 @@ does not imply every modified level table is valid or every campaign feature exi
 cleanup, injected resource failures, launcher handoff, and invalid video driver
 errors; with an injected frame hook and no-op wait (no real sleeps) it clicks
 each `load.pic` region through SDL events, steps the intro state machine on the
-VBI clock (timeout, three phases, credits, return, click abort in every phase,
-deterministic drops), runs the timeout into the intro with music, and checks
-that every CLI argument bypasses the launcher. `test-game` includes the production PRG and launcher code and checks A4
+VBI clock (timeout, three phases, credits, return, click abort and fade in
+every phase, deterministic drops), runs the timeout into the intro with music,
+and checks that every CLI argument bypasses the launcher. `intro-script` checks
+the block-script opcodes, sprite placement, list, pictures, milestones,
+keyboard latch and both palette fades; `buttons` the rendered `load.pic`. `test-game` includes the production PRG and launcher code and checks A4
 boundaries/unaligned access, map separation, all eight start populations and
 occupancy, deterministic reset, renderer output, SDL event handling, pause,
 scroll limits, scaled mouse coordinates, inert powers, allocation-failure

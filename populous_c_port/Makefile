@@ -61,6 +61,8 @@ define runtime_checks
 	SDL_VIDEODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) $(1) failures
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) $(1) launcher
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) $(1) intro
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) $(1) intro-script
+	SDL_VIDEODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) $(1) buttons
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(call with_timeout,$(TEST_TIMEOUT)) $(1) cli
 	SDL_VIDEODRIVER=populous-invalid-driver $(call with_timeout,$(TEST_TIMEOUT)) $(1) invalid-driver
 endef
