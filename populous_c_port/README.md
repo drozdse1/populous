@@ -1264,6 +1264,19 @@ skipped for a bank without a sequence. The vbi is paced from `SDL_GetTicks`.
   a paused game still reads the mailboxes every frame and counts down the
   temporary view; only people and `_game_turn` stand still. In editor mode the
   Armageddon icon posts nothing.
+- Each power is tested as one chain through the original path
+  (`--power-chains`): icon or map click, `_player` mailbox, `_get_message`
+  after `_move_peeps` in the same pass, gates and payment (costs 10, 200, 2500,
+  5000, 7500, 10000, 40000, 80000 from asm:24289-24305), score, world change
+  (earthquake, volcano and swamp replayed from the `___newrand` sequence),
+  inhabitants on the following passes (water entry and loss, drowning in a
+  shallow swamp with `_effect` 0x42, the leader following the magnet, the
+  knight leaving its town headed, war magnets at 0x820), the frame and the
+  `_effect` played on Paula channels 2 and 3; refusals leave the pass exactly
+  as without a post, and the computer side's opcodes go through the same
+  consumer. As in `_draw_it` (asm:15831-15869) the ankhs are drawn at a
+  nonzero `_god_magnet`/`_devil_magnet` whatever the tendency, and the sea
+  frame alternates with `_toggle`.
 - Other lower-left toolbar icons (`_zoom_map` asm:1838-2395), left or right button:
   - Arrow pad: scroll one cell; its centre shield recentres on the viewed figure.
   - Tendency icons: settle, join, fight and go to magnet, posted as mailbox

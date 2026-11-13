@@ -20770,6 +20770,728 @@ static void test_power_audio(void)
     SDL_Quit();
 }
 
+
+/* ========================================================================
+ * Power chains: one end-to-end cast per power through the original path.
+ * Toolbar icon (_zoom_map asm:1903-2042) or map click (_sculpt asm:7271-7560)
+ * -> _player mailbox -> _get_message in the same _animate pass after
+ * _move_peeps (asm:1010-1012, jump table 18200-18216, _do_action
+ * 18406-19032) -> the power's gates and payment -> world change -> the
+ * inhabitants on the following passes -> the frame -> _effect for the vbi
+ * (asm:19620-19672). The computer side posts the same opcodes into its own
+ * mailbox (_do_computer_effect / _devil_effect asm:9300-9536).
+ * chain_x is the very same pass with empty mailboxes, i.e. the state
+ * _get_message starts from: the cast must differ from it by exactly the
+ * power, a refusal not at all.
+ * ======================================================================== */
+static uint8_t chain_x[sizeof prg_a4_area], chain_r[sizeof prg_a4_area];
+static uint32_t chain_frame[320 * 256];
+static int chain_shakes, chain_shake_dy[20], chain_shake_effect, chain_shake_sound;
+
+/* ___newrand: MULU #$24a1, ADDI.W #$24df, BCLR #15. */
+static uint16_t chain_lcg(uint16_t *state)
+{
+    *state = (uint16_t)((uint16_t)((uint32_t)*state * 0x24a1u) + 0x24dfu) & 0x7fffu;
+    return *state;
+}
+static void chain_load(const uint8_t *state) { memcpy(prg_a4_area, state, sizeof prg_a4_area); }
+static void chain_save(uint8_t *state) { memcpy(state, prg_a4_area, sizeof prg_a4_area); }
+static size_t chain_at(int displacement) { return (size_t)(A4_DISP(displacement) - (uint8_t *)prg_a4_area); }
+static uint32_t chain_long(const uint8_t *state, int displacement)
+{
+    A4Long value;
+    memcpy(&value, state + chain_at(displacement), sizeof value);
+    return value.value;
+}
+static int16_t chain_word(const uint8_t *state, int displacement)
+{
+    A4Word value;
+    memcpy(&value, state + chain_at(displacement), sizeof value);
+    return value.value;
+}
+
+/* Blue land 8..24 at height 1, red land 44..60 at height 2, sea elsewhere;
+ * blue leader at 20,18, a red walker at 52,52; game_mode 0 (water harmful,
+ * shallow swamps, building anywhere). View 18..26 x 14..22. */
+static void chain_world(void)
+{
+    assert(game_reset(0));
+    SDL_SetWindowSize(prg_screen->window, 640, 512);
+    for (int row = 0; row <= 64; ++row)
+        for (int column = 0; column <= 64; ++column)
+            core_set_vertex(column, row, column >= 8 && column <= 24 && row >= 8 && row <= 24 ? 1 :
+                                         column >= 44 && column <= 60 && row >= 44 && row <= 60 ? 2 : 0);
+    memset(map_bk2, 0, 4096);
+    memset(peeps, 0, 208 * 22);
+    memset(map_who, 0, 4096);
+    no_peeps = 0;
+    core_leader(0) = core_leader(1) = 0;
+    game_mode = 0;
+    _make_map();
+    core_place_people(0, 20, 18, 1);
+    core_place_people(1, 52, 52, 0);
+    pause = paint_map = war_flag = 0;
+    core_result = 0;
+    player = 0;
+    not_player = 1;
+    A4_LONG(0x9a02) = 200000;
+    A4_LONG(0x9a12) = 0;
+    stats_power_mask(0) = 0x1ff;
+    stats_power_mask(1) = 0;
+    memset(stats_bytes(0), 0, 3);
+    memset(stats_bytes(1), 0, 3);
+    score_long = 0;
+    effect = 0;
+    sound_effect = 0;
+    core_tool = 0;
+    core_swamp_selected = 0;
+    diagnostic_view = 0;
+    xoff = 18;
+    yoff = 14;
+    seed = 4321;
+    no_sounds = (int16_t)core_bank.kit_count;
+    effect_off = 1; /* effects on (asm:19633), music off */
+    music_off = 0;
+    game_render();
+}
+
+/* Toolbar cell (icon,line) of the power/mode grid at 640x512. */
+static void chain_icon(int icon, int line, int button)
+{
+    int c = 0x60 + 16 * icon + 8, r = 0x90 + 16 * line + 8;
+    SDL_Event click = {.type = SDL_MOUSEBUTTONDOWN};
+    click.button.button = button;
+    click.button.x = (c - r + 64) * 2;
+    click.button.y = (c + r) / 2 * 2;
+    game_handle_event(&click);
+}
+static void chain_assert_box(int owner, int command, int x, int y)
+{
+    const uint8_t *box = stats_bytes(owner);
+    assert(box[0] == command && box[1] == x && box[2] == y);
+}
+/* Mana such that the pass's _toggle bonus (asm:3302-3310, toggle flips in
+ * the heartbeat first) brings it to exactly `at` before _get_message. */
+static void chain_mana_at(int owner, int32_t at) { core_mana_long(owner) = (uint32_t)(at - !toggle); }
+
+static void chain_delay(int ms)
+{
+    assert(ms == 20 && chain_shakes < 20);
+    if (!chain_shakes) chain_shake_effect = effect;
+    chain_shake_dy[chain_shakes] = core_shake_dy;
+    core_vbi_audio();
+    if (!chain_shakes) chain_shake_sound = sound_playing(2, 0x4c) && sound_playing(3, 0x4c);
+    ++chain_shakes;
+}
+/* One _animate pass; chain_x receives the same pass with empty mailboxes. */
+static void chain_step(void)
+{
+    uint8_t snapshot[sizeof prg_a4_area];
+    int tool = core_tool, swamp = core_swamp_selected, magnet_return = core_magnet_return;
+    chain_save(snapshot);
+    memset(stats_bytes(0), 0, 3);
+    memset(stats_bytes(1), 0, 3);
+    main_loop_step();
+    chain_save(chain_x);
+    chain_load(snapshot);
+    core_tool = tool;
+    core_swamp_selected = swamp;
+    core_magnet_return = magnet_return;
+    chain_shakes = 0;
+    void (*delay)(int) = core_quake_delay;
+    core_quake_delay = chain_delay;
+    main_loop_step();
+    core_quake_delay = delay;
+    chain_save(chain_r);
+}
+static void chain_assert_refused(void) { assert(!memcmp(chain_x, chain_r, sizeof chain_r)); }
+static int32_t chain_mana_delta(int owner)
+{
+    return (int32_t)(chain_long(chain_r, 0x9a02 + owner * 16) - chain_long(chain_x, 0x9a02 + owner * 16));
+}
+static int32_t chain_score_delta(void) { return (int32_t)(chain_long(chain_r, 0xae72) - chain_long(chain_x, 0xae72)); }
+
+/* The frame shows the change: restoring [displacement, +length) from
+ * chain_x alone changes the rendered picture. */
+static int chain_frame_shows(const int (*fields)[2], int count)
+{
+    uint8_t now[sizeof prg_a4_area];
+    chain_save(now);
+    game_render();
+    memcpy(chain_frame, prg_screen->chunky_buffer, sizeof chain_frame);
+    chain_load(now);
+    for (int field = 0; field < count; ++field)
+        memcpy(A4_DISP(fields[field][0]), chain_x + chain_at(fields[field][0]), (size_t)fields[field][1]);
+    game_render();
+    int differs = memcmp(chain_frame, prg_screen->chunky_buffer, sizeof chain_frame) != 0;
+    chain_load(now);
+    return differs;
+}
+static const int chain_terrain[][2] = {{0xae86, 65 * 65 * 2}, {0xcf88, 4096}, {0xdf88, 4096}, {0xef88, 4096}};
+
+/* _effect reaches Paula through the next vbi on channels 2 and 3. */
+static void chain_audio(int sound)
+{
+    assert(effect == sound);
+    if (!core_bank.kit_count || !sound) return;
+    int16_t old_tempo = tempo, old_music = music, old_music_off = music_off, old_effect_off = effect_off;
+    no_sounds = (int16_t)core_bank.kit_count;
+    music_off = 0;
+    effect_off = 1;
+    tempo = 0;
+    music = 10;
+    core_vbi_audio();
+    assert(!effect && sound_playing(2, sound) && sound_playing(3, sound));
+    core_kill_effect(0, 4);
+    for (int ch = 0; ch < 4; ++ch)
+        Soundpri(ch) = 0;
+    tempo = old_tempo;
+    music = old_music;
+    music_off = old_music_off;
+    effect_off = old_effect_off;
+}
+
+/* Walkers on a cell the cast turned into sea: the next pass's water entry
+ * (asm:3562-3580) sets flags 0x12 in place, the one after takes
+ * 2*walk_death (asm:3482-3560). Returns how many were checked. */
+static int chain_water_entry(void)
+{
+    int people[208], positions[208], count = 0;
+    for (int person = 0; person < no_peeps; ++person)
+        if (peep_population(person) > 0 && peep_flags(person) == 2 && !map_blk[peep_position(person)]) {
+            people[count] = person;
+            positions[count++] = peep_position(person);
+        }
+    if (!count) return 0;
+    main_loop_step();
+    int16_t population[208];
+    for (int k = 0; k < count; ++k) {
+        assert(peep_flags(people[k]) == 0x12 && peep_position(people[k]) == positions[k]);
+        population[k] = peep_population(people[k]);
+    }
+    main_loop_step();
+    for (int k = 0; k < count; ++k)
+        assert(peep_population(people[k]) == population[k] - 2 * a4_walk_death ||
+               (population[k] - 2 * a4_walk_death <= 0 && peep_population(people[k]) <= 0));
+    return count;
+}
+
+/* Raise/lower: _sculpt posts 1/2 (asm:7501-7524), _do_raise_point /
+ * _do_lower_point (asm:7091-7246) pay build_count*4+10 after the 10 mana
+ * admission. */
+static void test_chain_raise_lower(void)
+{
+    chain_world();
+    assert(mana_raise_cost == 10);
+    ok_to_build_click(22, 18, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 1, 22, 18);
+    chain_step();
+    /* 1 -> 2, the neighbours at 1 differ by one: one point, 14 mana. */
+    assert(core_vertex(22, 18) == 2 && chain_mana_delta(0) == -14 && !chain_score_delta());
+    for (int row = 0; row <= 64; ++row)
+        for (int column = 0; column <= 64; ++column)
+            if (column != 22 || row != 18) {
+                A4Word before;
+                memcpy(&before, chain_x + chain_at(0xae86) + (row * 65 + column) * 2, 2);
+                assert(core_vertex(column, row) == before.value);
+            }
+    assert(chain_frame_shows(chain_terrain, 4));
+    chain_audio(chain_word(chain_x, 0x2fac));
+    game_render();
+    ok_to_build_click(22, 18, SDL_BUTTON_RIGHT);
+    chain_assert_box(0, 2, 22, 18);
+    chain_step();
+    assert(core_vertex(22, 18) == 1 && chain_mana_delta(0) == -14);
+    /* Inhabitants: an islet vertex lowered under a walker floods its cell. */
+    core_set_vertex(26, 20, 1);
+    _make_map();
+    core_place_people(0, 26, 20, 0);
+    int victim = no_peeps - 1;
+    game_render();
+    ok_to_build_click(26, 20, SDL_BUTTON_RIGHT);
+    chain_assert_box(0, 2, 26, 20);
+    chain_step();
+    assert(map_blk[peep_position(victim)] == 0 && core_vertex(26, 20) == 0 && chain_mana_delta(0) == -14);
+    assert(chain_x[chain_at(0xcf88) + peep_position(victim)] != 0);
+    assert(chain_water_entry() >= 1);
+    /* Refused: 9 mana at the consumer (asm:7187, signed CMP.L). */
+    chain_world();
+    chain_mana_at(0, 9);
+    ok_to_build_click(22, 18, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 1, 22, 18);
+    chain_step();
+    assert(chain_long(chain_x, 0x9a02) == 9);
+    chain_assert_refused();
+    ok_to_build_click(22, 18, SDL_BUTTON_RIGHT);
+    chain_assert_box(0, 2, 22, 18);
+    chain_step();
+    /* _do_lower_point stores _xmin.._ymax before its gate (asm:7091-7095). */
+    for (int k = 0; k < 4; ++k) {
+        A4Word bound = {k < 2 ? 22 : 18};
+        memcpy(chain_x + chain_at(0x2f8a + 2 * k), &bound, 2);
+    }
+    chain_assert_refused();
+    /* _pause (asm:7279) never posts. */
+    chain_world();
+    pause = 1;
+    ok_to_build_click(22, 18, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 0, 0, 0);
+    /* Computer side: opcode 1 from its mailbox pays from its own mana. */
+    chain_world();
+    chain_mana_at(1, 1000);
+    memcpy(stats_bytes(1), (uint8_t[]){1, 50, 50}, 3);
+    chain_step();
+    assert(core_vertex(50, 50) == 3 && chain_mana_delta(1) == -14 && !chain_score_delta());
+}
+
+/* Papal magnet: mode icon (asm:2117-2128), click posts 5 at vertex-1
+ * (asm:7478-7500), _do_magnet (asm:6769-6820) pays 200, effect 0x4d. */
+static void test_chain_magnet(void)
+{
+    chain_world();
+    assert(mana_magnet_cost == 200);
+    chain_icon(6, 2, SDL_BUTTON_LEFT);
+    assert(core_tool == 1);
+    ok_to_build_click(22, 16, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 5, 21, 15);
+    assert(core_tool == 0);
+    chain_step();
+    assert(core_target(0) == 15 * 64 + 21 && god_magnet == 15 * 64 + 21);
+    assert(chain_mana_delta(0) == -200 && !chain_score_delta());
+    /* _draw_it draws the ankh 0x2d at a nonzero _god_magnet (0x2e at
+     * _devil_magnet) whatever the tendency (asm:15851-15869). */
+    int16_t tendency = core_tendency(0);
+    core_tendency(0) = 1;
+    static const int god[][2] = {{0xae78, 2}}, target[][2] = {{0x99f8, 2}};
+    assert(chain_frame_shows(god, 1) && !chain_frame_shows(target, 1));
+    core_tendency(0) = tendency;
+    chain_audio(0x4d);
+    /* Inhabitants: with the magnet tendency (icon 3/3 posts {14,0,1},
+     * asm:2043-2089, 18406-18426) the leader heads for it. */
+    chain_icon(3, 3, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 14, 0, 1);
+    int leader = core_leader(0) - 1, start = peep_position(leader), reached = 0;
+    int distance = abs(start % 64 - 21) > abs(start / 64 - 15) ? abs(start % 64 - 21) : abs(start / 64 - 15);
+    for (int tick = 0; tick < 64 && !reached; ++tick) {
+        main_loop_step();
+        int position = peep_position(leader);
+        int now = abs(position % 64 - 21) > abs(position / 64 - 15) ? abs(position % 64 - 21) : abs(position / 64 - 15);
+        assert(now <= distance);
+        reached = now < distance;
+    }
+    assert(reached);
+    /* Refused: no leader (asm:6776); _war drops the click (asm:6784). */
+    chain_world();
+    core_leader(0) = 0;
+    chain_icon(6, 2, SDL_BUTTON_LEFT);
+    ok_to_build_click(22, 16, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 5, 21, 15);
+    chain_step();
+    chain_assert_refused();
+    chain_world();
+    chain_mana_at(0, 199);
+    chain_icon(6, 2, SDL_BUTTON_LEFT);
+    ok_to_build_click(22, 16, SDL_BUTTON_LEFT);
+    chain_step();
+    chain_assert_refused();
+    chain_world();
+    war_flag = 1;
+    chain_icon(6, 2, SDL_BUTTON_LEFT);
+    ok_to_build_click(22, 16, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 0, 0, 0);
+    /* Computer side: opcode 5 with its own leader sets the devil magnet. */
+    chain_world();
+    core_place_people(1, 50, 50, 1);
+    chain_mana_at(1, 300);
+    memcpy(stats_bytes(1), (uint8_t[]){5, 49, 49}, 3);
+    chain_step();
+    assert(core_target(1) == 49 * 64 + 49 && A4_WORD(0xae76) == 49 * 64 + 49);
+    assert(chain_mana_delta(1) == -200 && !chain_score_delta());
+}
+
+/* Quake: icon 2/0 posts 3 at the view (asm:2000-2010), _do_quake
+ * (asm:7863-8042): 2500 mana, 25 points, effect 0x4c played by the vbi
+ * during the 20 shake frames, two passes over 9x9 vertices with a draw
+ * %5 per nonzero vertex (1 raise, 2..4 lower), _kill_effect(2,4). */
+static void chain_quake_oracle(int column, int row, uint16_t *state)
+{
+    for (int pass = 0; pass < 2; ++pass)
+        for (int x = column; x < column + 9; ++x)
+            for (int y = row; y < row + 9; ++y) {
+                if (!core_vertex(x, y)) continue;
+                int action = chain_lcg(state) % 5;
+                if (action == 1) original_raise_point(x, y);
+                else if (action >= 2) original_lower_point(x, y);
+            }
+}
+static void chain_assert_vertices(const uint8_t *expected)
+{
+    assert(!memcmp(chain_r + chain_at(0xae86), expected + chain_at(0xae86), 65 * 65 * 2));
+}
+static void test_chain_quake(void)
+{
+    chain_world();
+    assert(mana_quake_cost == 2500);
+    chain_icon(2, 0, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 3, 18, 14);
+    chain_step();
+    assert(chain_mana_delta(0) == -2500 && chain_score_delta() == 25);
+    uint8_t expected[sizeof prg_a4_area];
+    chain_load(chain_x);
+    uint16_t state = (uint16_t)seed;
+    chain_quake_oracle(18, 14, &state);
+    chain_save(expected);
+    chain_load(chain_r);
+    chain_assert_vertices(expected);
+    assert((uint16_t)seed == state);
+    assert(memcmp(chain_r + chain_at(0xae86), chain_x + chain_at(0xae86), 65 * 65 * 2));
+    /* Animation and audio: 20 frames -4/-1 (asm:7895-7925), the vbi plays
+     * 0x4c on the first, the end cuts channels 2 and 3. */
+    assert(chain_shakes == 20 && chain_shake_effect == 0x4c);
+    for (int c = 0; c < 20; ++c)
+        assert(chain_shake_dy[c] == (c & 1 ? -1 : -4));
+    assert(!core_shake_dy && !effect && !audio_busy(2) && !audio_busy(3));
+    if (core_bank.kit_count) assert(chain_shake_sound);
+    assert(chain_frame_shows(chain_terrain, 4));
+    chain_water_entry();
+    /* Refused: 2499 mana, no permission bit 3 (asm:7867-7890). */
+    chain_world();
+    chain_mana_at(0, 2499);
+    chain_icon(2, 0, SDL_BUTTON_LEFT);
+    chain_step();
+    chain_assert_refused();
+    assert(!chain_shakes);
+    chain_world();
+    stats_power_mask(0) = 0x1f7;
+    chain_icon(2, 0, SDL_BUTTON_LEFT);
+    chain_step();
+    chain_assert_refused();
+    /* Computer side: opcode 3, own mana, no score. */
+    chain_world();
+    chain_mana_at(1, 2500);
+    stats_power_mask(1) = 8;
+    memcpy(stats_bytes(1), (uint8_t[]){3, 46, 46}, 3);
+    chain_step();
+    assert(chain_mana_delta(1) == -2500 && !chain_score_delta() && chain_shakes == 20);
+}
+
+/* Swamp: icon 2/2 arms above 5000 with bit 4 (asm:2021-2042), the click
+ * posts 4 at vertex-1 (asm:7456-7477), _do_swamp (asm:8295-8387): 5000 mana,
+ * 50 points, 30 tries of two %7 draws, grass/rough without occupant -> 53,
+ * no _effect. A walker finishing a frame on 53 drowns (asm:4061-4081). */
+static void test_chain_swamp(void)
+{
+    chain_world();
+    assert(mana_swamp_cost == 5000);
+    chain_icon(2, 2, SDL_BUTTON_LEFT);
+    assert(core_swamp_selected && pointer == 5);
+    ok_to_build_click(21, 19, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 4, 20, 18);
+    assert(!core_swamp_selected);
+    chain_step();
+    assert(chain_mana_delta(0) == -5000 && chain_score_delta() == 50);
+    chain_load(chain_x);
+    uint16_t state = (uint16_t)seed;
+    uint8_t blocks[4096];
+    memcpy(blocks, map_blk, sizeof blocks);
+    int made = 0;
+    for (int attempt = 0; attempt < 30; ++attempt) {
+        int x = 20 + chain_lcg(&state) % 7 - 3, y = 18 + chain_lcg(&state) % 7 - 3;
+        int cell = y * 64 + x, block = blocks[cell];
+        if ((block == 15 || block == 31 || block == 32 || block == 66) && !map_who[cell]) {
+            blocks[cell] = 53;
+            ++made;
+        }
+    }
+    int leader_cell = peep_position(core_leader(0) - 1);
+    chain_load(chain_r);
+    assert(made > 0 && !memcmp(map_blk, blocks, sizeof blocks) && (uint16_t)seed == state);
+    assert(map_blk[leader_cell] != 53);
+    static const int swamp[][2] = {{0xcf88, 4096}};
+    assert(chain_frame_shows(swamp, 1));
+    chain_audio(chain_word(chain_x, 0x2fac));
+    /* Inhabitants: a walker put on a new swamp cell (_place_people, opcode 7)
+     * goes at its first frame completion; shallow swamps (game_mode bit 1
+     * clear) turn back into 15 and _effect becomes 0x42 (asm:4061-4081). */
+    int swamp_cell = -1;
+    for (int cell = 0; cell < 4096 && swamp_cell < 0; ++cell)
+        if (map_blk[cell] == 53) swamp_cell = cell;
+    memcpy(stats_bytes(0), (uint8_t[]){7, (uint8_t)(swamp_cell % 64), (uint8_t)(swamp_cell / 64)}, 3);
+    main_loop_step();
+    int victim = no_peeps - 1, drowned = 0;
+    assert(peep_position(victim) == swamp_cell && peep_flags(victim) == 2 && peep_population(victim) == 45);
+    for (int tick = 0; tick < 16 && !drowned; ++tick) {
+        main_loop_step();
+        drowned = peep_population(victim) <= 0;
+        if (!drowned) assert(peep_position(victim) == swamp_cell && map_blk[swamp_cell] == 53);
+    }
+    assert(drowned && map_blk[swamp_cell] == 15 && !map_who[swamp_cell] && effect == 0x42);
+    /* Refused: exactly 5000 does not arm (asm:2026, BGT); armed, 4999 at the
+     * consumer is refused (asm:8299-8322). */
+    chain_world();
+    core_mana_long(0) = 5000;
+    chain_icon(2, 2, SDL_BUTTON_LEFT);
+    assert(!core_swamp_selected);
+    chain_world();
+    chain_icon(2, 2, SDL_BUTTON_LEFT);
+    ok_to_build_click(21, 19, SDL_BUTTON_LEFT);
+    chain_mana_at(0, 4999);
+    chain_step();
+    chain_assert_refused();
+    /* Computer side: opcode 4 (asm:9420-9482). */
+    chain_world();
+    chain_mana_at(1, 5000);
+    stats_power_mask(1) = 0x10;
+    memcpy(stats_bytes(1), (uint8_t[]){4, 50, 50}, 3);
+    chain_step();
+    assert(chain_mana_delta(1) == -5000 && !chain_score_delta());
+}
+
+/* Knight: icon 2/1 posts {14,0,5} (asm:2011-2017), _do_knight
+ * (asm:8392-8478): leader first, 7500 mana, 150 points, byte 20 = 1,
+ * heading, magnet to the leader's cell, leader cleared, effect 0x45. */
+static void test_chain_knight(void)
+{
+    chain_world();
+    assert(mana_knight_cost == 7500);
+    chain_icon(2, 1, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 14, 0, 5);
+    chain_step();
+    int knight = chain_word(chain_x, 0x99f6) - 1, cell = peep_position(knight);
+    assert(knight == 0 && chain_mana_delta(0) == -7500 && chain_score_delta() == 150);
+    assert(peeps[knight * 22 + 20] == 1 && !core_leader(0));
+    assert(cell == chain_word(chain_x, 0x9c26 + knight * 22 + 8));
+    assert(core_target(0) == cell && god_magnet == cell);
+    uint32_t heading;
+    memcpy(&heading, peeps + knight * 22 + 14, 4);
+    assert(heading && !chain_long(chain_x, 0x9c26 + knight * 22 + 14));
+    chain_audio(0x45);
+    /* Inhabitants: the settled leader leaves its town as a headed walker
+     * (asm:3600-3633) keeping the mark; the frame draws it with the headed
+     * walker frames (+0x20, asm:15990-16240). */
+    int walking = 0;
+    for (int tick = 0; tick < 16 && !walking; ++tick) {
+        main_loop_step();
+        assert(peep_population(knight) > 0 && peeps[knight * 22 + 20] == 1 && !core_leader(0));
+        walking = peep_flags(knight) == 2;
+    }
+    assert(walking && !memcmp(peeps + knight * 22 + 14, &heading, 4));
+    xoff = (int16_t)(peep_position(knight) % 64 - 4);
+    yoff = (int16_t)(peep_position(knight) / 64 - 4);
+    assert(chain_frame_shows((const int[][2]){{0x9c26 + knight * 22 + 14, 4}}, 1));
+    /* Refused: no leader (asm:8394-8402), 7499 mana, no bit 5. */
+    chain_world();
+    core_leader(0) = 0;
+    chain_icon(2, 1, SDL_BUTTON_LEFT);
+    chain_step();
+    chain_assert_refused();
+    chain_world();
+    chain_mana_at(0, 7499);
+    chain_icon(2, 1, SDL_BUTTON_LEFT);
+    chain_step();
+    chain_assert_refused();
+    chain_world();
+    stats_power_mask(0) = 0x1df;
+    chain_icon(2, 1, SDL_BUTTON_LEFT);
+    chain_step();
+    chain_assert_refused();
+    /* Computer side: {14,0,5} with its own leader. */
+    chain_world();
+    core_place_people(1, 50, 50, 1);
+    chain_mana_at(1, 7500);
+    stats_power_mask(1) = 0x20;
+    memcpy(stats_bytes(1), (uint8_t[]){14, 0, 5}, 3);
+    chain_step();
+    assert(chain_mana_delta(1) == -7500 && !chain_score_delta() && !core_leader(1));
+}
+
+/* Volcano: icon 1/1 posts 6 at the view (asm:1984-1999), _do_volcano
+ * (asm:8046-8267): 10000 mana, 100 points, effect 0x4b, five shrinking
+ * passes raising on draws 1/2/4, then an 8x8 lava draw per cell, the blue
+ * leader's cell and both magnets protected. */
+static void test_chain_volcano(void)
+{
+    chain_world();
+    assert(mana_volcano_cost == 10000);
+    chain_icon(1, 1, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 6, 18, 14);
+    chain_step();
+    assert(chain_mana_delta(0) == -10000 && chain_score_delta() == 100);
+    uint8_t expected[sizeof prg_a4_area];
+    chain_load(chain_x);
+    uint16_t state = (uint16_t)seed;
+    for (int pass = 0; pass < 5; ++pass)
+        for (int x = 18 + pass; x <= 26 - pass; ++x)
+            for (int y = 14 + pass; y <= 22 - pass; ++y) {
+                int action = chain_lcg(&state) % 5;
+                if (action == 1 || action == 2 || action == 4) original_raise_point(x, y);
+            }
+    int protect = peep_position(core_leader(0) - 1), lava[64], count = 0;
+    for (int x = 18; x < 26; ++x)
+        for (int y = 14; y < 22; ++y) {
+            int cell = y * 64 + x;
+            if (chain_lcg(&state) % 5 || cell == protect || cell == core_target(0) || cell == core_target(1)) continue;
+            lava[count++] = cell;
+        }
+    chain_save(expected);
+    chain_load(chain_r);
+    chain_assert_vertices(expected);
+    assert((uint16_t)seed == state && count > 0);
+    for (int k = 0; k < count; ++k)
+        assert(map_blk[lava[k]] == 47 && !map_bk2[lava[k]]);
+    assert(map_blk[protect] != 47);
+    assert(chain_frame_shows(chain_terrain, 4));
+    chain_audio(0x4b);
+    chain_water_entry();
+    /* Refused: 9999 mana, no bit 6. */
+    chain_world();
+    chain_mana_at(0, 9999);
+    chain_icon(1, 1, SDL_BUTTON_LEFT);
+    chain_step();
+    chain_assert_refused();
+    chain_world();
+    stats_power_mask(0) = 0x1bf;
+    chain_icon(1, 1, SDL_BUTTON_LEFT);
+    chain_step();
+    chain_assert_refused();
+    /* Computer side: opcode 6. */
+    chain_world();
+    chain_mana_at(1, 10000);
+    stats_power_mask(1) = 0x40;
+    memcpy(stats_bytes(1), (uint8_t[]){6, 46, 46}, 3);
+    chain_step();
+    assert(chain_mana_delta(1) == -10000 && !chain_score_delta() && effect == 0x4b);
+}
+
+/* Flood: icon 0/0 posts {14,0,4} (asm:1952-1962), _do_flood
+ * (asm:7567-7648): 40000 mana, 250 points, effect 0x4a, every positive
+ * height -1. The blue land (height 1) becomes sea under the leader. */
+static void test_chain_flood(void)
+{
+    chain_world();
+    assert(mana_flood_cost == 40000);
+    chain_icon(0, 0, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 14, 0, 4);
+    chain_step();
+    assert(chain_mana_delta(0) == -40000 && chain_score_delta() == 250);
+    for (int index = 0; index < 65 * 65; ++index) {
+        int16_t before = chain_word(chain_x, 0xae86 + index * 2);
+        assert(((A4Word *)map_vertices)[index].value == (before > 0 ? before - 1 : before));
+    }
+    assert(chain_frame_shows(chain_terrain, 4));
+    /* The new sea animates with _toggle (asm:15831-15835: frame 16 while
+     * _toggle is 0), not with _game_turn. */
+    {
+        static uint32_t frames[3][320 * 256];
+        uint8_t now[sizeof prg_a4_area];
+        chain_save(now);
+        for (int k = 0; k < 3; ++k) {
+            chain_load(now);
+            toggle = (int16_t)(k != 0);
+            game_turn = (int16_t)(k == 2 ? 4 : 0);
+            game_render();
+            memcpy(frames[k], prg_screen->chunky_buffer, sizeof frames[k]);
+        }
+        chain_load(now);
+        assert(memcmp(frames[0], frames[1], sizeof frames[0]) && !memcmp(frames[1], frames[2], sizeof frames[1]));
+    }
+    chain_audio(0x4a);
+    assert(chain_water_entry() >= 1);
+    /* Refused: 39999 mana, no bit 7. */
+    chain_world();
+    chain_mana_at(0, 39999);
+    chain_icon(0, 0, SDL_BUTTON_LEFT);
+    chain_step();
+    chain_assert_refused();
+    chain_world();
+    stats_power_mask(0) = 0x17f;
+    chain_icon(0, 0, SDL_BUTTON_LEFT);
+    chain_step();
+    chain_assert_refused();
+    /* Computer side: {14,0,4}; red land 2 -> 1. */
+    chain_world();
+    chain_mana_at(1, 40000);
+    stats_power_mask(1) = 0x80;
+    memcpy(stats_bytes(1), (uint8_t[]){14, 0, 4}, 3);
+    chain_step();
+    assert(chain_mana_delta(1) == -40000 && !chain_score_delta() && core_vertex(50, 50) == 1);
+}
+
+/* Armageddon: icon 1/0 posts {14,0,3} unless _paint_map (asm:1976-1983),
+ * _do_war (asm:8482-8530): 80000 mana, 5000 points, peep bytes 14..17
+ * cleared, _war, effect 0x49. The next pass sends both magnets to 0x820
+ * (asm:3425-3432); world clicks are dropped, the flood refuses. */
+static void test_chain_armageddon(void)
+{
+    chain_world();
+    assert(mana_war_cost == 80000);
+    chain_icon(1, 0, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 14, 0, 3);
+    chain_step();
+    assert(chain_mana_delta(0) == -80000 && chain_score_delta() == 5000 && war_flag == 1);
+    for (int person = 0; person < no_peeps; ++person)
+        for (int k = 14; k < 18; ++k)
+            assert(!peeps[person * 22 + k]);
+    static const int war[][2] = {{0xae80, 2}};
+    assert(chain_frame_shows(war, 1));
+    chain_audio(0x49);
+    main_loop_step();
+    assert(core_target(0) == 0x820 && core_target(1) == 0x820 && god_magnet == 0x820 && A4_WORD(0xae76) == 0x820);
+    game_render();
+    ok_to_build_click(22, 18, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 0, 0, 0);
+    chain_icon(0, 0, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 14, 0, 4);
+    chain_step();
+    chain_assert_refused();
+    /* Refused: _paint_map posts nothing; 79999 mana; no bit 8. */
+    chain_world();
+    paint_map = 1;
+    chain_icon(1, 0, SDL_BUTTON_LEFT);
+    chain_assert_box(0, 0, 0, 0);
+    chain_world();
+    chain_mana_at(0, 79999);
+    chain_icon(1, 0, SDL_BUTTON_LEFT);
+    chain_step();
+    chain_assert_refused();
+    chain_world();
+    stats_power_mask(0) = 0xff;
+    chain_icon(1, 0, SDL_BUTTON_LEFT);
+    chain_step();
+    chain_assert_refused();
+    /* Computer side: {14,0,3} (asm:9300-9349). */
+    chain_world();
+    chain_mana_at(1, 80000);
+    stats_power_mask(1) = 0x100;
+    memcpy(stats_bytes(1), (uint8_t[]){14, 0, 3}, 3);
+    chain_step();
+    assert(chain_mana_delta(1) == -80000 && !chain_score_delta() && war_flag == 1);
+}
+
+static void test_power_chains(void)
+{
+    const char *old = getenv("POPULOUS_ASSET_DIR");
+    char saved[4096] = "";
+    if (old) snprintf(saved, sizeof saved, "%s", old);
+    assert(SDL_Init(SDL_INIT_VIDEO) == 0);
+    assert(!setenv("POPULOUS_ASSET_DIR", POPULOUS_DEFAULT_ASSET_DIR, 1));
+    audio_close();
+    if (core_load_sound("gmusic1")) puts("power chains: extracted gmusic1 absent, Paula checks skipped");
+    test_chain_raise_lower();
+    test_chain_magnet();
+    test_chain_quake();
+    test_chain_swamp();
+    test_chain_knight();
+    test_chain_volcano();
+    test_chain_flood();
+    test_chain_armageddon();
+    if (old)
+        setenv("POPULOUS_ASSET_DIR", saved, 1);
+    else
+        unsetenv("POPULOUS_ASSET_DIR");
+    _closeall();
+    SDL_Quit();
+}
 static void test_paint_map_powers(void)
 {
     for (int owner = 0; owner < 2; ++owner)
@@ -22017,6 +22739,11 @@ int main(int argc, char **argv)
         puts("editor map points: PASS");
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "--power-chains")) {
+        test_power_chains();
+        puts("power chains: PASS");
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--power-audio")) {
         test_power_audio();
         puts("power audio: PASS");
@@ -22258,6 +22985,7 @@ int main(int argc, char **argv)
     test_paint_map_powers();
     test_knight_paint_pause();
     test_power_audio();
+    test_power_chains();
     test_paint_map_editor();
     test_editor_landscapes();
     test_editor_map_points();

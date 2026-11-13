@@ -1657,7 +1657,7 @@ static void draw_original(int view_x, int view_y)
     _move_mana();
     int dy = core_shake_dy;
     GraphicsSheet land=graphics_land(game_assets), small=graphics_sprites(game_assets);
-    int phase=((uint16_t)game_turn/4)&1;
+    int phase=toggle!=0;   /* asm:15831-15835: sea frame 16 while _toggle is 0 */
     /* _draw_it, asm:15794-15949: row-major tiles, raised overlays, front faces. */
     for (int v=0; v<8; ++v) for (int u=0; u<8; ++u) {
         int cell=(view_y+v)*64+view_x+u, left,top;
@@ -1667,9 +1667,10 @@ static void draw_original(int view_x, int view_y)
         if (!frame && !phase) frame=16;
         graphics_blit(game_pixels,64000,320,200,land,frame,left,top);
         if (map_bk2[cell]) graphics_blit(game_pixels,64000,320,200,land,map_bk2[cell],left,top-8);
-        for (int owner=0; owner<2; ++owner)
-            if (core_tendency(owner)==0 && core_target(owner)==cell)
-                graphics_blit(game_pixels,64000,320,200,land,45+owner,left,top-8);
+        /* asm:15851-15869: ankh 0x2e at a nonzero _devil_magnet, then 0x2d
+         * at a nonzero _god_magnet; no tendency test. */
+        if (devil_magnet && devil_magnet==cell) graphics_blit(game_pixels,64000,320,200,land,46,left,top-8);
+        if (god_magnet && god_magnet==cell) graphics_blit(game_pixels,64000,320,200,land,45,left,top-8);
     }
     for (int v=0; v<8; ++v)
         for (int level=0; level<map_alt[(view_y+v)*64+view_x+7]; ++level)
